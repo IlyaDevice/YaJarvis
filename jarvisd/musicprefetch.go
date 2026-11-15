@@ -56,9 +56,14 @@ func (m *Music) prefetchSoon() {
 
 func (m *Music) prefetch(ctx context.Context) {
 	m.mu.Lock()
-	needMix := !m.personal && m.radioOn() && len(m.queue) == 0 && len(m.mix) == 0 && m.cur.ID != ""
 	seed := m.cur.ID
+	empty := m.radioOn() && len(m.queue) == 0 && seed != ""
+	needPersonal := empty && m.personal && len(m.results) == 0 && m.Account != nil
+	needMix := empty && len(m.mix) == 0 && (!m.personal || (len(m.results) == 0 && m.Account == nil))
 	m.mu.Unlock()
+	if needPersonal && !m.loadPersonalNext(ctx, seed) {
+		needMix = true
+	}
 	if needMix { // похожее понадобится — загрузим его сейчас, а не по «дальше»
 		m.loadMix(ctx, seed)
 	}
@@ -79,4 +84,35 @@ func (m *Music) prefetch(ctx context.Context) {
 	m.pre = preStream{id: nx[0].ID, st: st, info: info, at: time.Now()}
 	m.mu.Unlock()
 	log.Printf("музыка: следующий трек «%s» готов заранее (%.1f с)", nx[0].Title, time.Since(t0).Seconds())
+}
+
+// loadPersonalNext — рекомендации YouTube под «личным» видео (из твоей истории): что включится дальше или будет
+// предложено в конце. Подбираем, пока играет текущее, — в конце ролика предложение звучит сразу.
+func (m *Music) loadPersonalNext(ctx context.Context, seed string) bool {
+	tracks, err := m.watchRecommendations(ctx, seed)
+	if err != nil {
+		log.Printf("музыка: рекомендации под текущим видео: %v — беру похожее", err)
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cur.ID != seed || !m.personal {
+		return true // уже играет другое — подберётся заново
+	}
+	played := map[string]bool{seed: true}
+	for _, t := range m.history {
+		played[t.ID] = true
+	}
+	var next []Track
+	for _, t := range tracks {
+		if !played[t.ID] && len(next) < 20 {
+			played[t.ID] = true
+			next = append(next, t)
+		}
+	}
+	if len(next) == 0 {
+		return false
+	}
+	m.results, m.nextSeed = next, seed
+	return true
 }

@@ -4,6 +4,7 @@ package main
 // Пишем атомарно: во временный файл, потом rename — выключение питания не оставит полфайла.
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -126,6 +127,7 @@ type Settings struct {
 	UpdateRepo  string `json:"update_repo"`  // GitHub owner/name, откуда брать обновления
 	UpdateCheck bool   `json:"update_check"` // проверять обновления раз в 6 часов
 	UpdateAuto  bool   `json:"update_auto"`  // ставить найденное обновление само (ночью, когда никто не говорит)
+	AutoOnce    int    `json:"auto_once"`    // 1 — автообновление уже включено по умолчанию (дальше решает человек)
 }
 
 // LedSettings — цвета подсветки (#rrggbb) и яркость 0..100.
@@ -215,6 +217,8 @@ func defaultSettings() *Settings {
 		BgTo:            "gdrive",
 		Language:        "ru",
 		UpdateCheck:     true,
+		UpdateAuto:      true,
+		AutoOnce:        1,
 		Night:           defaultNight,
 	}
 }
@@ -281,6 +285,9 @@ func OpenStore(path string) (*Store, error) {
 		}
 		s.Night.Voice = max(5, s.Night.Voice/2)
 		s.VolScale, dirty = 2, true
+	}
+	if s.AutoOnce < 1 || !bytes.Contains(data, []byte(`"auto_once"`)) { // автообновление теперь по умолчанию: один раз включаем и тем, кто ставил раньше
+		s.UpdateCheck, s.UpdateAuto, s.AutoOnce, dirty = true, true, 1, true
 	}
 	if dirty {
 		if err := st.save(); err != nil {

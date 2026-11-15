@@ -23,3 +23,22 @@ func TestVolScaleMigration(t *testing.T) {
 		t.Fatalf("второй раз переводить нельзя: %d", v)
 	}
 }
+
+// автообновление включается по умолчанию один раз — дальше выбор человека не трогаем
+func TestAutoUpdateDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	_ = os.WriteFile(path, []byte(`{"vol_scale":2,"update_check":false,"update_auto":false}`), 0o600)
+	st, _ := OpenStore(path)
+	if s := st.Get(); !s.UpdateAuto || !s.UpdateCheck {
+		t.Fatal("старая установка: автообновление должно включиться")
+	}
+	_ = st.Update(func(s *Settings) error { s.UpdateAuto = false; return nil })
+	st2, _ := OpenStore(path)
+	if st2.Get().UpdateAuto {
+		t.Fatal("выбор «вручную» после этого должен сохраняться")
+	}
+	st3, _ := OpenStore(filepath.Join(t.TempDir(), "new.json"))
+	if !st3.Get().UpdateAuto {
+		t.Fatal("новая установка — с автообновлением")
+	}
+}

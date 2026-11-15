@@ -73,7 +73,7 @@ func (m *Music) radioOn() bool { return m.Radio == nil || m.Radio() }
 // upNext — что заиграет следующим: очередь, потом похожее (если радио включено), потом остальные результаты поиска.
 func (m *Music) upNext(n int) []Track {
 	out := append([]Track{}, m.queue...)
-	if m.personal {
+	if m.personal && (len(m.results) > 0 || !m.radioOn()) {
 		out = append(out, m.results...)
 		return out[:min(n, len(out))]
 	}
@@ -100,8 +100,10 @@ func (m *Music) popNext(ctx context.Context) (Track, bool) {
 			m.mu.Unlock()
 			return t, true
 		}
-		m.mu.Unlock()
-		return Track{}, false
+		if len(m.mix) == 0 || !m.radioOn() {
+			m.mu.Unlock()
+			return Track{}, false
+		}
 	}
 	radio := m.radioOn()
 	if radio && len(m.mix) == 0 {

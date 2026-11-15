@@ -61,7 +61,7 @@ func (m *Music) PlayID(ctx context.Context, id string) (Track, error) {
 	m.requestMu.Lock()
 	defer m.requestMu.Unlock()
 	m.mu.Lock()
-	m.mix = nil
+	m.mix, m.results, m.nextSeed = nil, nil, ""
 	m.personal = false
 	m.mu.Unlock()
 	t, err := m.start(ctx, Track{ID: id})

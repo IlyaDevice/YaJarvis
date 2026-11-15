@@ -51,6 +51,12 @@ func (m *Music) proposeRelatedFor(ctx context.Context, expected string) string {
 	if seed == "" {
 		return "Сначала выбери ролик, братан: пока не к чему искать похожее."
 	}
+	m.mu.Lock()
+	var ready []Track
+	if m.nextSeed == seed && len(m.results) > 0 {
+		ready = append([]Track(nil), m.results...)
+	}
+	m.mu.Unlock()
 	m.Pause()
 	ctx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
@@ -60,7 +66,10 @@ func (m *Music) proposeRelatedFor(ctx context.Context, expected string) string {
 	m.loadingCancel = cancel
 	m.mu.Unlock()
 	defer func() { cancel(); m.mu.Lock(); m.loadingCancel = nil; m.mu.Unlock() }()
-	tracks, err := m.watchRecommendations(ctx, seed)
+	tracks, err := ready, error(nil)
+	if len(tracks) == 0 {
+		tracks, err = m.watchRecommendations(ctx, seed)
+	}
 	if err != nil {
 		return "Не получилось получить рекомендации под текущим роликом: " + shortErr(err)
 	}

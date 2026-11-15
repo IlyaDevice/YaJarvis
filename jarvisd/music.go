@@ -88,6 +88,7 @@ type Music struct {
 	CookieFile     string     // cookies.txt аккаунта YouTube — для 18+ и «вы не бот» (пусто — без входа)
 	Account        *YTAccount // вход в YouTube кодом, как на телевизоре
 	personal       bool
+	nextSeed       string // для какого видео подобраны results (рекомендации YouTube под ним)
 	personalSearch bool
 	proposal       *mediaProposal
 	progress       *playbackHistory
