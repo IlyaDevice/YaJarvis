@@ -40,8 +40,13 @@ for (const a of assets) {
   m = a.name.match(/^v(\d+\.\d+\.\d+)-([a-z0-9]+)$/);
   if (m) versions[m[1]] = (versions[m[1]] || 0) + a.download_count;
 }
+// Боты-зеркала скачивают каждый файл каждого релиза — даже установщики для macOS, которыми никто не
+// пользуется. Поэтому в каждом релизе вычитаем минимум по установщикам: это и есть проход бота.
 let setups = 0;
-for (const r of releases) for (const a of r.assets || []) if (/^JarvisSetup-/.test(a.name)) setups += a.download_count;
+for (const r of releases) {
+  const counts = (r.assets || []).filter((a) => /^JarvisSetup-/.test(a.name)).map((a) => a.download_count);
+  if (counts.length) setups += counts.reduce((s, n) => s + n, 0) - Math.min(...counts) * counts.length;
+}
 
 const cmpVer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return y[i] - x[i]; return 0; };
 const verList = Object.entries(versions).filter(([, n]) => n > 0).sort((a, b) => cmpVer(a[0], b[0]));
