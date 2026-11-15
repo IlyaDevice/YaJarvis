@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/newfpv/YaJavis/hardware"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -33,17 +35,18 @@ var version = "dev"
 const remoteDir = "/data/opt/jarvisd"
 
 type Speaker struct {
-	IP        string `json:"ip"`
-	Model     string `json:"model"`
-	Arch      string `json:"arch"`     // arm64 | armv7
-	Userland  string `json:"userland"` // armhf | arm64 — для vqe_tap.so (как у maind)
-	Root      bool   `json:"root"`
-	Android   bool   `json:"android"`
-	Installed string `json:"installed"` // версия jarvisd или ""
-	FreeMB    int    `json:"free_mb"`
-	RAMMB     int    `json:"ram_mb"`
-	OldJarvis bool   `json:"old_jarvis"` // серверный Джарвис (jarvis.sh)
-	OldAlisa  bool   `json:"old_alisa"`  // Alisa Voice (rison) с собственным vqe_tap
+	ModelID   string   `json:"model_id"`
+	IP        string   `json:"ip"`
+	Model     string   `json:"model"`
+	Arch      string   `json:"arch"`     // arm64 | armv7
+	Userland  string   `json:"userland"` // armhf | arm64 — для vqe_tap.so (как у maind)
+	Root      bool     `json:"root"`
+	Android   bool     `json:"android"`
+	Installed string   `json:"installed"` // версия jarvisd или ""
+	FreeMB    int      `json:"free_mb"`
+	RAMMB     int      `json:"ram_mb"`
+	OldJarvis bool     `json:"old_jarvis"` // серверный Джарвис (jarvis.sh)
+	OldAlisa  bool     `json:"old_alisa"`  // Alisa Voice (rison) с собственным vqe_tap
 	Problems  []string `json:"problems"`
 	Notes     []string `json:"notes"`
 }
@@ -237,6 +240,8 @@ func inspect(ip string) (*Speaker, error) {
 	if sp.Model == "" {
 		sp.Model = sh("getprop ro.product.model 2>/dev/null")
 	}
+	board := hardware.Detect(sh("cat /proc/device-tree/compatible 2>/dev/null"), sh("cat /proc/device-tree/amlogic-dt-id 2>/dev/null"), sh("getprop ro.product.device 2>/dev/null"), sp.Model)
+	sp.ModelID, sp.Model = board.ID, board.Name
 	switch m := sh("uname -m"); {
 	case strings.Contains(m, "aarch64") || strings.Contains(m, "arm64"):
 		sp.Arch = "arm64"
@@ -246,12 +251,7 @@ func inspect(ip string) (*Speaker, error) {
 		sp.Problems = append(sp.Problems, "Неизвестный процессор: "+m)
 	}
 	// разрядность программ Алисы (vqe_tap.so должен совпадать с maind)
-	switch sh("head -c 5 /system/vendor/quasar/maind 2>/dev/null | tail -c 1 | od -An -tu1") {
-	case "1":
-		sp.Userland = "armhf"
-	case "2":
-		sp.Userland = "arm64"
-	}
+	sp.Userland = elfUserland(sh("od -An -tu1 -N20 /system/vendor/quasar/maind 2>/dev/null"))
 	sp.Installed = sh(remoteDir + "/jarvisd version 2>/dev/null")
 	if kb, err := strconv.Atoi(sh("df -k /data 2>/dev/null | awk 'NR==2{print $4}'")); err == nil {
 		sp.FreeMB = kb / 1024
@@ -272,9 +272,21 @@ func inspect(ip string) (*Speaker, error) {
 		sp.Problems = append(sp.Problems, "Не найдена штатная программа Алисы (maind) — это точно Яндекс Станция?")
 	}
 	if sp.Userland == "" && !sp.Android {
-		sp.Notes = append(sp.Notes, "Не удалось определить разрядность Алисы — микрофон может не подключиться.")
+		sp.Problems = append(sp.Problems, "Не удалось определить ARM ABI штатной Алисы — библиотеку микрофона безопасно выбрать нельзя.")
 	}
-	need := 22
+	if !sp.Android && !supportsLaunch(sh("cat /system/vendor/quasar/launch.json 2>/dev/null")) {
+		sp.Problems = append(sp.Problems, "Не найден совместимый профиль запуска maind --platformd для подключения микрофона.")
+	}
+	if !sp.Android && sh("[ -d /etc/init.d ] && command -v start-stop-daemon >/dev/null && command -v aplay >/dev/null && echo y") != "y" {
+		sp.Problems = append(sp.Problems, "Прошивке нужны init.d, start-stop-daemon и aplay; этот вариант ОС пока не поддерживается.")
+	}
+	if board.ID == "hub" {
+		sp.Problems = append(sp.Problems, "Умный хаб не является голосовой колонкой и не поддерживается.")
+	}
+	if board.ID != "lite" {
+		sp.Notes = append(sp.Notes, "Модель определена автоматически. На этой модели полный голосовой тракт YaJavis ещё не проверен; подсветка и микрофон зависят от прошивки.")
+	}
+	need := 36
 	if sp.Installed != "" {
 		need = 2 // обновление: старый файл заменяется
 	}
@@ -366,6 +378,7 @@ func install(j *job, ip, password, openai, vless, tz string) error {
 	if len(sp.Problems) > 0 {
 		return errors.New(strings.Join(sp.Problems, " "))
 	}
+	j.log("Определена %s; программа %s, микрофон %s.", sp.Model, sp.Arch, sp.Userland)
 	a, err := DialADB(ip+":5555", 5*time.Second)
 	if err != nil {
 		return err
@@ -390,7 +403,7 @@ func install(j *job, ip, password, openai, vless, tz string) error {
 		return err
 	}
 	bin := "jarvisd-" + sp.Arch
-	tap := "vqe_tap-" + map[string]string{"arm64": "arm64", "armhf": "armhf", "": "armhf"}[sp.Userland] + ".so"
+	tap := "vqe_tap-" + sp.Userland + ".so"
 	push := func(name, remote string, mode uint32) error {
 		data := payload(name)
 		last := -1
@@ -402,7 +415,11 @@ func install(j *job, ip, password, openai, vless, tz string) error {
 			}
 		})
 	}
-	if err := push(bin, remoteDir+"/jarvisd.new", 0o755); err != nil {
+	stage := remoteDir + "/jarvisd.new"
+	if upgrade {
+		stage = "/tmp/jarvisd.install"
+	}
+	if err := push(bin, stage, 0o755); err != nil {
 		return err
 	}
 	if err := push(tap, remoteDir+"/vqe_tap.so", 0o644); err != nil {
@@ -428,7 +445,14 @@ func install(j *job, ip, password, openai, vless, tz string) error {
 			}
 		}
 	}
-	if _, err := run("mv -f " + remoteDir + "/jarvisd.new " + remoteDir + "/jarvisd && " + remoteDir + "/jarvisd version"); err != nil {
+	if _, err := run(stage + " version"); err != nil {
+		return fmt.Errorf("новая программа не запускается на этой колонке: %v", err)
+	}
+	replace := "mv -f " + stage + " " + remoteDir + "/jarvisd"
+	if upgrade {
+		replace = "cp " + stage + " " + remoteDir + "/jarvisd && rm -f " + stage
+	}
+	if _, err := run(replace + " && chmod 755 " + remoteDir + "/jarvisd && " + remoteDir + "/jarvisd version"); err != nil {
 		return fmt.Errorf("Джарвис не запускается на этой колонке: %v", err)
 	}
 	// начальные настройки (пароль сразу хэшем — открытым он на колонку не попадает)
@@ -520,4 +544,3 @@ func handleUninstall(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
-

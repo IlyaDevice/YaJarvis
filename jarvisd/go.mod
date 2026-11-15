@@ -1,5 +1,9 @@
 module jarvisd
 
+replace github.com/newfpv/YaJavis/hardware => ../hardware
+
+require github.com/newfpv/YaJavis/hardware v0.0.0
+
 go 1.27.4
 
 require (

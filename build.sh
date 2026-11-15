@@ -2,7 +2,7 @@
 # Public release build. Never reads local settings or .env files.
 set -eu
 cd "$(dirname "$0")"
-VERSION=${VERSION:-0.9.40}
+VERSION=${VERSION:-0.9.41}
 REPO=${REPO:-newfpv/YaJavis}
 GO=${GO:-go}
 ZIG=${ZIG:-zig}

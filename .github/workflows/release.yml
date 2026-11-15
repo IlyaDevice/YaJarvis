@@ -19,6 +19,7 @@ jobs:
       - name: Test
         run: |
           (cd jarvisd && go test ./...)
+          (cd hardware && go test ./...)
           node --check jarvisd/ui/app.js
           node --check installer/ui/setup.js
       - name: Build clean release
@@ -29,7 +30,14 @@ jobs:
           GDRIVE_CLIENT: ${{ secrets.GDRIVE_CLIENT }}
           GDRIVE_SECRET: ${{ secrets.GDRIVE_SECRET }}
         run: sh build.sh
+      - name: Test installer
+        run: cd installer && go test ./...
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" build/release/* --verify-tag --title "YaJavis $GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release already published; keeping its verified assets."
+          else
+            gh release create "$GITHUB_REF_NAME" build/release/* --verify-tag --title "YaJavis $GITHUB_REF_NAME" --generate-notes
+          fi

@@ -335,7 +335,7 @@ function homeData() {
   const up = sys.uptime_s || 0, d = Math.floor(up / 86400), h = Math.floor((up % 86400) / 3600), m = Math.floor((up % 3600) / 60);
   const hd = "dot " + (S.speaker.mic ? "on" : "off");
   if ($("#home-dot").className !== hd) $("#home-dot").className = hd;
-  $("#home-sub").textContent = `Яндекс Станция Лайт · Джарвис ${S.version}${up ? ` · колонка работает ${d ? `${d} д ${h} ч` : h ? `${h} ч ${m} мин` : `${m} мин`}` : ""}`;
+  $("#home-sub").textContent = `${S.speaker.model || "Яндекс Станция"} · Джарвис ${S.version}${up ? ` · колонка работает ${d ? `${d} д ${h} ч` : h ? `${h} ч ${m} мин` : `${m} мин`}` : ""}`;
   const disk = $("#t-disk");
   disk.textContent = sys.disk_total_mb ? `${sys.disk_free_mb} из ${sys.disk_total_mb} МБ` : "—";
   disk.className = "v " + (sys.disk_total_mb && sys.disk_free_mb < 5 ? "warn" : "ok");

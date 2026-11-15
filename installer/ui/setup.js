@@ -52,7 +52,7 @@ $("#ip-go").addEventListener("click", async (e) => {
 function show(sp) {
   speaker = sp;
   $("#sp-title").textContent = sp.model || "Колонка";
-  $("#sp-info").innerHTML = [["IP", sp.ip], ["Процессор", sp.arch || "?"], ["Root", sp.root ? "есть" : "нет"], ["Память", sp.ram_mb ? sp.ram_mb + " МБ" : "?"], ["Свободно места", sp.free_mb ? sp.free_mb + " МБ" : "?"], ["Джарвис", sp.installed || "не установлен"]]
+  $("#sp-info").innerHTML = [["IP", sp.ip], ["Модель", sp.model_id || "?"], ["Процессор", sp.arch || "?"], ["Алиса / микрофон", sp.userland || "?"], ["Root", sp.root ? "есть" : "нет"], ["Память", sp.ram_mb ? sp.ram_mb + " МБ" : "?"], ["Свободно места", sp.free_mb ? sp.free_mb + " МБ" : "?"], ["Джарвис", sp.installed || "не установлен"]]
     .map(([k, v]) => `<span>${k}</span><span>${esc(v)}</span>`).join("");
   $("#sp-problems").innerHTML = (sp.problems || []).map((p) => `<div class="problem">${esc(p)}</div>`).join("") + (sp.notes || []).map((n) => `<div class="note">${esc(n)}</div>`).join("");
   const ok = !sp.problems?.length;

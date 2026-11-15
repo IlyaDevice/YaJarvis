@@ -396,7 +396,7 @@ func (w *Web) state(rw http.ResponseWriter, r *http.Request) {
 		"chatgpt": map[string]any{"signed_in": s.ChatGPT.SignedIn(), "plan": s.ChatGPT.Plan, "email": s.ChatGPT.Email,
 			"login": w.chatLogin.State()},
 		"vless": vless, "youtube": w.youtubeState(), "home_assistant": w.haState(), "xiaomi": w.xiaomiState(), "smartlife": w.smartLifeState(), "rooms": w.knownRooms(), "update_available": w.updater != nil && w.updater.Available(),
-		"speaker": map[string]any{"mic": w.engine.mic.Online(), "leds": w.engine.leds.Available(), "wake_model": wakeModel,
+		"speaker": map[string]any{"model": stationModel().Name, "model_id": stationModel().ID, "mic": w.engine.mic.Online(), "leds": w.engine.leds.Available(), "wake_model": wakeModel,
 			"talking": w.engine.Talking(), "uptime_s": int(time.Since(w.started).Seconds()), "volume": speakerVolume()},
 		"settings": map[string]any{"wake_enabled": s.WakeEnabled, "wake_sensitivity": s.WakeSensitivity, "wake_check": s.WakeCheck,
 			"follow_up_s": s.FollowUpS, "city": s.City, "timezone": s.Timezone, "volume": s.Volume, "lan_only": s.LANOnly, "home_via": s.HomeVia, "home_use": s.HomeUseState(), "speaker_room": s.SpeakerRoom,
