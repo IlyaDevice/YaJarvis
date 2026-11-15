@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestMixTracks(t *testing.T) {
 }
 
 func TestQueueOrder(t *testing.T) {
-	m := &Music{Radio: func() bool { return false }}
+	m := &Music{Radio: func() bool { return false }, playback: func(context.Context, int, string, *ytStream, float64) error { return nil }}
 	m.queue = []Track{{ID: "q1"}, {ID: "q2"}}
 	m.results = []Track{{ID: "r1"}}
 	m.mix = []Track{{ID: "m1"}}

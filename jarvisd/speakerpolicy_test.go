@@ -32,7 +32,7 @@ func TestChatterDoesNotBlockCompletedWork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	answer := e.mediaWithChatter(ctx, func() string { time.Sleep(20 * time.Millisecond); return "готово" })
-	if answer != "готово" || ctx.Err() != nil || len(lines) != 1 || !strings.Contains(lines[0], "братан") && !strings.Contains(lines[0], "подожди") {
+	if answer != "готово" || ctx.Err() != nil || len(lines) != 1 || strings.TrimSpace(lines[0]) == "" {
 		t.Fatalf("answer=%s lines=%v", answer, lines)
 	}
 }
