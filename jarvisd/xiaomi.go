@@ -215,7 +215,12 @@ func (x *Xiaomi) waitLogin(ctx context.Context, cancel context.CancelFunc, c *ht
 		return
 	}
 	auth := XiaomiAuth{UserID: string(res.UserID), CUserID: res.CUserID, SSecurity: res.SSecurity, PassToken: res.PassToken, ServiceToken: token}
-	_ = x.store.Update(func(s *Settings) error { s.Xiaomi = auth; return nil })
+	_ = x.store.Update(func(s *Settings) error {
+		was := s.HomeConnected("xiaomi")
+		s.Xiaomi = auth
+		s.homeJustConnected("xiaomi", was)
+		return nil
+	})
 	log.Printf("Xiaomi Home: вход выполнен, ищу устройства")
 	x.mu.Lock()
 	x.login = xiaomiLogin{}

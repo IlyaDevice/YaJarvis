@@ -355,7 +355,51 @@ func (p *Proxy) LiveClient() *http.Client {
 	}}
 }
 
+// vlessNoFlow — ссылки, у которых сервер не принимает flow из ссылки (частая ошибка панелей x-ui:
+// в подписке flow=xtls-rprx-vision, а у самого клиента Flow пустой — сервер молча рвёт связь, EOF).
+var vlessNoFlow sync.Map
+
 func (p *Proxy) Apply(link string) error {
+	_, noFlow := vlessNoFlow.Load(strings.TrimSpace(link))
+	err := p.apply(link, noFlow)
+	if err == nil && !noFlow {
+		if v, _ := p.Status(); v != nil && v.Flow != "" {
+			go p.checkFlow(strings.TrimSpace(link), v)
+		}
+	}
+	return err
+}
+
+// checkFlow — если через туннель ничего не открывается, а без flow открывается, работаем без flow.
+func (p *Proxy) checkFlow(link string, v *VlessLink) {
+	probe := func(c *http.Client) error {
+		r, err := c.Get("https://www.google.com/generate_204")
+		if err == nil {
+			r.Body.Close()
+		}
+		return err
+	}
+	if err := probe(p.Client(12 * time.Second)); err == nil || !strings.Contains(err.Error(), "EOF") {
+		return
+	}
+	alt := &Proxy{}
+	if alt.apply(link, true) != nil {
+		return
+	}
+	defer alt.Apply("")
+	if probe(alt.Client(12*time.Second)) != nil {
+		return // без flow тоже не работает — дело не во flow
+	}
+	if cur, _ := p.Status(); cur != v { // ссылку за это время поменяли
+		return
+	}
+	vlessNoFlow.Store(link, true)
+	if p.apply(link, true) == nil {
+		log.Printf("VPN: сервер не принимает flow=%s из ссылки (у клиента в x-ui Flow пустой) — работаю без flow", v.Flow)
+	}
+}
+
+func (p *Proxy) apply(link string, noFlow bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.inst != nil {
@@ -376,6 +420,9 @@ func (p *Proxy) Apply(link string) error {
 	if err != nil {
 		p.err = err.Error()
 		return err
+	}
+	if noFlow {
+		v.Flow = ""
 	}
 	cfg, err := v.coreConfig()
 	if err != nil {

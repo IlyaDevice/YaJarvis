@@ -43,7 +43,12 @@ func homeAssistantCLI(configure bool) error {
 				cfg.Rooms = rooms
 			}
 		}
-		if err := store.Update(func(s *Settings) error { s.HomeAssistant = cfg; return nil }); err != nil {
+		if err := store.Update(func(s *Settings) error {
+			was := s.HomeConnected("homeassistant")
+			s.HomeAssistant = cfg
+			s.homeJustConnected("homeassistant", was)
+			return nil
+		}); err != nil {
 			return err
 		}
 	}

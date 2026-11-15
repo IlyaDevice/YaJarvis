@@ -840,7 +840,9 @@ func (w *Web) putKeys(rw http.ResponseWriter, r *http.Request) {
 				}
 				s.pickEleven()
 			case "yandex":
+				was := s.HomeConnected("yandex")
 				s.YandexToken = v
+				s.homeJustConnected("yandex", was)
 			}
 		}
 		return nil

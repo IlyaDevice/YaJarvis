@@ -128,6 +128,7 @@ type Settings struct {
 	UpdateRepo  string `json:"update_repo"`  // GitHub owner/name, откуда брать обновления
 	UpdateCheck bool   `json:"update_check"` // проверять обновления раз в 6 часов
 	UpdateAuto  bool   `json:"update_auto"`  // ставить найденное обновление само (ночью, когда никто не говорит)
+	NoStats     bool   `json:"no_stats"`     // не отмечаться в счётчике установок на GitHub
 	AutoOnce    int    `json:"auto_once"`    // 1 — автообновление уже включено по умолчанию (дальше решает человек)
 }
 
@@ -513,8 +514,33 @@ func (s *Settings) PromptText(id string) string {
 // HomeChannels — через что можно управлять домом.
 var HomeChannels = []string{"alice", "yandexmusic", "yandex", "smartlife", "xiaomi", "homeassistant"}
 
+// HomeConnected — канал подключён (ключ или вход есть). Без подключения галочка недоступна и выключена.
+func (s Settings) HomeConnected(ch string) bool {
+	switch ch {
+	case "yandex":
+		return s.YandexToken != ""
+	case "smartlife":
+		return s.Tuya.SignedIn()
+	case "xiaomi":
+		return s.Xiaomi.SignedIn()
+	case "homeassistant":
+		return s.HomeAssistant.URL != "" && s.HomeAssistant.Token != ""
+	}
+	return true // Алиса и Яндекс Музыка — всегда есть
+}
+
+// homeJustConnected — канал только что подключили: галочка включается сама (прежнее «выключено» забываем).
+func (s *Settings) homeJustConnected(ch string, was bool) {
+	if !was && s.HomeConnected(ch) {
+		delete(s.HomeUse, ch)
+	}
+}
+
 // UseHome — можно ли управлять домом через этот канал.
 func (s Settings) UseHome(ch string) bool {
+	if !s.HomeConnected(ch) {
+		return false
+	}
 	if v, ok := s.HomeUse[ch]; ok {
 		return v
 	}

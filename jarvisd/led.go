@@ -33,6 +33,44 @@ type ledChan struct {
 	max   int
 	group int // номер светодиода на кольце (у одного светодиода три цвета)
 	last  int // что записано сейчас — одинаковое не пишем повторно
+	trig  string // штатный триггер ядра (Лайт 2: led_ring_fb), пока кольцом управляет Джарвис — «none»
+}
+
+// currentTrigger — активный триггер светодиода: в файле trigger он в [скобках].
+func currentTrigger(raw string) string {
+	for _, f := range strings.Fields(raw) {
+		if strings.HasPrefix(f, "[") && strings.HasSuffix(f, "]") {
+			return strings.Trim(f, "[]")
+		}
+	}
+	return ""
+}
+
+// takeTriggers / restoreTriggers — у Лайт 2 кольцо ведёт триггер led_ring_fb и сразу перетирает яркость,
+// которую пишет Джарвис. На время своей анимации ставим «none», потом возвращаем как было.
+func (l *Leds) takeTriggers() {
+	for i := range l.chans {
+		c := &l.chans[i]
+		tp := filepath.Join(filepath.Dir(c.path), "trigger")
+		b, err := os.ReadFile(tp)
+		if err != nil {
+			continue
+		}
+		if t := currentTrigger(string(b)); t != "" && t != "none" {
+			c.trig = t
+			_ = os.WriteFile(tp, []byte("none"), 0o644)
+		}
+	}
+}
+
+func (l *Leds) restoreTriggers() {
+	for i := range l.chans {
+		c := &l.chans[i]
+		if c.trig != "" {
+			_ = os.WriteFile(filepath.Join(filepath.Dir(c.path), "trigger"), []byte(c.trig), 0o644)
+			c.trig = ""
+		}
+	}
 }
 
 type Leds struct {
@@ -249,6 +287,7 @@ func (l *Leds) set(mode LedMode, force bool) {
 		for _, c := range l.chans {
 			l.saved[c.path] = readInt(c.path)
 		}
+		l.takeTriggers()
 	}
 	l.mode, l.since = mode, time.Now()
 	if mode == LedOff { // возвращаем то, что горело у Алисы
@@ -257,6 +296,7 @@ func (l *Leds) set(mode LedMode, force bool) {
 			_ = os.WriteFile(c.path, []byte(strconv.Itoa(l.saved[c.path])), 0o644)
 			c.last = -1
 		}
+		l.restoreTriggers() // штатная анимация Алисы снова ведёт кольцо
 	} else {
 		l.frame()
 	}

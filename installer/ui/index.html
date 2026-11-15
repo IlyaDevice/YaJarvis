@@ -28,8 +28,16 @@
       <a class="help-link" href="https://hackalice.me/" target="_blank" rel="noopener noreferrer">Как подготовить колонку <span aria-hidden="true">↗</span></a>
     </section>
     <section id="s2" class="card hidden">
-      <span class="eyebrow">Проверка устройства</span><h1 id="sp-title">Ваша Станция</h1><p class="lead">Проверим прошивку и подберём файлы под вашу модель.</p>
-      <details class="device-details"><summary>Сведения об устройстве</summary><div class="kv" id="sp-info"></div></details><div id="sp-problems"></div>
+      <span class="eyebrow" id="sp-ip">Проверка устройства</span><h1 id="sp-title">Ваша Станция</h1>
+      <div class="tiles" id="sp-tiles"></div>
+      <ul class="checks" id="sp-checks" aria-label="Проверка колонки"></ul>
+      <div id="sp-problems"></div>
+      <section class="addons hidden" id="sp-addons" aria-labelledby="addons-title">
+        <div class="addons-h"><b id="addons-title">Что ещё стоит на колонке</b><small id="addons-sum"></small></div>
+        <div id="addons-list"></div>
+        <label class="sw clean"><input type="checkbox" id="clean"><span class="tr"></span><span class="sw-t"><b>Чистая установка</b><small id="clean-hint"></small></span></label>
+      </section>
+      <details class="device-details"><summary>Технические сведения</summary><div class="kv" id="sp-info"></div></details>
       <div class="actions"><button class="btn ghost" data-back="1">Назад</button><button class="btn accent" id="to3">Продолжить</button></div><button class="btn danger hidden" id="uninstall">Удалить Джарвиса</button>
     </section>
     <section id="s3" class="card hidden">
@@ -42,6 +50,7 @@
     <section id="s4" class="card install-card hidden" aria-live="polite">
       <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br> Джарвиса.</h1>
       <p class="lead" id="job-description">Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями справа.</p>
+      <ol class="stages" id="stages" aria-label="Этапы установки"></ol>
       <progress id="install-progress" aria-label="Ход установки" max="100"></progress><p id="job-status" class="job-status" role="status">Подключаемся к колонке…</p>
       <details class="job-details" id="job-details"><summary>Технический журнал</summary><pre class="log" id="log"></pre></details>
       <div class="finish-actions"><a class="btn accent wide hidden" id="open" target="_blank" rel="noopener">Открыть панель Джарвиса <span aria-hidden="true">↗</span></a><button class="btn ghost wide hidden" id="again">Другая колонка</button></div>

@@ -13,6 +13,7 @@
   <a href="https://github.com/newfpv/YaJavis/releases/latest"><img src="https://img.shields.io/github/v/release/newfpv/YaJavis?style=flat-square&amp;label=release&amp;color=f77b2c&amp;labelColor=202027" alt="Последний релиз"></a>
   <a href="https://github.com/newfpv/YaJavis/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/newfpv/YaJavis/release.yml?style=flat-square&amp;label=build&amp;labelColor=202027" alt="Сборка релиза"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f77b2c?style=flat-square&amp;labelColor=202027" alt="Лицензия MIT"></a>
+  <a href="#сколько-колонок-с-джарвисом"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnewfpv%2FYaJavis%2Fstats-data%2Fbadge.json&amp;style=flat-square" alt="Колонок с Джарвисом"></a>
 </p>
 
 <p align="center">
@@ -23,6 +24,12 @@
 </p>
 
 ![Главная панель YaJavis: диалог, состояние колонки и музыкальный плеер](docs/screenshots/dashboard.png)
+
+## Сколько колонок с Джарвисом
+
+<p align="center"><img src="https://raw.githubusercontent.com/newfpv/YaJavis/stats-data/stats.svg" alt="Счётчик установок YaJavis: колонки по моделям и версиям" width="100%"></p>
+
+Счёт ведёт сам GitHub: при первом запуске и на каждой новой версии колонка один раз скачивает пустой файл из служебного релиза [`stats`](https://github.com/newfpv/YaJavis/releases/tag/stats). В имени файла только модель и версия — ни идентификаторов, ни данных о владельце. Цифры обновляются раз в 6 часов. Выключается в панели: «Безопасность» → «Счётчик установок».
 
 ## Установка
 

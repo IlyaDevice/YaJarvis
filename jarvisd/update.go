@@ -294,7 +294,7 @@ func (w *Web) getUpdate(rw http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(rw, 200, map[string]any{"version": version, "repo": u.repo(), "check": s.UpdateCheck, "auto": s.UpdateAuto,
 		"latest": u.latest, "notes": u.notes, "available": u.latest != "" && newer(u.latest, version),
-		"checked": checked, "error": u.err, "busy": u.busy, "asset": assetName()})
+		"checked": checked, "error": u.err, "busy": u.busy, "asset": assetName(), "stats": !s.NoStats})
 }
 
 func (w *Web) putUpdateSettings(rw http.ResponseWriter, r *http.Request) {
@@ -302,6 +302,7 @@ func (w *Web) putUpdateSettings(rw http.ResponseWriter, r *http.Request) {
 		Repo  *string `json:"repo"`
 		Check *bool   `json:"check"`
 		Auto  *bool   `json:"auto"`
+		Stats *bool   `json:"stats"`
 	}
 	if readJSON(r, &req) != nil {
 		bad(rw, "пустой запрос")
@@ -321,6 +322,9 @@ func (w *Web) putUpdateSettings(rw http.ResponseWriter, r *http.Request) {
 		}
 		if req.Auto != nil {
 			s.UpdateAuto = *req.Auto
+		}
+		if req.Stats != nil {
+			s.NoStats = !*req.Stats
 		}
 		return nil
 	})

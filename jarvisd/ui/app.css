@@ -1404,3 +1404,7 @@ h1 { font-size: 34px; line-height: 40px; }
 .github-close .ic { width: 14px; height: 14px; }
 .github-close:hover { opacity: 1; background: var(--raise); }
 .github-close:focus-visible, .github-link:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
+
+/* умный дом: канал не подключён — галочка недоступна */
+.sw.hu.off { opacity: .6; }
+.sw.hu.off input, .sw.hu.off .tr { cursor: not-allowed; }

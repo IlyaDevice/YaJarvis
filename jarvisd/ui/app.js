@@ -863,8 +863,8 @@ const HOME_USE = [
 ];
 function homeUseRows() {
   const use = S.settings.home_use || {};
-  return HOME_USE.map(([id, name, about, ready]) => `<label class="sw hu"><input type="checkbox" data-home="${id}"${use[id] !== false ? " checked" : ""}><span class="tr"></span>
-    <span class="hu-t"><b>${name}</b><small>${about}${ready() ? "" : ` · <a href="#connections">не подключено</a>`}</small></span></label>`).join("");
+  return HOME_USE.map(([id, name, about, ready]) => { const on = ready(); return `<label class="sw hu${on ? "" : " off"}"><input type="checkbox" data-home="${id}"${on && use[id] !== false ? " checked" : ""}${on ? "" : " disabled"}><span class="tr"></span>
+    <span class="hu-t"><b>${name}</b><small>${about}${on ? "" : ` · <a href="#connections">сначала подключите</a> — тогда галочка включится сама`}</small></span></label>`; }).join("");
 }
 function viewSpeaker() {
   const s = S.settings, via = s.home_via === "jarvis" ? "jarvis" : "alice";
@@ -1974,6 +1974,8 @@ async function drawUpdate() {
     </div>
     <div class="seg" id="u-mode"><button type="button" data-auto="0" class="${auto ? "" : "on"}">Вручную</button><button type="button" data-auto="1" class="${auto ? "on" : ""}">Автообновление</button></div>
     <small class="muted" id="u-hint"></small>
+    <label class="sw hu u-stats"><input type="checkbox" id="u-stats"${U.stats ? " checked" : ""}><span class="tr"></span>
+      <span class="hu-t"><b>Счётчик установок</b><small>Раз на версию колонка скачивает пустой файл с GitHub — так в README видно, сколько колонок с Джарвисом. Передаются только модель и версия.</small></span></label>
     ${U.error ? `<p class="err">${esc(U.error)}</p>` : ""}
     ${U.available && U.notes ? `<details class="mini"><summary>Что нового в ${esc(U.latest)}</summary><pre class="unotes">${esc(U.notes)}</pre></details>` : ""}`;
   const hint = (on) => { $("#u-hint").textContent = !U.repo ? "Укажите репозиторий обновлений или выберите файл с компьютера." : on ? `Новая версия ставится сама ночью, с 3 до 6, когда колонка молчит${U.checked ? ` · проверено ${U.checked}` : ""}` : "Только когда нажмёте «Проверить» или выберете файл"; };
@@ -1984,6 +1986,7 @@ async function drawUpdate() {
     hint(on);
     api("PUT", "/api/update", { check: on, auto: on }).then(() => toast(on ? "Автообновление включено" : "Обновления — вручную")).catch((err) => toast(err.message, true));
   }));
+  $("#u-stats").addEventListener("change", (e) => api("PUT", "/api/update", { stats: e.target.checked }).then(() => toast(e.target.checked ? "Счётчик включён" : "Счётчик выключен")).catch((err) => toast(err.message, true)));
   $("#u-checknow")?.addEventListener("click", (e) => act(e.target, async () => { await api("POST", "/api/update/check"); drawUpdate(); }));
   $("#u-install")?.addEventListener("click", (e) => act(e.target, async () => { e.target.textContent = "Скачиваю…"; await api("POST", "/api/update/install"); await waitRestart("Обновление скачано — Джарвис перезапускается"); }));
   $("#u-file").addEventListener("change", (e) => { const file = e.target.files[0]; if (!file) return; act(null, async () => { toast("Загружаю на колонку…"); await upload("PUT", "/api/update/upload", file); await waitRestart("Файл принят — Джарвис перезапускается"); }); });

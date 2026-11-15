@@ -91,7 +91,11 @@ func GeminiKeysState(keys []string) []map[string]any {
 				spent++
 			}
 		}
-		out = append(out, map[string]any{"tail": mask(k), "spent": spent, "models": len(GeminiModels)})
+		tail := "…"
+		if len(k) > 8 {
+			tail += k[len(k)-4:]
+		}
+		out = append(out, map[string]any{"tail": tail, "spent": spent, "models": len(GeminiModels)})
 	}
 	return out
 }
@@ -274,7 +278,12 @@ func geminiTools(t *Tools, webSearch bool) []any {
 		d := haDefinition()
 		tools = append(tools, map[string]any{"functionDeclarations": []any{map[string]any{"name": d["name"], "description": d["description"], "parameters": geminiSchema(d["parameters"]), "behavior": "BLOCKING"}}})
 	}
-	if len(t.Definitions()) > 0 {
+	if t.use("alice") {
+		d := aliceDefinition().(map[string]any)
+		tools = append(tools, map[string]any{"functionDeclarations": []any{map[string]any{"name": d["name"], "description": d["description"],
+			"parameters": geminiSchema(d["parameters"]), "behavior": "BLOCKING"}}})
+	}
+	if t.token() != "" && t.use("yandex") && t.hasCatalog() {
 		str := map[string]any{"type": "STRING"}
 		list := func(desc string) map[string]any {
 			return map[string]any{"type": "ARRAY", "items": str, "description": desc}
@@ -314,6 +323,16 @@ func geminiTools(t *Tools, webSearch bool) []any {
 			"parameters": map[string]any{"type": "OBJECT", "properties": map[string]any{
 				"command": map[string]any{"type": "STRING", "description": "команда по-русски: «пауза», «продолжи», «перемотай вперёд на 2 минуты», «назад на 30 секунд», «сначала», «следующее», «выключи музыку», «что играет»"}}, "required": []any{"command"}},
 		}}})
+	}
+	// остальные инструменты (Xiaomi Home, Smart Life…) — как у других движков
+	special := map[string]bool{"smart_home": true, "play_music": true, "music_control": true, "alice_command": true, "home_assistant": true}
+	for _, d := range t.Definitions() {
+		m, ok := d.(map[string]any)
+		if !ok || special[str(m["name"])] {
+			continue
+		}
+		tools = append(tools, map[string]any{"functionDeclarations": []any{map[string]any{"name": m["name"], "description": m["description"],
+			"parameters": geminiSchema(m["parameters"]), "behavior": "BLOCKING"}}})
 	}
 	if webSearch {
 		tools = append(tools, map[string]any{"googleSearch": map[string]any{}})

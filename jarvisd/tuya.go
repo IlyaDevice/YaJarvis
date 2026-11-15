@@ -167,7 +167,12 @@ func (t *SmartLife) waitLogin(ctx context.Context, cancel context.CancelFunc, us
 		r := res.Result
 		auth := TuyaAuth{UserCode: userCode, Endpoint: r.Endpoint, TerminalID: r.TerminalID, UID: r.UID,
 			AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, Expire: res.T + r.ExpireTime*1000}
-		_ = t.store.Update(func(s *Settings) error { s.Tuya = auth; return nil })
+		_ = t.store.Update(func(s *Settings) error {
+			was := s.HomeConnected("smartlife")
+			s.Tuya = auth
+			s.homeJustConnected("smartlife", was)
+			return nil
+		})
 		t.mu.Lock()
 		t.login = tuyaLogin{}
 		t.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -136,6 +137,13 @@ func (t *Tools) iot(ctx context.Context, method, path string, body any, out any)
 }
 
 // Catalog — устройства и сценарии (кэш 30 с). Обновляется заранее, на слово «Джарвис».
+// hasCatalog — список устройств Яндекса уже загружался (Context загружает его до того, как модели отдают инструменты).
+func (t *Tools) hasCatalog() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.catalog != nil && len(t.catalog.Devices)+len(t.catalog.Scenarios) > 0
+}
+
 func (t *Tools) Catalog(ctx context.Context) (*iotCatalog, error) {
 	if t.token() == "" {
 		return nil, fmt.Errorf("умный дом не подключён")
@@ -274,6 +282,13 @@ func (t *Tools) Context() string {
 	defer cancel()
 	c, err := t.Catalog(ctx)
 	if err != nil || c == nil {
+		if err != nil && time.Since(catalogErrAt) > 10*time.Minute {
+			catalogErrAt = time.Now()
+			log.Printf("умный дом: список устройств Яндекса не загрузился: %v", err)
+		}
+		if t.use("alice") {
+			b.WriteString("\n\nСписок устройств Яндекса сейчас недоступен: команды умного дома (свет, шторы, розетки, сценарии) передавай Алисе инструментом alice_command.")
+		}
 		if room != "" {
 			b.WriteString(roomLine(room))
 		}
@@ -359,8 +374,11 @@ func (t *Tools) Definitions() []any {
 				"command": map[string]any{"type": "string", "description": "команда по-русски, например «пауза», «продолжи», «перемотай вперёд на 2 минуты», «назад на 30 секунд», «сначала», «следующее», «включи похожее», «выключи музыку», «что играет»"}},
 				"required": []any{"command"}}})
 	}
-	if t.token() == "" || !t.use("yandex") {
-		return defs
+	if t.use("alice") {
+		defs = append(defs, aliceDefinition())
+	}
+	if t.token() == "" || !t.use("yandex") || !t.hasCatalog() {
+		return defs // список устройств Яндекса не загрузился — без него модель зовёт инструмент вслепую; пусть передаёт Алисе
 	}
 	return append(defs, t.homeDefinition())
 }
@@ -515,6 +533,18 @@ func (t *Tools) Call(ctx context.Context, name, args string) string {
 		}
 		return t.MusicCtl(ctx, a.Command)
 	}
+	if name == "alice_command" && t.use("alice") {
+		var a struct{ Command string }
+		if json.Unmarshal([]byte(args), &a) != nil || strings.TrimSpace(a.Command) == "" {
+			return "Не понял команду для Алисы."
+		}
+		cmd := strings.TrimSpace(a.Command)
+		if err := AliceText(cmd, true); err != nil { // беззвучно: результат озвучит сам Джарвис
+			return "Алиса недоступна: " + err.Error()
+		}
+		log.Printf("инструмент: «%s» → Алисе", cmd)
+		return "Передал Алисе: «" + cmd + "». Она выполняет — скажи коротко, что сделано."
+	}
 	if name != "smart_home" {
 		return "Нет такого инструмента."
 	}
@@ -523,6 +553,17 @@ func (t *Tools) Call(ctx context.Context, name, args string) string {
 		return "Не понял команду."
 	}
 	return t.Apply(ctx, &a)
+}
+
+var catalogErrAt time.Time // когда последний раз писали в журнал, что список устройств не загрузился
+
+func aliceDefinition() any {
+	return map[string]any{"type": "function", "name": "alice_command",
+		"description": "Передать команду штатной Алисе на этой колонке — она выполнит всё, что подключено к Яндексу: свет, шторы, розетки, " +
+			"сценарии, таймеры, будильники, напоминания. Пиши команду коротко, как её сказали бы Алисе: «закрой шторы», «поставь таймер на 10 минут».",
+		"parameters": map[string]any{"type": "object", "properties": map[string]any{
+			"command": map[string]any{"type": "string", "description": "команда для Алисы, без её имени"}},
+			"required": []any{"command"}}}
 }
 
 func (t *Tools) Apply(ctx context.Context, a *homeArgs) string {
@@ -534,6 +575,9 @@ func (t *Tools) Apply(ctx context.Context, a *homeArgs) string {
 		return "Готово."
 	}
 	if len(a.DeviceIDs) == 0 {
+		if t.use("alice") {
+			return "Не указано, какие устройства. Если нужного устройства нет в списке — передай команду Алисе инструментом alice_command."
+		}
 		return "Не указано, какие устройства."
 	}
 	c, err := t.Catalog(ctx)

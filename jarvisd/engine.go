@@ -1086,17 +1086,24 @@ func (e *Engine) playPauseButton() {
 	case m.Playing():
 		buttonAt.Store(time.Now().UnixNano())
 		m.Pause()
+		ytButtonPaused.Store(true)
 		log.Printf("кнопка: пауза YouTube")
-	case !m.PausedSince().IsZero() && !a.Playing() && m.PausedSince().After(a.PausedSince()):
+	case !m.PausedSince().IsZero() && !a.Playing() && (ytButtonPaused.Load() || m.PausedSince().After(a.PausedSince())):
+		// YouTube остановили кнопкой — следующее нажатие продолжает его, даже если потом мы гасили
+		// «продолжить» Алисы (её пауза тогда новее нашей, но это не выбор человека)
 		// на паузе оба — продолжаем то, что остановили последним
 		buttonAt.Store(time.Now().UnixNano())
 		if err := m.Resume(); err != nil {
 			log.Printf("кнопка: продолжить YouTube: %v", err)
 			return
 		}
+		ytButtonPaused.Store(false)
 		log.Printf("кнопка: продолжаю YouTube")
 	}
 }
+
+// ytButtonPaused — YouTube стоит на паузе после кнопки колонки (сбрасывается, когда Алису попросили о её музыке).
+var ytButtonPaused atomic.Bool
 
 // aliceStarted — у Алисы зазвучала музыка. После нажатия кнопки это её «продолжить» поверх YouTube — гасим;
 // иначе её попросили включить — значит, YouTube на паузу.
@@ -1107,6 +1114,7 @@ func (e *Engine) aliceStarted() {
 		}
 		return
 	}
+	ytButtonPaused.Store(false) // человек сам выбрал музыку Алисы
 	if e.music.Playing() {
 		e.music.Pause()
 		log.Printf("музыка: Алиса включила свою — YouTube на паузу")

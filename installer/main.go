@@ -47,6 +47,10 @@ type Speaker struct {
 	RAMMB     int      `json:"ram_mb"`
 	OldJarvis bool     `json:"old_jarvis"` // серверный Джарвис (jarvis.sh)
 	OldAlisa  bool     `json:"old_alisa"`  // Alisa Voice (rison) с собственным vqe_tap
+	NeedMB    int      `json:"need_mb"`    // сколько места нужно под Джарвиса
+	JunkKB    int      `json:"junk_kb"`    // кэш и старые копии Джарвиса — можно стереть
+	Addons    []Addon  `json:"addons"`     // моды сообщества, найденные на колонке
+	AutoFree  []string `json:"auto_free"`  // что удалим сами, если места не хватит (id модов)
 	Problems  []string `json:"problems"`
 	Notes     []string `json:"notes"`
 }
@@ -286,23 +290,62 @@ func inspect(ip string) (*Speaker, error) {
 	if board.ID != "lite" {
 		sp.Notes = append(sp.Notes, "Модель определена автоматически. На этой модели полный голосовой тракт YaJavis ещё не проверен; подсветка и микрофон зависят от прошивки.")
 	}
-	need := 36
-	if sp.Installed != "" {
-		need = 2 // обновление: старый файл заменяется
-	}
-	if sp.FreeMB > 0 && sp.FreeMB < need {
-		sp.Problems = append(sp.Problems, fmt.Sprintf("Мало места: свободно %d МБ, нужно около %d МБ.", sp.FreeMB, need))
+	sp.Addons = probeAddons(sh)
+	sp.JunkKB = probeJunkKB(sh)
+	sp.NeedMB = needMB(sp, sh)
+	if sp.FreeMB > 0 && sp.FreeMB < sp.NeedMB {
+		total := sp.FreeMB*1024 + sp.JunkKB
+		for _, a := range sp.Addons {
+			total += a.KB
+		}
+		if total/1024 < sp.NeedMB {
+			sp.Problems = append(sp.Problems, fmt.Sprintf("Мало места: свободно %d МБ, нужно около %d МБ, и даже чистая установка столько не освободит. Удалите лишнее с колонки вручную.", sp.FreeMB, sp.NeedMB))
+		} else {
+			_, rm := planCleanup(sp, false)
+			for _, a := range rm {
+				sp.AutoFree = append(sp.AutoFree, a.ID)
+			}
+		}
 	}
 	if sp.RAMMB > 0 && sp.RAMMB < 200 {
 		sp.Notes = append(sp.Notes, fmt.Sprintf("Мало памяти (%d МБ) — Джарвис будет работать, но без запаса.", sp.RAMMB))
 	}
-	if sp.OldJarvis {
-		sp.Notes = append(sp.Notes, "Найден серверный Джарвис (старая версия через свой сервер). При установке он будет выключен, файлы останутся для отката.")
-	}
-	if sp.OldAlisa {
-		sp.Notes = append(sp.Notes, "Найден Alisa Voice (rison). Оба используют микрофон — при установке его автозапуск будет выключен.")
-	}
 	return sp, nil
+}
+
+// payloadFiles — что ляжет в /data/opt/jarvisd для этой колонки.
+func payloadFiles(sp *Speaker) []string {
+	names := []string{"jarvisd-" + sp.Arch, "vqe_tap-" + sp.Userland + ".so", "jarvisd.sh", "wake.bin", "oww.bin", "wake_oww.bin"}
+	if sp.Userland != "arm64" {
+		names = append(names, "spotcmd")
+	}
+	return names
+}
+
+// needMB — сколько места нужно на /data: файлы Джарвиса плюс запас на настройки и кэш голосов.
+// При обновлении старые файлы заменяются (новая программа сначала ложится в /tmp), считаем только прирост.
+func needMB(sp *Speaker, sh func(string) string) int {
+	kb := 0
+	for _, n := range payloadFiles(sp) {
+		if b, err := files.ReadFile("payload/" + n); err == nil {
+			kb += len(b) / 1024
+		}
+	}
+	if sp.Installed == "" {
+		return kb/1024 + 6
+	}
+	old := 0
+	for _, line := range strings.Split(sh("cd "+remoteDir+" && du -sk jarvisd vqe_tap.so jarvisd.sh wake.bin oww.bin wake_oww.bin spotcmd 2>/dev/null"), "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			n, _ := strconv.Atoi(f[0])
+			old += n
+		}
+	}
+	grow := kb - old
+	if grow < 0 {
+		grow = 0
+	}
+	return grow/1024 + 2
 }
 
 // ---------------------------------------------------------------- установка
@@ -352,6 +395,7 @@ func payload(name string) []byte {
 func handleInstall(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP, Password, OpenAI, Vless, Timezone string
+		Clean                                 bool
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "пустой запрос"})
@@ -361,7 +405,7 @@ func handleInstall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "Пароль — минимум 6 символов"})
 		return
 	}
-	err := startJob(func(j *job) error { return install(j, req.IP, req.Password, req.OpenAI, req.Vless, req.Timezone) })
+	err := startJob(func(j *job) error { return install(j, req.IP, req.Password, req.OpenAI, req.Vless, req.Timezone, req.Clean) })
 	if err != nil {
 		writeJSON(w, 409, map[string]any{"error": err.Error()})
 		return
@@ -369,7 +413,7 @@ func handleInstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-func install(j *job, ip, password, openai, vless, tz string) error {
+func install(j *job, ip, password, openai, vless, tz string, clean bool) error {
 	j.log("Подключаюсь к колонке %s…", ip)
 	sp, err := inspect(ip)
 	if err != nil {
@@ -398,6 +442,33 @@ func install(j *job, ip, password, openai, vless, tz string) error {
 	if upgrade {
 		j.log("Найден Джарвис %s — обновляю, настройки сохраняются.", sp.Installed)
 		_, _ = run(remoteDir + "/jarvisd.sh stop 2>/dev/null; true")
+	}
+	// место: при чистой установке убираем все найденные моды, иначе — только сколько нужно
+	junk, remove := planCleanup(sp, clean)
+	if junk {
+		j.log("Стираю кэш голосов и старые копии Джарвиса (%d МБ)…", (sp.JunkKB+512)/1024)
+		_, _ = run("rm -rf " + junkPaths + "; true")
+	}
+	for _, ad := range remove {
+		j.log("Удаляю %s — %s (%d МБ)…", ad.Name, ad.About, (ad.KB+512)/1024)
+		if _, _, err := a.Shell(removeScript(ad), 90*time.Second); err != nil {
+			return fmt.Errorf("не удалось удалить %s: %v", ad.Name, err)
+		}
+		if ad.ID == "jarvis-server" {
+			sp.OldJarvis = false
+		}
+		if ad.ID == "alisa-voice" {
+			sp.OldAlisa = false
+		}
+	}
+	if len(remove) > 0 || junk {
+		if kb, err := strconv.Atoi(strings.TrimSpace(func() string { o, _, _ := a.Shell("df -k /data | awk 'NR==2{print $4}'", 10*time.Second); return o }())); err == nil {
+			sp.FreeMB = kb / 1024
+			j.log("Свободно на колонке: %d МБ.", sp.FreeMB)
+		}
+	}
+	if sp.FreeMB > 0 && sp.FreeMB < sp.NeedMB {
+		return fmt.Errorf("на колонке свободно %d МБ, а нужно около %d МБ — включите «Чистую установку» или освободите место", sp.FreeMB, sp.NeedMB)
 	}
 	if _, err := run("mkdir -p " + remoteDir); err != nil {
 		return err

@@ -4,6 +4,7 @@ on:
     tags: ['v[0-9]*']
 permissions:
   contents: write
+  actions: write
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -43,3 +44,9 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" build/release/* --verify-tag --title "YaJavis $GITHUB_REF_NAME" --notes-file "docs/releases/${GITHUB_REF_NAME#v}.md"
           fi
+      - name: Install counter files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sh scripts/counter-assets.sh "${GITHUB_REF_NAME#v}"
+          gh workflow run stats.yml --ref main || true

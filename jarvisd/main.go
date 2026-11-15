@@ -643,6 +643,7 @@ func main() {
 	}
 	_ = os.Remove(updateNext + ".part")
 	go updater.Run()
+	go RunCounter(store, func() *http.Client { return updaterClient }, *dataDir)
 	web := &Web{store: store, proxy: proxy, engine: engine, journal: journal, started: time.Now(), dataDir: *dataDir, uiDir: *uiDir,
 		updater: updater, stats: &Stats{dataDir: *dataDir}}
 	go web.stats.Run()

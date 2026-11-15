@@ -92,7 +92,12 @@ func (w *Web) putHomeAssistant(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := w.store.Update(func(s *Settings) error { s.HomeAssistant = c; return nil }); err != nil {
+	if err := w.store.Update(func(s *Settings) error {
+		was := s.HomeConnected("homeassistant")
+		s.HomeAssistant = c
+		s.homeJustConnected("homeassistant", was)
+		return nil
+	}); err != nil {
 		bad(rw, err.Error())
 		return
 	}
