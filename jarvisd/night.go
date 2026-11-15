@@ -4,7 +4,6 @@ package main
 // держим здесь — раз в полминуты, пока ночь, не даём ей быть выше заданной.
 
 import (
-	"fmt"
 	"log"
 	"time"
 )
@@ -18,7 +17,7 @@ func nightCap(store *Store) {
 	if v <= s.Night.Speaker {
 		return
 	}
-	if err := AliceText(fmt.Sprintf("громкость %d", s.Night.Speaker), true); err != nil {
+	if err := setAliceVolume(s.Night.Speaker); err != nil {
 		log.Printf("ночной режим: громкость: %v", err)
 		return
 	}

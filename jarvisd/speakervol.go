@@ -6,8 +6,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -31,11 +34,61 @@ func speakerVolume() int {
 		return v
 	}
 	volMu.Unlock()
+	if v := aliceVolume(); v >= 0 {
+		return v
+	}
 	pct := masterPercent()
 	if pct < 0 {
 		return -1
 	}
 	return (pct + 5) / 10
+}
+
+// Уровень громкости самой Алисы: её журнал на каждую смену пишет «glagol … Changed volume to 0.7».
+// Это точнее микшера: на Мини 3 проценты Master не совпадают с уровнями (уровень 4 — 36 %).
+// На Лайт строка в maind.log, на Мини 3 у glagold свой журнал.
+var aliceVolLogs = []string{"/data/quasar/daemons_logs/glagold.log", "/data/quasar/daemons_logs/maind.log"}
+
+var volChangedRe = regexp.MustCompile(`Changed volume to ([0-9.]+)`)
+
+func aliceVolume() int {
+	for _, p := range aliceVolLogs {
+		if v := lastVolumeIn(p); v >= 0 {
+			return v
+		}
+	}
+	return -1
+}
+
+// lastVolumeIn — последний уровень из хвоста журнала (64 КБ), -1 — строки нет.
+func lastVolumeIn(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return -1
+	}
+	off := max(0, st.Size()-64<<10)
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return -1
+	}
+	return parseVolumeLine(buf)
+}
+
+func parseVolumeLine(b []byte) int {
+	m := volChangedRe.FindAllSubmatch(b, -1)
+	if len(m) == 0 {
+		return -1
+	}
+	v, err := strconv.ParseFloat(string(m[len(m)-1][1]), 64)
+	if err != nil || v < 0 || v > 1.001 {
+		return -1
+	}
+	return int(math.Round(v * 10))
 }
 
 // masterPercent — регулятор Master в процентах (-1 — не прочитать).
@@ -61,14 +114,40 @@ func (w *Web) setSpeakerVolume(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lvl := max(0, min(10, req.Level))
-	if err := AliceText(fmt.Sprintf("громкость %d", lvl), true); err != nil {
+	if err := setAliceVolume(lvl); err != nil {
 		bad(rw, err.Error())
 		return
+	}
+	writeJSON(rw, 200, map[string]any{"volume": lvl})
+}
+
+// setAliceVolume — «громкость N» Алисе беззвучным запросом. На части прошивок (Мини 3) беззвучный запрос
+// громкость не меняет — тогда через 2,5 с повторяем обычным, как будто сказали голосом.
+func setAliceVolume(lvl int) error {
+	before := aliceVolume()
+	if err := AliceText(fmt.Sprintf("громкость %d", lvl), true); err != nil {
+		return err
 	}
 	volMu.Lock()
 	volSet, volSetAt = lvl, time.Now()
 	volMu.Unlock()
-	writeJSON(rw, 200, map[string]any{"volume": lvl})
+	if before < 0 || before == lvl { // уровень не читается или уже такой — проверить нечем
+		return nil
+	}
+	go func() {
+		for i := 0; i < 10; i++ {
+			time.Sleep(250 * time.Millisecond)
+			if aliceVolume() != before {
+				return
+			}
+		}
+		log.Printf("громкость: беззвучный запрос не сработал — повторяю обычным (уровень %d)", lvl)
+		_ = AliceText(fmt.Sprintf("громкость %d", lvl), false)
+		volMu.Lock()
+		volSetAt = time.Now()
+		volMu.Unlock()
+	}()
+	return nil
 }
 
 // Голос Джарвиса идёт через тот же регулятор Master, что и Алиса: громкость колонки и так делает его тише или

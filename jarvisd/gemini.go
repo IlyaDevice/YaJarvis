@@ -146,16 +146,20 @@ func geminiQuotaErr(msg string) bool {
 
 type geminiTry struct{ key, model string }
 
-// geminiCandidates — по каждому ключу: выбранная модель, за ней остальные, у которых лимит не кончался недавно.
-// Сначала все модели первого ключа, потом следующего.
+// geminiCandidates — выбранная модель на всех ключах, за ней следующая модель на всех ключах и т. д.
+// (пропуская те, у которых лимит кончился недавно). Кончился лимит у ключа — сначала та же модель на другом
+// ключе: у каждого проекта свой бесплатный лимит, и падать на модель хуже, пока есть ключи, незачем.
 func geminiCandidates(keys []string, chosen string) []geminiTry {
 	chosen = geminiModel(chosen)
 	var out []geminiTry
-	for _, k := range keys {
-		var seen []string
-		for _, m := range append([]string{chosen}, GeminiModels...) {
-			if !slices.Contains(seen, m) && !geminiIsSpent(k, m) {
-				seen = append(seen, m)
+	var seen []string
+	for _, m := range append([]string{chosen}, GeminiModels...) {
+		if slices.Contains(seen, m) {
+			continue
+		}
+		seen = append(seen, m)
+		for _, k := range keys {
+			if !geminiIsSpent(k, m) {
 				out = append(out, geminiTry{k, m})
 			}
 		}
@@ -400,14 +404,16 @@ func geminiHomeArgs(args map[string]any) string {
 	return string(b)
 }
 
-func (s *GeminiSession) setup() map[string]any {
+func (s *GeminiSession) setup() map[string]any { return s.setupFor(s.prof.LiveModel) }
+
+func (s *GeminiSession) setupFor(model string) map[string]any {
 	gen := map[string]any{"responseModalities": []string{"AUDIO"},
 		"speechConfig": map[string]any{"voiceConfig": map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": geminiVoice(s.prof.Voice)}}}}
-	if strings.Contains(geminiModel(s.prof.LiveModel), "extended-thinking") { // без уровня эта модель не открывается
+	if strings.Contains(geminiModel(model), "extended-thinking") { // без уровня эта модель не открывается
 		gen["thinkingConfig"] = map[string]any{"thinkingLevel": "high"}
 	}
 	setup := map[string]any{
-		"model":                    "models/" + geminiModel(s.prof.LiveModel),
+		"model":                    "models/" + geminiModel(model),
 		"generationConfig":         gen,
 		"systemInstruction":        map[string]any{"parts": []any{map[string]any{"text": s.instructions + geminiRules + "\n\n" + s.tools.Context() + russianSessionRules}}},
 		"inputAudioTranscription":  map[string]any{"languageCodes": []string{"ru-RU"}, "customVocabulary": []string{"Джарвис", "давай", "стендап", "апвоут"}},
@@ -438,38 +444,93 @@ func (s *GeminiSession) send(v any) error {
 	return s.ws.Write(ctx, websocket.MessageText, b)
 }
 
-// open — открыть сессию; кончился лимит модели — сразу следующая модель (у каждой свой бесплатный лимит).
+// open — открыть сессию. Модели идут по очереди (выбранная, потом запасные), а ключи одной модели пробуем
+// все сразу: кто первым открылся — тот и говорит. Так лимит на одном ключе не стоит ни секунды, пока
+// живы другие, и не роняет разговор на модель хуже.
 func (s *GeminiSession) open() (*websocket.Conn, error) {
 	chosen := geminiModel(s.prof.LiveModel)
 	keys := geminiKeysFrom(s.key)
 	var lastQuota string
-	for _, c := range geminiCandidates(keys, chosen) {
-		s.key, s.prof.LiveModel = c.key, c.model
-		ws, err := s.dialSetup()
-		if err == nil {
+	cands := geminiCandidates(keys, chosen)
+	for len(cands) > 0 {
+		n := 1
+		for n < len(cands) && cands[n].model == cands[0].model {
+			n++
+		}
+		tier := cands[:n]
+		cands = cands[n:]
+		type result struct {
+			c   geminiTry
+			ws  *websocket.Conn
+			err error
+		}
+		ch := make(chan result, len(tier))
+		for _, c := range tier {
+			go func(c geminiTry) {
+				ws, err := s.dialSetupFor(c.key, c.model)
+				ch <- result{c, ws, err}
+			}(c)
+		}
+		var win *result
+		var other error
+		left := len(tier)
+		for ; left > 0 && win == nil; left-- {
+			r := <-ch
+			switch {
+			case r.err == nil:
+				win = &r
+			case geminiQuotaErr(r.err.Error()):
+				markGeminiSpent(r.c.key, r.c.model)
+				lastQuota = r.err.Error()
+				log.Printf("Gemini Live: у модели %s кончился лимит (ключ %d из %d)", r.c.model, slices.Index(keys, r.c.key)+1, len(keys))
+			default:
+				other = r.err
+			}
+		}
+		if left > 0 { // остальные ключи этой модели ещё открываются — лишние закроем, лимиты запомним
+			go func(left int) {
+				for ; left > 0; left-- {
+					r := <-ch
+					if r.err == nil {
+						r.ws.CloseNow()
+					} else if geminiQuotaErr(r.err.Error()) {
+						markGeminiSpent(r.c.key, r.c.model)
+					}
+				}
+			}(left)
+		}
+		if win != nil {
+			c := win.c
+			s.key, s.prof.LiveModel, s.ws = c.key, c.model, win.ws
 			if c.model != chosen || (len(keys) > 0 && c.key != keys[0]) {
-				log.Printf("Gemini Live: у %s кончился лимит — говорю через %s (ключ %d из %d)", chosen, c.model, slices.Index(keys, c.key)+1, len(keys))
+				log.Printf("Gemini Live: у %s на первом ключе кончился лимит — говорю через %s (ключ %d из %d)", chosen, c.model, slices.Index(keys, c.key)+1, len(keys))
 				s.mu.Lock()
 				s.dialog.model = c.model
 				s.mu.Unlock()
 			}
-			return ws, nil
+			return win.ws, nil
 		}
-		if !geminiQuotaErr(err.Error()) {
-			return nil, err
+		if other != nil && lastQuota == "" { // не лимит, а сеть или ключ — дальше по моделям идти бессмысленно
+			return nil, other
 		}
-		markGeminiSpent(c.key, c.model)
-		lastQuota = err.Error()
-		log.Printf("Gemini Live: у модели %s кончился лимит (ключ %d из %d)", c.model, slices.Index(keys, c.key)+1, len(keys))
 	}
 	return nil, errors.New(geminiQuotaText(lastQuota))
 }
 
 func (s *GeminiSession) dialSetup() (*websocket.Conn, error) {
+	ws, err := s.dialSetupFor(s.key, s.prof.LiveModel)
+	if err == nil {
+		s.ws = ws
+	}
+	return ws, err
+}
+
+// dialSetupFor — открыть сокет и дождаться setupComplete для ключа key и модели model (s не меняет).
+func (s *GeminiSession) dialSetupFor(key, model string) (*websocket.Conn, error) {
 	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
 	// ключ — в заголовке, а не в адресе: адрес попадает в тексты ошибок и в журнал
 	ws, resp, err := websocket.Dial(ctx, geminiURL, &websocket.DialOptions{HTTPClient: s.client,
-		HTTPHeader: http.Header{"x-goog-api-key": {s.key}}})
+		HTTPHeader: http.Header{"x-goog-api-key": {key}}})
 	cancel()
 	if err != nil {
 		msg := "не подключиться к Gemini: " + shortErr(err)
@@ -481,8 +542,11 @@ func (s *GeminiSession) dialSetup() (*websocket.Conn, error) {
 		return nil, errors.New(msg)
 	}
 	ws.SetReadLimit(16 << 20)
-	s.ws = ws
-	if err := s.send(s.setup()); err != nil {
+	b, _ := json.Marshal(s.setupFor(model))
+	wctx, wcancel := context.WithTimeout(s.ctx, 5*time.Second)
+	err = ws.Write(wctx, websocket.MessageText, b)
+	wcancel()
+	if err != nil {
 		ws.CloseNow()
 		return nil, err
 	}
@@ -817,8 +881,8 @@ func askGemini(ctx context.Context, client *http.Client, key, instructions, text
 	}
 	raw, _ := json.Marshal(body)
 	var lastErr error
-	for _, k := range geminiKeysFrom(key) {
-		for _, model := range geminiTextModels {
+	for _, model := range geminiTextModels {
+		for _, k := range geminiKeysFrom(key) {
 			if geminiIsSpent(k, model) {
 				continue
 			}

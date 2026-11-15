@@ -20,3 +20,16 @@ func TestGeminiCandidatesAcrossKeys(t *testing.T) {
 		t.Fatalf("состояние для панели: %v", st)
 	}
 }
+
+// Лимит выбранной модели на первом ключе — сначала та же модель на остальных ключах, а не модель хуже.
+func TestGeminiSameModelOtherKeysFirst(t *testing.T) {
+	keys := []string{"k-a-test", "k-b-test", "k-c-test"}
+	markGeminiSpent("k-a-test", "gemini-3.8-live")
+	c := geminiCandidates(keys, "gemini-3.8-live")
+	if c[0] != (geminiTry{"k-b-test", "gemini-3.8-live"}) || c[1] != (geminiTry{"k-c-test", "gemini-3.8-live"}) {
+		t.Fatalf("сначала 3.8 на ключах 2 и 3: %v", c[:3])
+	}
+	if c[2].model == "gemini-3.8-live" {
+		t.Fatalf("после всех ключей 3.8 — следующая модель: %v", c[2])
+	}
+}
