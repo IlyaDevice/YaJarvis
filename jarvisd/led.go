@@ -31,8 +31,8 @@ type ledChan struct {
 	path  string
 	color string // red | green | blue | white
 	max   int
-	group int // номер светодиода на кольце (у одного светодиода три цвета)
-	last  int // что записано сейчас — одинаковое не пишем повторно
+	group int    // номер светодиода на кольце (у одного светодиода три цвета)
+	last  int    // что записано сейчас — одинаковое не пишем повторно
 	trig  string // штатный триггер ядра (Лайт 2: led_ring_fb), пока кольцом управляет Джарвис — «none»
 }
 
@@ -83,6 +83,7 @@ type Leds struct {
 	off     bool // подсветка Джарвиса выключена в настройках
 	preview int  // номер текущего показа цвета из настроек
 	chans   []ledChan
+	clock   []ledChan // сегменты LED-часов (Мини 3, «bergamot:white:clockG1»): не кольцо, у них своя анимация
 	saved   map[string]int
 	mode    LedMode
 	until   time.Time
@@ -91,6 +92,9 @@ type Leds struct {
 	since  time.Time // когда включился текущий режим
 	level  float64   // громкость голоса 0..1 (сглаженная)
 	target float64
+	hear   float64 // громкость того, кто говорит в микрофон, 0..1 (сглаженная) — линия на часах
+	hearT  float64
+	frames int
 	lvlAt  time.Time // когда голос последний раз сообщил громкость
 	phase  LedMode   // что делает Джарвис (даже если подсветки нет или она выключена) — для панели
 }
@@ -114,6 +118,10 @@ func NewLeds() *Leds {
 		if max <= 0 {
 			max = 255
 		}
+		if i := strings.LastIndex(name, "clock"); i >= 0 {
+			l.clock = append(l.clock, ledChan{path: filepath.Join(e, "brightness"), color: name[i+len("clock"):], max: max, last: -1})
+			continue
+		}
 		l.chans = append(l.chans, ledChan{path: filepath.Join(e, "brightness"), color: color, max: max, last: -1,
 			group: groupOf(strings.Replace(name, color, "", 1))})
 	}
@@ -133,7 +141,43 @@ func groupOf(key string) int {
 	return ledGroups[key]
 }
 
-func (l *Leds) Available() bool { return len(l.chans) > 0 }
+func (l *Leds) Available() bool { return len(l.chans)+len(l.clock) > 0 }
+
+// Hear — громкость голоса в микрофоне (0..1), пока Джарвис слушает: на часах Мини 3 линия по центру
+// становится шире и ярче, как у Алисы.
+func (l *Leds) Hear(v float64) {
+	if len(l.clock) == 0 {
+		return
+	}
+	l.mu.Lock()
+	l.hearT = math.Max(l.hearT, math.Min(1, v))
+	l.mu.Unlock()
+}
+
+// clockShape — яркость сегмента часов 0..1. Рисуем только средние черточки (G0…G3): горизонтальная
+// линия от центра, её ширина и яркость идут за голосом. «Думаю» — черточка бегает по цифрам.
+func (l *Leds) clockShape(seg string, t float64) float64 {
+	if len(seg) != 2 || seg[0] != 'g' || seg[1] < '0' || seg[1] > '3' {
+		return 0 // цифры, двоеточие, градус — гасим, пока Джарвис на связи
+	}
+	pos := int(seg[1] - '0')
+	inner := pos == 1 || pos == 2
+	switch l.mode {
+	case LedThinking:
+		c := math.Cos(2 * math.Pi * (t*1.2 - float64(pos)/4))
+		return 0.1 + 0.9*math.Pow(math.Max(0, c), 2)
+	case LedListening, LedSpeaking:
+		v := l.hear
+		if l.mode == LedSpeaking {
+			v = l.level
+		}
+		if inner {
+			return math.Min(1, t/0.2) * (0.2 + 0.8*math.Min(1, v/0.35))
+		}
+		return math.Min(1, math.Max(0, (v-0.3)/0.35))
+	}
+	return 0
+}
 
 // Level — громкость голоса Джарвиса прямо сейчас (0..1): кольцо вспыхивает в такт.
 func (l *Leds) Level(v float64) {
@@ -168,7 +212,28 @@ func (l *Leds) frame() {
 	}
 	l.level = l.level*0.6 + l.target*0.4
 	l.target *= 0.5
+	l.hear = l.hear*0.6 + l.hearT*0.4
+	l.hearT *= 0.5
 	t := time.Since(l.since).Seconds()
+	if len(l.clock) > 0 {
+		l.frames++
+		k := 0.0 // яркость часов — по самому яркому цвету режима (учитывает яркость из настроек)
+		for _, v := range l.palette[l.mode] {
+			k = math.Max(k, v)
+		}
+		k = math.Min(1, k*1.6)
+		for i := range l.clock {
+			c := &l.clock[i]
+			if l.frames%12 == 0 { // раз в полсекунды переписываем всё: maind мог дорисовать время
+				c.last = -1
+			}
+			v := int(k * l.clockShape(c.color, t) * float64(c.max))
+			if v != c.last {
+				_ = os.WriteFile(c.path, []byte(strconv.Itoa(v)), 0o644)
+				c.last = v
+			}
+		}
+	}
 	for i := range l.chans {
 		c := &l.chans[i]
 		v := int(l.palette[l.mode][c.color] * l.shape(l.mode, c.group, t) * float64(c.max))
@@ -287,6 +352,10 @@ func (l *Leds) set(mode LedMode, force bool) {
 		for _, c := range l.chans {
 			l.saved[c.path] = readInt(c.path)
 		}
+		for i := range l.clock {
+			l.saved[l.clock[i].path] = readInt(l.clock[i].path)
+		}
+		l.hear, l.hearT = 0, 0
 		l.takeTriggers()
 	}
 	l.mode, l.since = mode, time.Now()
@@ -294,6 +363,13 @@ func (l *Leds) set(mode LedMode, force bool) {
 		for i := range l.chans {
 			c := &l.chans[i]
 			_ = os.WriteFile(c.path, []byte(strconv.Itoa(l.saved[c.path])), 0o644)
+			c.last = -1
+		}
+		for i := range l.clock { // часы снова показывают время
+			c := &l.clock[i]
+			if v := l.saved[c.path]; v >= 0 {
+				_ = os.WriteFile(c.path, []byte(strconv.Itoa(v)), 0o644)
+			}
 			c.last = -1
 		}
 		l.restoreTriggers() // штатная анимация Алисы снова ведёт кольцо

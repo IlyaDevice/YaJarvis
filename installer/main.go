@@ -405,7 +405,9 @@ func handleInstall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "Пароль — минимум 6 символов"})
 		return
 	}
-	err := startJob(func(j *job) error { return install(j, req.IP, req.Password, req.OpenAI, req.Vless, req.Timezone, req.Clean) })
+	err := startJob(func(j *job) error {
+		return install(j, req.IP, req.Password, req.OpenAI, req.Vless, req.Timezone, req.Clean)
+	})
 	if err != nil {
 		writeJSON(w, 409, map[string]any{"error": err.Error()})
 		return
@@ -562,8 +564,14 @@ func install(j *job, ip, password, openai, vless, tz string, clean bool) error {
 	if err := a.Push(payload("S98jarvisd"), "/tmp/S98jarvisd", 0o755, nil); err != nil {
 		return err
 	}
-	if _, err := run("mount -o remount,rw / && cp /tmp/S98jarvisd /etc/init.d/S98jarvisd && chmod 755 /etc/init.d/S98jarvisd; rc=$?; mount -o remount,ro / 2>/dev/null; rm -f /tmp/S98jarvisd " + remoteDir + "/disabled " + remoteDir + "/no-mic; (exit $rc)"); err != nil {
-		return err
+	// Копия скрипта автозапуска всегда лежит рядом с Джарвисом: на прошивках, где корень не
+	// перемонтируется (Мини 3 после некоторых способов root), его ставят в автозапуск вручную.
+	_, _ = run("cp /tmp/S98jarvisd " + remoteDir + "/S98jarvisd && chmod 755 " + remoteDir + "/S98jarvisd")
+	if out, err := run(autostartScript(remoteDir)); err != nil {
+		_, _ = run("rm -f /tmp/S98jarvisd")
+		j.log("Корень прошивки не открылся на запись: %s", strings.TrimSpace(out))
+		return fmt.Errorf("Джарвис установлен, но автозапуск добавить не удалось: корневой раздел колонки только для чтения (%v). "+
+			"Добавьте в автозапуск своей прошивки скрипт %s/S98jarvisd (он запускается до S99quasar) и перезагрузите колонку", err, remoteDir)
 	}
 	_, _ = run("sync")
 	j.log("Перезагружаю колонку — Алиса загрузится уже с микрофоном для Джарвиса (около минуты)…")
@@ -614,4 +622,16 @@ func handleUninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// autostartScript — положить S98jarvisd в /etc/init.d. Если там уже такой же (обновление или
+// автозапуск добавлен вручную), корень не трогаем. Иначе перемонтируем «/» на запись: сначала
+// обычным способом, потом с явным устройством (на части прошивок busybox иначе не находит раздел).
+func autostartScript(remoteDir string) string {
+	return "if cmp -s /tmp/S98jarvisd /etc/init.d/S98jarvisd; then rc=0; else " +
+		"dev=$(awk '$2==\"/\" {print $1; exit}' /proc/mounts); " +
+		"if mount -o remount,rw / 2>/tmp/jarvis-mount.err || mount -o remount,rw \"$dev\" / 2>>/tmp/jarvis-mount.err; then " +
+		"cp /tmp/S98jarvisd /etc/init.d/S98jarvisd && chmod 755 /etc/init.d/S98jarvisd && sync; rc=$?; mount -o remount,ro / 2>/dev/null; " +
+		"else cat /tmp/jarvis-mount.err; grep \" / \" /proc/mounts; rc=1; fi; fi; " +
+		"rm -f /tmp/S98jarvisd /tmp/jarvis-mount.err " + remoteDir + "/disabled " + remoteDir + "/no-mic; (exit $rc)"
 }

@@ -94,6 +94,9 @@ func (e *Engine) Run(ctx context.Context) {
 		if busy && e.stt != nil {
 			e.stt.Feed(pcm)
 		}
+		if busy || live != nil {
+			e.leds.Hear(peakOf(pcm) / 9000)
+		}
 		e.bg.Feed(pcm, busy || live != nil)
 		if busy || e.music.Playing() {
 			e.cmds.Feed(pcm)
