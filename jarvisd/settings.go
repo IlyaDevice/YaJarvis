@@ -64,10 +64,11 @@ type Settings struct {
 
 	OpenAIKey     string      `json:"openai_key"`
 	GeminiKey     string      `json:"gemini_key"`
-	GrokKey       string      `json:"grok_key"` // xAI: голосовой движок Grok Voice
-	ChatGPT       ChatGPTAuth `json:"chatgpt"`  // вход в подписку ChatGPT (голос без оплаты API)
-	Xiaomi        XiaomiAuth  `json:"xiaomi"`   // вход в Xiaomi Home (Mi Home) по QR-коду
-	Tuya          TuyaAuth    `json:"tuya"`     // вход в Smart Life (Tuya) по QR-коду
+	GeminiKeys    []string    `json:"gemini_keys,omitempty"` // все ключи Google; GeminiKey — первый. Кончились лимиты у одного — берётся следующий
+	GrokKey       string      `json:"grok_key"`              // xAI: голосовой движок Grok Voice
+	ChatGPT       ChatGPTAuth `json:"chatgpt"`               // вход в подписку ChatGPT (голос без оплаты API)
+	Xiaomi        XiaomiAuth  `json:"xiaomi"`                // вход в Xiaomi Home (Mi Home) по QR-коду
+	Tuya          TuyaAuth    `json:"tuya"`                  // вход в Smart Life (Tuya) по QR-коду
 	ElevenLabsKey string      `json:"elevenlabs_key"`
 	YandexToken   string      `json:"yandex_token"`
 
@@ -274,6 +275,9 @@ func OpenStore(path string) (*Store, error) {
 		s.ElevenKeys, dirty = []ElevenKey{{Key: s.ElevenLabsKey}}, true
 	}
 	s.pickEleven()
+	if len(s.GeminiKeys) == 0 && s.GeminiKey != "" { // был один ключ — он первый в списке
+		s.GeminiKeys = []string{s.GeminiKey}
+	}
 	for i := range s.Profiles { // громкость раздаётся ассистентам; город и пояс — копии общих
 		s.Profiles[i].fillDefaults(s)
 	}

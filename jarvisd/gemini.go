@@ -7,13 +7,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -31,6 +34,10 @@ var geminiURL = "wss://" + geminiHost + "/ws/google.ai.generativelanguage.v1beta
 var GeminiModels = []string{"gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-3.1-flash-live-preview",
 	"gemini-2.5-flash-native-audio-preview-12-2025"}
 
+// geminiTextModels — текстовые модели «мозга» по порядку; на бесплатном ключе у каждой свой лимит.
+var geminiTextModels = []string{"gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+	"gemini-2.5-flash-lite", "gemini-2.5-flash"}
+
 // GeminiModelInfo — подписи для панели. На бесплатном ключе (AI Studio без карты) лимит у каждой модели свой.
 var GeminiModelInfo = []map[string]string{
 	{"id": "gemini-3.8-live", "name": "Gemini 3.8 Live", "note": "быстрая и умная · бесплатно в пределах лимита"},
@@ -39,38 +46,125 @@ var GeminiModelInfo = []map[string]string{
 	{"id": "gemini-2.5-flash-native-audio-preview-12-2025", "name": "Gemini 2.5 Flash", "note": "старая, свой отдельный бесплатный лимит"},
 }
 
-// Кончился лимит модели — какое-то время её не берём, сразу открываем следующую.
-var geminiSpent sync.Map // модель → time.Time, до какого времени не пробовать
+// Кончился лимит модели у ключа — какое-то время эту пару не берём, сразу открываем следующую.
+var geminiSpent sync.Map // geminiSpentKey(ключ, модель) → time.Time, до какого времени не пробовать
+
+// geminiKeyList — все ключи Google из настроек (main); у каждого свой бесплатный лимит.
+var geminiKeyList func() []string
+
+// geminiKeysFrom — ключи по порядку: сначала key, за ним остальные.
+func geminiKeysFrom(key string) []string {
+	out := []string{}
+	if key != "" {
+		out = append(out, key)
+	}
+	if geminiKeyList != nil {
+		for _, k := range geminiKeyList() {
+			if k != "" && !slices.Contains(out, k) {
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// geminiKeyTag — короткая метка ключа (сам ключ в файл не пишем).
+func geminiKeyTag(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:4])
+}
+
+func geminiSpentKey(key, model string) string { return geminiKeyTag(key) + "|" + model }
+
+func geminiIsSpent(key, model string) bool {
+	until, ok := geminiSpent.Load(geminiSpentKey(key, model))
+	return ok && time.Now().Before(until.(time.Time))
+}
+
+// GeminiKeysState — для панели: хвост ключа и у скольких моделей кончился лимит.
+func GeminiKeysState(keys []string) []map[string]any {
+	var out []map[string]any
+	for _, k := range keys {
+		spent := 0
+		for _, m := range GeminiModels {
+			if geminiIsSpent(k, m) {
+				spent++
+			}
+		}
+		out = append(out, map[string]any{"tail": mask(k), "spent": spent, "models": len(GeminiModels)})
+	}
+	return out
+}
 
 const geminiRestAfterQuota = time.Hour
+
+// geminiSpentPath — файл, где помнить исчерпанные модели после перезапуска (main); пусто — только в памяти.
+var geminiSpentPath string
+
+func markGeminiSpent(key, model string) {
+	geminiSpent.Store(geminiSpentKey(key, model), time.Now().Add(geminiRestAfterQuota))
+	if geminiSpentPath == "" {
+		return
+	}
+	out := map[string]int64{}
+	geminiSpent.Range(func(k, v any) bool {
+		if t := v.(time.Time); time.Now().Before(t) {
+			out[k.(string)] = t.Unix()
+		}
+		return true
+	})
+	if b, err := json.Marshal(out); err == nil {
+		_ = os.WriteFile(geminiSpentPath, b, 0o600)
+	}
+}
+
+func loadGeminiSpent(path string) {
+	geminiSpentPath = path
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var in map[string]int64
+	if json.Unmarshal(b, &in) != nil {
+		return
+	}
+	for m, u := range in {
+		if t := time.Unix(u, 0); time.Now().Before(t) {
+			geminiSpent.Store(m, t)
+		}
+	}
+}
 
 func geminiQuotaErr(msg string) bool {
 	m := strings.ToLower(msg)
 	return strings.Contains(m, "quota") || strings.Contains(m, "resource_exhausted") || strings.Contains(m, "rate limit")
 }
 
-// geminiCandidates — выбранная модель, за ней остальные, у которых лимит не кончался недавно.
-func geminiCandidates(chosen string) []string {
+type geminiTry struct{ key, model string }
+
+// geminiCandidates — по каждому ключу: выбранная модель, за ней остальные, у которых лимит не кончался недавно.
+// Сначала все модели первого ключа, потом следующего.
+func geminiCandidates(keys []string, chosen string) []geminiTry {
 	chosen = geminiModel(chosen)
-	fresh := func(m string) bool {
-		until, ok := geminiSpent.Load(m)
-		return !ok || time.Now().After(until.(time.Time))
-	}
-	var out []string
-	for _, m := range append([]string{chosen}, GeminiModels...) {
-		if fresh(m) && !slices.Contains(out, m) {
-			out = append(out, m)
+	var out []geminiTry
+	for _, k := range keys {
+		var seen []string
+		for _, m := range append([]string{chosen}, GeminiModels...) {
+			if !slices.Contains(seen, m) && !geminiIsSpent(k, m) {
+				seen = append(seen, m)
+				out = append(out, geminiTry{k, m})
+			}
 		}
 	}
-	if len(out) == 0 {
-		out = []string{chosen} // у всех кончился — всё равно пробуем выбранную
+	if len(out) == 0 && len(keys) > 0 {
+		out = []geminiTry{{keys[0], chosen}} // у всех кончился — всё равно пробуем выбранную
 	}
 	return out
 }
 
 // geminiQuotaText — понятное объяснение вместо «You exceeded your current quota».
 func geminiQuotaText(msg string) string {
-	return "у ключа Gemini кончился бесплатный лимит на все модели — подождите до завтра (лимит обновляется около 10–11 утра по Москве) " +
+	return "у ключей Gemini кончился бесплатный лимит на все модели — добавьте ещё ключ в «Подключениях», подождите до завтра (лимит обновляется около 10–11 утра по Москве) " +
 		"или включите оплату в AI Studio (aistudio.google.com → Billing). Ответ Google: " + msg
 }
 
@@ -302,7 +396,9 @@ func (s *GeminiSession) setup() map[string]any {
 		"realtimeInputConfig": map[string]any{
 			"activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
 			"automaticActivityDetection": map[string]any{"disabled": false,
-				"startOfSpeechSensitivity": "START_SENSITIVITY_HIGH", "prefixPaddingMs": 160, "silenceDurationMs": 600},
+				"startOfSpeechSensitivity": "START_SENSITIVITY_HIGH", "prefixPaddingMs": 160,
+				// договорил — отвечать сразу: короткая пауза и чуткий конец фразы (было 600 мс — ответ запаздывал)
+				"endOfSpeechSensitivity": "END_SENSITIVITY_HIGH", "silenceDurationMs": 300},
 		},
 	}
 	if tools := geminiTools(s.tools, s.prof.WebSearch); len(tools) > 0 {
@@ -326,15 +422,16 @@ func (s *GeminiSession) send(v any) error {
 // open — открыть сессию; кончился лимит модели — сразу следующая модель (у каждой свой бесплатный лимит).
 func (s *GeminiSession) open() (*websocket.Conn, error) {
 	chosen := geminiModel(s.prof.LiveModel)
+	keys := geminiKeysFrom(s.key)
 	var lastQuota string
-	for _, m := range geminiCandidates(chosen) {
-		s.prof.LiveModel = m
+	for _, c := range geminiCandidates(keys, chosen) {
+		s.key, s.prof.LiveModel = c.key, c.model
 		ws, err := s.dialSetup()
 		if err == nil {
-			if m != chosen {
-				log.Printf("Gemini Live: у %s кончился лимит — говорю через %s", chosen, m)
+			if c.model != chosen || (len(keys) > 0 && c.key != keys[0]) {
+				log.Printf("Gemini Live: у %s кончился лимит — говорю через %s (ключ %d из %d)", chosen, c.model, slices.Index(keys, c.key)+1, len(keys))
 				s.mu.Lock()
-				s.dialog.model = m
+				s.dialog.model = c.model
 				s.mu.Unlock()
 			}
 			return ws, nil
@@ -342,9 +439,9 @@ func (s *GeminiSession) open() (*websocket.Conn, error) {
 		if !geminiQuotaErr(err.Error()) {
 			return nil, err
 		}
-		geminiSpent.Store(m, time.Now().Add(geminiRestAfterQuota))
+		markGeminiSpent(c.key, c.model)
 		lastQuota = err.Error()
-		log.Printf("Gemini Live: у модели %s кончился лимит (%s)", m, err)
+		log.Printf("Gemini Live: у модели %s кончился лимит (ключ %d из %d)", c.model, slices.Index(keys, c.key)+1, len(keys))
 	}
 	return nil, errors.New(geminiQuotaText(lastQuota))
 }
@@ -701,17 +798,19 @@ func askGemini(ctx context.Context, client *http.Client, key, instructions, text
 	}
 	raw, _ := json.Marshal(body)
 	var lastErr error
-	for _, model := range []string{"gemini-3.8-flash", "gemini-3.5-flash-lite"} {
-		if until, ok := geminiSpent.Load(model); ok && time.Now().Before(until.(time.Time)) {
-			continue
+	for _, k := range geminiKeysFrom(key) {
+		for _, model := range geminiTextModels {
+			if geminiIsSpent(k, model) {
+				continue
+			}
+			answer, err := askGeminiModel(ctx, client, k, model, raw)
+			if err == nil || !geminiQuotaErr(err.Error()) {
+				return answer, err
+			}
+			markGeminiSpent(k, model)
+			log.Printf("Gemini: у %s кончился лимит — пробую следующую модель или ключ", model)
+			lastErr = err
 		}
-		answer, err := askGeminiModel(ctx, client, key, model, raw)
-		if err == nil || !geminiQuotaErr(err.Error()) {
-			return answer, err
-		}
-		geminiSpent.Store(model, time.Now().Add(geminiRestAfterQuota))
-		log.Printf("Gemini: у %s кончился лимит — пробую следующую модель", model)
-		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = errors.New("лимит Gemini кончился")

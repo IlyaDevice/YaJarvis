@@ -9,6 +9,8 @@ func TestRetailModels(t *testing.T) {
 		{"yandex,station-midi\x00amlogic,axg", "", "", "Yandex Station Midi", "station2"},
 		{"", "", "yandexstation_2", "", "max"},
 		{"yandex,plum", "", "", "", "lite2"},
+		{"yandex,prune-evt2\x00yandex,prune\x00amlogic, axg", "", "plum", "", "lite2"}, // реальная Лайт 2 тестера
+		{"", "", "plum", "", "lite2"},
 		{"yandex,station-mini2", "", "", "", "mini2"},
 		{"", "axg_yandexmini", "", "Amlogic", "mini1"},
 		{"yandex,bergamot", "", "", "", "mini3"},

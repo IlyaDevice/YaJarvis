@@ -571,6 +571,14 @@ function vpnRow(svc) {
   return `<div class="cn-vpn"><label class="sw"><input type="checkbox" data-vpn="${svc}"${on ? " checked" : ""}><span class="tr"></span>Через VPN</label>
     <small class="muted">${!set ? "VPN не задан — галочка заработает, когда добавите его в «Сеть → VPN»" : on ? "идёт через ваш VPN" : "напрямую, без VPN"}</small></div>`;
 }
+function geminiKeysHtml() {
+  const list = S.gemini_keys || [];
+  if (list.length < 2) return list.length && list[0].spent ? `<p class="note">Лимит кончился у ${list[0].spent} из ${list[0].models} моделей этого ключа. Добавьте ещё ключ — Джарвис перейдёт на него сам.</p>` : "";
+  return `<div class="ek-list">${list.map((k, i) => `<div class="ek${!k.spent && !list.slice(0, i).some((x) => x.spent < x.models) ? " on" : ""}${k.spent >= k.models ? " rest" : ""}"><b>${i + 1}</b><code>${esc(k.tail)}</code>
+      <span class="ek-st">${k.spent >= k.models ? "лимит кончился · ждёт" : k.spent ? `лимит кончился у ${k.spent} из ${k.models} моделей` : "лимит есть"}</span><span class="spacer"></span>
+      <button class="ib" data-gk-remove="${i}" aria-label="Убрать ключ ${i + 1}">${icon("x")}</button></div>`).join("")}</div>
+    <p class="note">У каждого ключа свой бесплатный лимит. Кончился у всех моделей первого — Джарвис сам переходит на следующий.</p>`;
+}
 function elevenKeysHtml() {
   const list = S.eleven_keys || [];
   if (!list.length) return "";
@@ -606,7 +614,7 @@ function connDefs() {
       wait: !cg.signed_in && !!lg.code,
       body: cg.signed_in ? `<div class="cn-ok">${icon("done")}<span>Колонка вошла в ChatGPT${cg.plan ? ` · <b>${esc(cg.plan)}</b>` : ""}${cg.email ? `<small>${esc(cg.email)}</small>` : ""}</span></div>
           ${cg.limited_until * 1000 > Date.now() ? `<p class="err">Кончился лимит голоса в подписке. До ${new Date(cg.limited_until * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} Джарвис говорит через Gemini${S.keys?.gemini ? "" : " — но ключа Gemini нет, добавьте его ниже"}.</p>` : ""}
-          <p class="note">Один чат на все разговоры: ChatGPT помнит ${cg.chat?.turns ? `${cg.chat.turns} ${plural(cg.chat.turns, "последнюю реплику", "последние реплики", "последних реплик")}` : "прошлые реплики"}, даже после перезапуска колонки.</p>
+          <p class="note">Один чат на все разговоры (память общая для всех ассистентов): ChatGPT помнит ${cg.chat?.turns ? `${cg.chat.turns} ${plural(cg.chat.turns, "последнюю реплику", "последние реплики", "последних реплик")}` : "прошлые реплики"}, даже после перезапуска колонки.</p>
           <div class="row"><button class="btn" id="cg-newchat"${cg.chat?.turns ? "" : " disabled"}>Начать новый чат</button></div>`
         : lg.code ? `<ol class="how cn-steps"><li>Откройте <a href="${esc(lg.url)}" target="_blank" rel="noopener">${esc(lg.url.replace("https://", ""))}</a> (из России и Беларуси — через VPN) и войдите в свой ChatGPT.</li><li>Введите код: <b class="code-big">${esc(lg.code)}</b></li><li>Это окно само увидит вход — ничего нажимать не нужно.</li></ol>`
         : `${lg.error ? `<p class="err">${esc(lg.error)}</p>` : ""}<div class="row"><button class="btn primary" id="cg-in">Войти в ChatGPT</button></div>
@@ -615,7 +623,8 @@ function connDefs() {
       drop: cg.signed_in ? `<button class="btn ghost danger" id="cg-out">Выйти</button>` : "" },
     key("openai", { vpn: "openai", group: "voice", mono: "AI", name: "OpenAI", place: "sk-…", about: "Голос и «мозг» Джарвиса. Живой разговор — примерно 5 центов в минуту",
       how: "<li>Откройте platform.openai.com и войдите.</li><li>Слева — API keys → Create new secret key.</li><li>Скопируйте ключ (начинается с sk-) и вставьте сюда.</li><li>Пополните баланс в разделе Billing — от 5 $.</li>" }),
-    key("gemini", { vpn: "gemini", group: "voice", mono: "Ge", name: "Google Gemini", place: "AIza…", optional: true, about: "Gemini Live — примерно вдвое дешевле GPT-Live, есть бесплатный уровень",
+    key("gemini", { vpn: "gemini", top: geminiKeysHtml(), label: k.gemini ? ["Ещё ключ — в запас", "Добавить"] : null,
+      dropText: (S.gemini_keys || []).length > 1 ? "Убрать все ключи" : "Убрать ключ", group: "voice", mono: "Ge", name: "Google Gemini", place: "AIza…", optional: true, about: "Gemini Live — примерно вдвое дешевле GPT-Live, есть бесплатный уровень. Можно добавить несколько ключей: у каждого свой бесплатный лимит",
       more: "Какой движок отвечает, выбирается у ассистента.",
       how: "<li>Откройте aistudio.google.com и войдите в аккаунт Google (из России и Беларуси — через VPN).</li><li>Нажмите Get API key → Create API key.</li><li>Скопируйте ключ и вставьте сюда.</li>" }),
     key("grok", { vpn: "grok", group: "voice", mono: "xA", name: "xAI Grok", place: "xai-…", optional: true, about: "Grok Voice — сам ищет в интернете",
@@ -770,6 +779,8 @@ async function connClick(e) {
     catch (err) { t.checked = !on; toast(err.message, true); }
     return;
   }
+  const gk = t.closest("[data-gk-remove]");
+  if (gk) { if (confirm("Убрать этот ключ Google с колонки?")) act(gk, async () => { await api("PUT", "/api/gemini-keys", { remove: +gk.dataset.gkRemove }); await redraw(); }, "Ключ убран"); return; }
   const ek = t.closest("[data-ek-remove], [data-ek-reset]");
   if (ek) {
     const rm = ek.dataset.ekRemove !== undefined, i = +(rm ? ek.dataset.ekRemove : ek.dataset.ekReset);
@@ -784,9 +795,9 @@ async function connClick(e) {
   if (b) {
     const val = $("#k-" + b.dataset.key).value.trim();
     if (!val) return toast("Сначала вставьте ключ в поле", true);
-    return act(b, async () => { await api("PUT", "/api/keys", { [b.dataset.key]: val }); $("#k-" + b.dataset.key).value = ""; delete CONN.net[b.dataset.key]; await redraw(); }, b.dataset.key === "elevenlabs" && (S.eleven_keys || []).length > 1 ? "Ключ добавлен в запас" : "Ключ сохранён");
+    return act(b, async () => { await api("PUT", "/api/keys", { [b.dataset.key]: val }); $("#k-" + b.dataset.key).value = ""; delete CONN.net[b.dataset.key]; await redraw(); }, (b.dataset.key === "elevenlabs" && (S.eleven_keys || []).length > 1) || (b.dataset.key === "gemini" && (S.gemini_keys || []).length > 1) ? "Ключ добавлен в запас" : "Ключ сохранён");
   }
-  if (c) { if (confirm(c.dataset.clear === "elevenlabs" && (S.eleven_keys || []).length > 1 ? "Убрать все ключи ElevenLabs с колонки?" : "Убрать этот ключ с колонки?")) act(c, async () => { await api("PUT", "/api/keys", { [c.dataset.clear]: "" }); delete CONN.net[c.dataset.clear]; await redraw(); }); return; }
+  if (c) { if (confirm(c.dataset.clear === "elevenlabs" && (S.eleven_keys || []).length > 1 ? "Убрать все ключи ElevenLabs с колонки?" : c.dataset.clear === "gemini" && (S.gemini_keys || []).length > 1 ? "Убрать все ключи Google с колонки?" : "Убрать этот ключ с колонки?")) act(c, async () => { await api("PUT", "/api/keys", { [c.dataset.clear]: "" }); delete CONN.net[c.dataset.clear]; await redraw(); }); return; }
   const btn = t.closest("button[id]");
   if (!btn) return;
   switch (btn.id) {

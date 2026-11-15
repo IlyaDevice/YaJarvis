@@ -489,14 +489,14 @@ func main() {
 	}
 	journal := &Journal{}
 	chatgptChat = LoadChatThread(filepath.Join(*dataDir, "chatgpt-chat.json"))
+	loadGeminiSpent(filepath.Join(*dataDir, "gemini-spent.json"))
+	geminiKeyList = func() []string { return store.Get().GeminiKeys }
 	journal.OnRemember = func(t Turn) {
 		switch {
-		case t.Model == chatgptLiveModel:
+		case t.Model != "": // разговор с моделью — в общую память, какой бы ассистент ни отвечал
 			chatgptChat.Add(t.Text, t.Answer)
-		case t.Model == "" && t.Answer != "": // выполнено без модели (умный дом, Алиса, музыка) — ChatGPT тоже должен знать
-			if st := store.Get(); st.ActiveProfile().Engine == "chatgpt" {
-				chatgptChat.Add(t.Text, "["+t.Answer+"]")
-			}
+		case t.Answer != "": // выполнено без модели (умный дом, Алиса, музыка) — модель тоже должна знать
+			chatgptChat.Add(t.Text, "["+t.Answer+"]")
 		}
 	}
 	tools := NewTools(func() string { return store.Get().YandexToken }, &http.Client{Timeout: 10 * time.Second, Transport: proxy.TransportFor("yandex")})

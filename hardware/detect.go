@@ -20,7 +20,7 @@ func Detect(compatible, dtid, product, display string) Model {
 		{"mini3", "Яндекс Станция Мини 3", []string{"bergamot", "mini 3", "мини 3"}},
 		{"midi", "Яндекс Станция Миди", []string{"cucumber"}},
 		{"station3", "Яндекс Станция 3", []string{"orion"}},
-		{"lite2", "Яндекс Станция Лайт 2", []string{"plum", "lite 2", "лайт 2"}},
+		{"lite2", "Яндекс Станция Лайт 2", []string{"plum", "yandex,prune", "lite 2", "лайт 2", "lite2", "micro2", "micro_2", "micro-2"}},
 		{"street", "Яндекс Станция Стрит", []string{"mango"}},
 		{"fiero", "Fiero Hi", []string{"blackthorn", "fiero"}},
 		{"mini2", "Яндекс Станция Мини 2", []string{"station-mini2", "station-mini-2", "yandexmini_2", "mini 2", "мини 2"}},

@@ -358,12 +358,14 @@ func (e *Engine) instructions(s Settings, p Profile) string {
 			text += "\n\nСейчас на колонке играет " + st + ". Управлять им: инструмент music_control или play_music."
 		}
 	}
-	if p.Engine == "chatgpt" && chatgptChat != nil {
+	if chatgptChat != nil { // общая память разговора: у всех ассистентов, переживает перезапуск
 		if lines := chatLines(chatgptChat.Recent(chatKeepChars)); len(lines) > 0 {
 			text += "\n\nЭто продолжение одного вашего разговора: человек помнит, о чём вы говорили раньше, и может сослаться на это. " +
 				"Не пересказывай историю и не здоровайся заново. В квадратных скобках — что ты уже сделал на колонке (включил видео, выполнил команду). " +
 				"Предыдущие реплики:\n" + strings.Join(lines, "\n")
 		}
+	}
+	if p.Engine == "chatgpt" && chatgptChat != nil {
 		// напоминание после истории: в длинном чате модель иначе сползает в обычный стиль ChatGPT
 		persona := strings.TrimSpace(s.PromptText(p.Prompt))
 		if r := []rune(persona); len(r) > 2500 {
@@ -372,7 +374,7 @@ func (e *Engine) instructions(s Settings, p Profile) string {
 		text += "\n\nГлавное, не забывай: ты — голосовой ассистент Джарвис внутри умной колонки Яндекс Станция у хозяина дома, " +
 			"а не ChatGPT в приложении. Говоришь вслух, коротко, своим характером. Что делать на колонке (музыка, YouTube, свет, " +
 			"поиск, погода) — передаёшь бэкенду, он делает. Твой характер:\n" + persona
-	} else if h := e.journal.History(); len(h) > 0 {
+	} else if h := e.journal.History(); chatgptChat == nil && len(h) > 0 {
 		var ctx []map[string]string
 		for _, t := range h {
 			ctx = append(ctx, map[string]string{"user": t.Text, "jarvis": t.Answer})
@@ -435,18 +437,24 @@ func (e *Engine) brain(s Settings, p Profile) Brain {
 		if st := e.music.Status(); st != "" {
 			instr += "\n\nСейчас на колонке играет " + st + "."
 		}
-		switch {
-		case s.OpenAIKey != "":
+		if s.OpenAIKey != "" {
 			return askOpenAI(ctx, e.proxy.ClientFor("openai", 60*time.Second), s.OpenAIKey, p, instr, task, e.tools)
-		case s.GeminiKey != "":
-			return askGemini(ctx, e.proxy.ClientFor("gemini", 60*time.Second), s.GeminiKey, instr, task, p.WebSearch)
-		default:
+		}
+		// подписка ChatGPT — раньше Gemini: у неё есть умный дом, музыка и поиск, а у текстового Gemini только поиск
+		if s.ChatGPT.SignedIn() || s.GeminiKey == "" {
 			a, err := e.chatgptAuth(ctx)
-			if err != nil {
+			if err == nil {
+				var answer string
+				if answer, err = askCodex(ctx, e.proxy.ClientFor("chatgpt", 60*time.Second), a, p, instr, task, e.tools); err == nil {
+					return answer, nil
+				}
+			}
+			if s.GeminiKey == "" || ctx.Err() != nil {
 				return "", err
 			}
-			return askCodex(ctx, e.proxy.ClientFor("chatgpt", 60*time.Second), a, p, instr, task, e.tools)
+			log.Printf("мозг: подписка ChatGPT не ответила (%v) — спрашиваю Gemini", err)
 		}
+		return askGemini(ctx, e.proxy.ClientFor("gemini", 60*time.Second), s.GeminiKey, instr, task, p.WebSearch)
 	}
 }
 
@@ -551,6 +559,9 @@ func (e *Engine) converse(byWord, sure bool, preroll, clip []int16, quick <-chan
 			return false
 		}
 		out, readyAt = sess.Audio(), time.Now()
+		if t, ok := sess.(interface{ Touch() }); ok {
+			t.Touch()
+		}
 		if x, ok := sess.(interface{ Interruptions() <-chan struct{} }); ok {
 			interruptions = x.Interruptions()
 		}
@@ -1117,8 +1128,7 @@ func (e *Engine) youtubeStarted() {
 
 // chatgptFact — включилось новое видео: записать в общий чат ChatGPT, чтобы он знал, что играет.
 func (e *Engine) chatgptFact() {
-	st := e.store.Get()
-	if chatgptChat == nil || st.ActiveProfile().Engine != "chatgpt" {
+	if chatgptChat == nil {
 		return
 	}
 	e.music.mu.Lock()

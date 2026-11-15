@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,6 +82,7 @@ func (w *Web) Serve(addr string) error {
 	mux.HandleFunc("POST /api/setup", w.setup)
 	mux.HandleFunc("PUT /api/settings", w.auth(w.putSettings))
 	mux.HandleFunc("PUT /api/eleven-keys", w.auth(w.putElevenKeys))
+	mux.HandleFunc("PUT /api/gemini-keys", w.auth(w.putGeminiKeys))
 	mux.HandleFunc("POST /api/xiaomi/login", w.auth(w.xiaomiLogin))
 	mux.HandleFunc("GET /api/xiaomi/qr", w.auth(w.xiaomiQR))
 	mux.HandleFunc("POST /api/xiaomi/refresh", w.auth(w.xiaomiRefresh))
@@ -392,7 +394,7 @@ func (w *Web) state(rw http.ResponseWriter, r *http.Request) {
 		"profiles": s.Profiles, "active": s.Active, "prompts": s.Prompts, "live_voices": s.LiveVoices,
 		"voice_groups": LiveVoiceGroups, "backend_models": BackendModels, "efforts": Efforts,
 		"keys":        map[string]string{"openai": mask(s.OpenAIKey), "gemini": mask(s.GeminiKey), "grok": mask(s.GrokKey), "elevenlabs": mask(s.ElevenLabsKey), "yandex": mask(s.YandexToken)},
-		"eleven_keys": s.ElevenKeysState(), "vpn": s.VPNState(),
+		"eleven_keys": s.ElevenKeysState(), "gemini_keys": GeminiKeysState(s.GeminiKeys), "vpn": s.VPNState(),
 		"gemini_models": GeminiModels, "gemini_model_info": GeminiModelInfo, "gemini_voice_groups": GeminiVoiceGroups, "chatgpt_voice_groups": ChatGPTVoiceGroups, "grok_voice_groups": GrokVoiceGroups,
 		"chatgpt": map[string]any{"signed_in": s.ChatGPT.SignedIn(), "plan": s.ChatGPT.Plan, "email": s.ChatGPT.Email,
 			"login": w.chatLogin.State(), "chat": chatgptChat.State(), "limited_until": chatgptLimitedUntil.Load() / 1e9},
@@ -819,7 +821,15 @@ func (w *Web) putKeys(rw http.ResponseWriter, r *http.Request) {
 			case "openai":
 				s.OpenAIKey = v
 			case "gemini":
-				s.GeminiKey = v
+				if v == "" { // ключ добавляется к списку; пустой — убрать все
+					s.GeminiKeys = nil
+				} else if !slices.Contains(s.GeminiKeys, v) {
+					s.GeminiKeys = append(s.GeminiKeys, v)
+				}
+				s.GeminiKey = ""
+				if len(s.GeminiKeys) > 0 {
+					s.GeminiKey = s.GeminiKeys[0]
+				}
 			case "grok":
 				s.GrokKey = v
 			case "elevenlabs": // ключ добавляется к списку; пустой — убрать все
@@ -839,6 +849,33 @@ func (w *Web) putKeys(rw http.ResponseWriter, r *http.Request) {
 }
 
 // putElevenKeys — убрать ключ ElevenLabs из списка или вернуть отложенный в работу (по номеру).
+// putGeminiKeys — убрать один ключ Google из списка.
+func (w *Web) putGeminiKeys(rw http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Remove int `json:"remove"`
+	}
+	if readJSON(r, &req) != nil {
+		bad(rw, "пустой запрос")
+		return
+	}
+	err := w.store.Update(func(s *Settings) error {
+		if req.Remove < 0 || req.Remove >= len(s.GeminiKeys) {
+			return errors.New("такого ключа нет")
+		}
+		s.GeminiKeys = append(s.GeminiKeys[:req.Remove:req.Remove], s.GeminiKeys[req.Remove+1:]...)
+		s.GeminiKey = ""
+		if len(s.GeminiKeys) > 0 {
+			s.GeminiKey = s.GeminiKeys[0]
+		}
+		return nil
+	})
+	if err != nil {
+		bad(rw, err.Error())
+		return
+	}
+	writeJSON(rw, 200, map[string]any{"ok": true})
+}
+
 func (w *Web) putElevenKeys(rw http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Remove *int `json:"remove"`

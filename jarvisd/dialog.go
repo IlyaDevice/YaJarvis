@@ -217,3 +217,11 @@ func (j *Journal) note(route, text, answer string) {
 	j.Update(t, func(t *Turn) { t.Text, t.Answer = text, answer })
 	j.Remember(t)
 }
+
+// Touch — разговор только что открылся: тишину считаем отсюда, а не с момента, когда начали соединяться
+// (соединение может занять несколько секунд — человек за это время уже сказал фразу, и модель её обдумывает).
+func (s *dialog) Touch() {
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	s.mu.Unlock()
+}
