@@ -105,8 +105,33 @@ const geminiRestAfterQuota = time.Hour
 // geminiSpentPath — файл, где помнить исчерпанные модели после перезапуска (main); пусто — только в памяти.
 var geminiSpentPath string
 
+// geminiResetAt — когда Google обнуляет дневной лимит: полночь по Тихоокеанскому времени, это 08:00 UTC
+// зимой (11:00 по Москве; летом на час раньше — подождём лишний час, зато без промахов).
+func geminiResetAt(now time.Time) time.Time {
+	u := now.UTC()
+	r := time.Date(u.Year(), u.Month(), u.Day(), 8, 0, 0, 0, time.UTC)
+	if !r.After(u) {
+		r = r.Add(24 * time.Hour)
+	}
+	return r
+}
+
+// geminiRestUntil — до какого времени не пробовать модель после лимита. Первый раз — час (мог быть
+// поминутный лимит). Кончился снова почти сразу после часа отдыха — значит, дневной: ждём сброса,
+// а не тратим секунды первого разговора каждый час.
+func geminiRestUntil(prev any, now time.Time) time.Time {
+	if t, ok := prev.(time.Time); ok && !now.Before(t) && now.Sub(t) < 2*time.Hour {
+		if r := geminiResetAt(now); r.Sub(now) > geminiRestAfterQuota {
+			return r
+		}
+	}
+	return now.Add(geminiRestAfterQuota)
+}
+
 func markGeminiSpent(key, model string) {
-	geminiSpent.Store(geminiSpentKey(key, model), time.Now().Add(geminiRestAfterQuota))
+	k := geminiSpentKey(key, model)
+	prev, _ := geminiSpent.Load(k)
+	geminiSpent.Store(k, geminiRestUntil(prev, time.Now()))
 	if geminiSpentPath == "" {
 		return
 	}
