@@ -6,7 +6,7 @@ package main
 // находим функцию, которая собирает ссылку (в её теле есть x.set("alr","yes")), и выполняем плеер в goja.
 // Разбор плеера — парсером goja на Go, так быстрее, чем гонять JS-парсер внутри JS.
 // Плеер весит ~3 МБ и меняется раз в несколько дней; готовая машина держится в памяти, пока играет
-// музыка, и выбрасывается через несколько минут простоя.
+// музыка, и выбрасывается через неделю без реального использования.
 
 import (
 	"context"
@@ -85,14 +85,23 @@ func ytGet(ctx context.Context, client *http.Client, url string, limit int64) ([
 
 // prepare — убедиться, что плеер загружен; возвращает signatureTimestamp для запроса /player.
 func (j *ytJS) prepare(ctx context.Context, client *http.Client) (int, error) {
+	return j.prepareWithUse(ctx, client, true)
+}
+
+func (j *ytJS) prepareWithUse(ctx context.Context, client *http.Client, realUse bool) (int, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if !realUse && !j.used.IsZero() && time.Since(j.used) >= ytJSIdle {
+		return j.sts, nil // periodic checks must not reload an unused VM after its expiry
+	}
 	id, err := j.playerID(ctx, client)
 	if err != nil {
 		return 0, err
 	}
 	if j.vm != nil && j.idLoaded() == id {
-		j.touch()
+		if realUse {
+			j.touch()
+		}
 		return j.sts, nil
 	}
 	if j.failID == id && time.Since(j.failAt) < 30*time.Minute {
@@ -117,7 +126,9 @@ func (j *ytJS) prepare(ctx context.Context, client *http.Client) (int, error) {
 	}
 	j.vm, j.solve = vm, solve
 	j.vm.Set("__player", id)
-	j.touch()
+	if realUse || j.used.IsZero() {
+		j.touch()
+	}
 	log.Printf("музыка: плеер YouTube %s готов (скачан за %.1f с, разобран за %.1f с)", id, tDl.Seconds(), (time.Since(t0) - tDl).Seconds())
 	return j.sts, nil
 }

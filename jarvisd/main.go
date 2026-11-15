@@ -539,6 +539,7 @@ func main() {
 	go tuyaLAN.Listen(func() bool { return store.Get().Tuya.SignedIn() })
 	mic := NewMic(*micSock)
 	go mic.Run()
+	go WatchAliceMic(mic) // Midi/Mini: Алиса стартует раньше S98jarvisd — без перезапуска микрофона нет
 	player := NewPlayer()
 	player.Volume = func() int { s := store.Get(); return s.VoiceVolume() }
 	player.Trim = func() float64 { return voiceTrim(speakerLevel()) }

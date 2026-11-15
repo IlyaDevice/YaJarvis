@@ -217,6 +217,9 @@ type Proxy struct {
 	warm   map[string]*warmConn // готовые TLS-соединения по адресу «хост:443»
 
 	use func(svc string) bool // галочка «через VPN» у подключения (netroute.go)
+
+	poolMu     sync.Mutex
+	transports map[string]servicePool
 }
 
 type warmConn struct {
@@ -452,6 +455,10 @@ func (p *Proxy) DialContext(ctx context.Context, network, addr string) (net.Conn
 	p.mu.RLock()
 	inst := p.inst
 	p.mu.RUnlock()
+	return dialInstance(ctx, inst, network, addr)
+}
+
+func dialInstance(ctx context.Context, inst *core.Instance, network, addr string) (net.Conn, error) {
 	if inst == nil {
 		var d net.Dialer
 		return d.DialContext(ctx, network, addr)

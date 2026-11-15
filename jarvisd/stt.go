@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -33,14 +34,23 @@ type STT struct {
 	partial string
 	active  bool
 	speech  bool // сервер слышит речь прямо сейчас (между speech_started и speech_stopped)
+	gen     int  // номер захвата: кадры прошлого захвата из очереди не отправляются
+	feed    chan sttChunk
+}
+
+// sttChunk — кадр микрофона в очереди на отправку: Feed не ждёт сети, цикл микрофона (и слово активации) не стоит.
+type sttChunk struct {
+	gen int
+	pcm []int16
 }
 
 // speechLang — язык хозяина для распознавания ("" — определять самому); задаётся в main из настроек.
 var speechLang = func() string { return "ru" }
 
 func NewSTT(key func() string, client func() *http.Client) *STT {
-	s := &STT{key: key, client: client}
+	s := &STT{key: key, client: client, feed: make(chan sttChunk, 64)} // 64 кадра ≈ 2,5 с
 	go s.keep()
+	go s.send()
 	return s
 }
 
@@ -163,8 +173,18 @@ func (s *STT) Begin(preroll ...[]int16) (<-chan string, error) {
 		return nil, errors.New("нет соединения")
 	}
 	ch := make(chan string, 4)
-	s.results, s.partial, s.speech, s.active = ch, "", false, false
+	s.results, s.partial, s.speech, s.active = ch, "", false, true
+	s.gen++
 	s.mu.Unlock()
+	started := false
+	defer func() {
+		if !started {
+			s.mu.Lock()
+			s.active = false
+			s.gen++
+			s.mu.Unlock()
+		}
+	}()
 	if err := s.write(map[string]any{"type": "input_audio_buffer.clear"}); err != nil {
 		return nil, err
 	}
@@ -175,9 +195,7 @@ func (s *STT) Begin(preroll ...[]int16) (<-chan string, error) {
 			}
 		}
 	}
-	s.mu.Lock()
-	s.active = true
-	s.mu.Unlock()
+	started = true
 	return ch, nil
 }
 
@@ -186,6 +204,7 @@ func (s *STT) End() {
 	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	s.active = false
+	s.gen++
 	s.mu.Unlock()
 	_ = s.write(map[string]any{"type": "input_audio_buffer.clear"})
 }
@@ -205,16 +224,32 @@ func (s *STT) write(v any) error {
 }
 
 // Feed — 16 кГц → 24 кГц (линейная интерполяция) и в OpenAI.
+// Не ждёт сети: кадр встаёт в очередь (переполнена — кадр теряется), отправляет send.
 func (s *STT) Feed(pcm []int16) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	s.mu.Lock()
-	active := s.active && s.ws != nil
+	active, gen := s.active && s.ws != nil, s.gen
 	s.mu.Unlock()
 	if !active || len(pcm) == 0 {
 		return
 	}
-	_ = s.write(sttAudio(pcm))
+	select {
+	case s.feed <- sttChunk{gen, slices.Clone(pcm)}:
+	default:
+	}
+}
+
+// send — отправляет очередь кадров по порядку; кадры закончившегося захвата пропускает.
+func (s *STT) send() {
+	for c := range s.feed {
+		s.writeMu.Lock()
+		s.mu.Lock()
+		ok := s.active && s.ws != nil && s.gen == c.gen
+		s.mu.Unlock()
+		if ok {
+			_ = s.write(sttAudio(c.pcm))
+		}
+		s.writeMu.Unlock()
+	}
 }
 
 func sttAudio(pcm []int16) map[string]any {

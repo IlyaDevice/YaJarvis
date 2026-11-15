@@ -195,6 +195,23 @@ func (s *dialog) Idle(idleS float64) bool {
 	return s.delegations == 0 && time.Since(s.lastActivity).Seconds() > idleS
 }
 
+// staleMusicCall — ответ модели, которая хочет включить музыку, хотя человек в этом разговоре ещё ничего не сказал:
+// так модель «вспоминает» просьбу из истории прошлых разговоров (сама включала стендап).
+const staleMusicCall = "Не включаю: в этом разговоре человек ещё ничего не просил, а прошлые просьбы из истории уже выполнены. " +
+	"Ничего не включай, коротко спроси, чем помочь."
+
+// userSpoke — человек уже что-то сказал в этом разговоре; расшифровка может отстать от вызова инструмента — ждём до wait.
+func (s *dialog) userSpoke(wait time.Duration) bool {
+	for end := time.Now().Add(wait); ; time.Sleep(100 * time.Millisecond) {
+		if s.UserTurns() > 0 {
+			return true
+		}
+		if time.Now().After(end) {
+			return false
+		}
+	}
+}
+
 // UserTurns — сколько раз человек что-то сказал в этом разговоре.
 func (s *dialog) UserTurns() int {
 	s.mu.Lock()

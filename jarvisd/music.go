@@ -1377,7 +1377,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 func (m *Music) Warm(ctx context.Context) {
 	for {
 		c, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		if _, err := m.js.prepare(c, m.client()); err != nil {
+		if _, err := m.js.prepareWithUse(c, m.client(), false); err != nil {
 			log.Printf("музыка: заранее подготовить плеер YouTube не вышло: %v", err)
 		}
 		cancel()

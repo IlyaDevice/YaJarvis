@@ -15,6 +15,7 @@ import (
 
 func TestSTTPrerollBeforeLiveFrames(t *testing.T) {
 	cleared := make(chan struct{})
+	audioReceived := make(chan struct{})
 	got := make(chan []map[string]any, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)
@@ -36,6 +37,9 @@ func TestSTTPrerollBeforeLiveFrames(t *testing.T) {
 			if i == 0 {
 				close(cleared)
 			}
+			if i == 2 {
+				close(audioReceived)
+			}
 		}
 		got <- events
 	}))
@@ -47,13 +51,20 @@ func TestSTTPrerollBeforeLiveFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.CloseNow()
-	s := &STT{ws: ws}
+	s := &STT{ws: ws, feed: make(chan sttChunk, 64)}
+	go s.send()
+	defer close(s.feed)
 	fed := make(chan struct{})
 	go func() { <-cleared; s.Feed([]int16{20, 20}); close(fed) }()
 	if _, err := s.Begin([]int16{10, 10}); err != nil {
 		t.Fatal(err)
 	}
 	<-fed
+	select {
+	case <-audioReceived:
+	case <-ctx.Done():
+		t.Fatal("live audio was not sent")
+	}
 	s.End()
 	select {
 	case events := <-got:

@@ -25,6 +25,8 @@ jobs:
           (cd hardware && go test ./...)
           node --check jarvisd/ui/app.js
           node --check installer/ui/setup.js
+      - name: Check concurrency regressions
+        run: cd jarvisd && go test -race -run 'Test(PlayerConcurrent|SettingsSnapshot|STT|ServiceHTTPPool|TrainingExport|YouTubeWarm|MiotTypes|AliceMisses)' ./...
       - name: Build clean release
         env:
           VERSION: ${{ github.ref_name }}

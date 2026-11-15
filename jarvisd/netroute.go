@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/xtls/xray-core/core"
 )
 
 type netService struct {
@@ -99,7 +101,53 @@ func (p *Proxy) DialFor(svc string) func(ctx context.Context, network, addr stri
 
 // ClientFor — HTTP-клиент подключения svc (timeout 0 — без общего ограничения).
 func (p *Proxy) ClientFor(svc string, timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout, Transport: p.TransportFor(svc)}
+	return &http.Client{Timeout: timeout, Transport: serviceTransport{p, svc}}
+}
+
+type servicePool struct {
+	inst *core.Instance
+	t    *http.Transport
+}
+
+type serviceTransport struct {
+	p   *Proxy
+	svc string
+}
+
+func (t serviceTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return t.p.servicePool(t.svc).RoundTrip(r)
+}
+
+// Route selection happens for every request, including clients kept by a service.
+// A route change retires the old pool; its in-flight requests can still finish.
+func (p *Proxy) servicePool(svc string) *http.Transport {
+	use := p.use == nil || p.use(svc)
+	p.poolMu.Lock()
+	defer p.poolMu.Unlock()
+	var inst *core.Instance
+	if use {
+		p.mu.RLock()
+		inst = p.inst
+		p.mu.RUnlock()
+	}
+	if old, ok := p.transports[svc]; ok {
+		if old.inst == inst {
+			return old.t
+		}
+		old.t.CloseIdleConnections()
+	}
+	t := p.TransportFor(svc)
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if inst == nil {
+			return directDialer.DialContext(ctx, network, addr)
+		}
+		return dialInstance(ctx, inst, network, addr)
+	}
+	if p.transports == nil {
+		p.transports = make(map[string]servicePool)
+	}
+	p.transports[svc] = servicePool{inst, t}
+	return t
 }
 
 func (p *Proxy) TransportFor(svc string) *http.Transport {

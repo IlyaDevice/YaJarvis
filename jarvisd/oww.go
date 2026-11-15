@@ -37,13 +37,15 @@ type owwConv struct {
 	b              []float32
 	win, wout      int // ширина (мелы) на входе и выходе
 	rows           [][]float32
+	rowbuf, out    []float32 // owned history and reusable output; downstream layers copy their input
 	act            bool
 }
 
 type owwPool struct {
-	ph, pw  int
-	win, c  int
-	pending []float32
+	ph, pw    int
+	win, c    int
+	pending   []float32
+	hold, out []float32
 }
 
 type OWW struct {
@@ -60,14 +62,16 @@ type OWW struct {
 	thresholds  [10]float32
 	sensitivity func() int
 
-	buf          []float32 // звук в масштабе int16: контекст + новое
-	dropped      int
-	ring         [][]float32
-	cooldown     int
-	LastProb     float32
-	pending      int
-	peak         float32
-	LastWakeProb float32 // максимум короткого окна подтверждения, а не первое пересечение порога
+	buf                       []float32 // звук в масштабе int16: контекст + новое
+	dropped                   int
+	ring                      [][]float32
+	cooldown                  int
+	LastProb                  float32
+	pending                   int
+	peak                      float32
+	LastWakeProb              float32 // максимум короткого окна подтверждения, а не первое пересечение порога
+	melRows                   [][]float32
+	melData, ringData, h1, h2 []float32
 }
 
 type binReader struct {
@@ -156,13 +160,25 @@ func (o *OWW) Ready() bool { return true }
 
 func (o *OWW) resetLocked() {
 	o.buf = make([]float32, owwCtx, owwCtx+owwStep*2)
+	o.melRows = make([][]float32, owwStep/owwHop)
+	o.melData = make([]float32, len(o.melRows)*owwMels)
+	for i := range o.melRows {
+		o.melRows[i] = o.melData[i*owwMels : (i+1)*owwMels]
+	}
+	o.ring = make([][]float32, 0, o.seq)
+	o.ringData = make([]float32, o.seq*o.emb)
+	o.h1, o.h2 = make([]float32, o.h), make([]float32, o.h)
 	o.dropped = 0
 	o.ring = o.ring[:0]
 	for _, c := range o.convs {
-		c.rows = c.rows[:0]
+		c.rows = make([][]float32, 0, c.kh)
+		c.rowbuf = make([]float32, c.kh*c.win*c.ci)
+		c.out = make([]float32, c.wout*c.co)
 	}
 	for _, p := range o.pools {
 		p.pending = nil
+		p.hold = make([]float32, p.win*p.c)
+		p.out = make([]float32, (p.win/p.pw)*p.c)
 	}
 }
 
@@ -212,7 +228,7 @@ func (o *OWW) step() bool {
 
 func (o *OWW) mel(x []float32) [][]float32 {
 	n := (len(x)-owwNFFT)/owwHop + 1
-	out := make([][]float32, n)
+	out := o.melRows[:n]
 	re := make([]float64, owwNFFT)
 	im := make([]float64, owwNFFT)
 	power := make([]float64, owwBins)
@@ -226,7 +242,7 @@ func (o *OWW) mel(x []float32) [][]float32 {
 		for b := 0; b < owwBins; b++ {
 			power[b] = re[b]*re[b] + im[b]*im[b]
 		}
-		row := make([]float32, owwMels)
+		row := out[t]
 		for m := 0; m < owwMels; m++ {
 			var acc float64
 			for b := 0; b < owwBins; b++ {
@@ -250,12 +266,20 @@ func (o *OWW) mel(x []float32) [][]float32 {
 func (o *OWW) push(i int, row []float32) []float32 {
 	for ; i < len(o.convs); i++ {
 		c := o.convs[i]
-		c.rows = append(c.rows, row)
+		// Input may be a reused output of the preceding layer: retain our own copy.
+		var slot []float32
+		if len(c.rows) < c.kh {
+			n := len(c.rows) * c.win * c.ci
+			slot = c.rowbuf[n : n+c.win*c.ci]
+			c.rows = append(c.rows, slot)
+		} else {
+			slot = c.rows[0]
+			copy(c.rows, c.rows[1:])
+			c.rows[len(c.rows)-1] = slot
+		}
+		copy(slot, row)
 		if len(c.rows) < c.kh {
 			return nil
-		}
-		if len(c.rows) > c.kh {
-			c.rows = c.rows[1:]
 		}
 		row = c.forward()
 		if p, ok := o.pools[i+1]; ok {
@@ -268,7 +292,7 @@ func (o *OWW) push(i int, row []float32) []float32 {
 }
 
 func (c *owwConv) forward() []float32 {
-	out := make([]float32, c.wout*c.co)
+	out := c.out
 	pad := c.kw / 2
 	span := c.kw * c.ci
 	for x := 0; x < c.wout; x++ {
@@ -344,11 +368,12 @@ func dotGo(a, b []float32) float32 {
 
 func (p *owwPool) forward(row []float32) []float32 {
 	if p.ph == 2 && p.pending == nil {
-		p.pending = row
+		copy(p.hold, row)
+		p.pending = p.hold
 		return nil
 	}
 	wout := p.win / p.pw
-	out := make([]float32, wout*p.c)
+	out := p.out
 	for x := 0; x < wout; x++ {
 		for ch := 0; ch < p.c; ch++ {
 			m := float32(math.Inf(-1))
@@ -367,15 +392,22 @@ func (p *owwPool) forward(row []float32) []float32 {
 
 // head — новый отпечаток: по последним 16 считаем вероятность «Джарвис».
 func (o *OWW) head(e []float32) bool {
-	o.ring = append(o.ring, e)
-	if len(o.ring) > o.seq {
-		o.ring = o.ring[1:]
+	var slot []float32
+	if len(o.ring) < o.seq {
+		n := len(o.ring) * o.emb
+		slot = o.ringData[n : n+o.emb]
+		o.ring = append(o.ring, slot)
+	} else {
+		slot = o.ring[0]
+		copy(o.ring, o.ring[1:])
+		o.ring[len(o.ring)-1] = slot
 	}
+	copy(slot, e)
 	if len(o.ring) < o.seq {
 		return false
 	}
 	in := o.emb * o.seq
-	h1 := make([]float32, o.h)
+	h1 := o.h1
 	for j := 0; j < o.h; j++ {
 		acc := o.b1[j]
 		wj := o.w1[j*in : (j+1)*in]
@@ -384,7 +416,7 @@ func (o *OWW) head(e []float32) bool {
 		}
 		h1[j] = max(acc, 0)
 	}
-	h2 := make([]float32, o.h)
+	h2 := o.h2
 	for j := 0; j < o.h; j++ {
 		acc := o.b2[j] + dot(h1, o.w2[j*o.h:(j+1)*o.h])
 		h2[j] = max(acc, 0)

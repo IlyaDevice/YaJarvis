@@ -338,12 +338,18 @@ const trainReadme = `Записи с колонки для дообучения 
 // downloadTrain — архив записей: с колонки и с Google Диска (Диск качаем параллельно, в архив пишем по порядку),
 // плюс текущая модель и скрипт дообучения. WAV почти не сжимается — кладём без сжатия, процессор колонки не тратим.
 func (w *Web) downloadTrain(rw http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	rw.Header().Set("Content-Type", "application/zip")
 	rw.Header().Set("Content-Disposition", `attachment; filename="jarvis-train-`+time.Now().Format("20060102-1504")+`.zip"`)
 	z := zip.NewWriter(rw)
 	put := func(name string, data []byte, method uint16, mod time.Time) {
 		if f, err := z.CreateHeader(&zip.FileHeader{Name: name, Method: method, Modified: mod}); err == nil {
-			_, _ = f.Write(data)
+			if _, err = f.Write(data); err != nil {
+				cancel()
+			}
+		} else {
+			cancel()
 		}
 	}
 	now := time.Now()
@@ -358,15 +364,13 @@ func (w *Web) downloadTrain(rw http.ResponseWriter, r *http.Request) {
 		put("wake.json", b, zip.Deflate, now)
 	}
 	clips := t.clips()
-	// записи с Диска — восемью потоками заранее; каждая ждёт своей очереди в архиве
+	// Up to two clips including the one being written. Drive bounds a clip to 8 MiB.
 	type got struct {
 		data []byte
 		err  error
 	}
 	ready := make([]chan got, len(clips))
-	sem := make(chan struct{}, 8)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	sem := make(chan struct{}, 2)
 	for i, c := range clips {
 		if c.Remote {
 			ready[i] = make(chan got, 1)
@@ -382,8 +386,7 @@ func (w *Web) downloadTrain(rw http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			}
-			go func(i int, c trainClip) {
-				defer func() { <-sem }()
+			go func(i int, c trainClip) { // released after the ZIP write, not after the download
 				cctx, ccancel := context.WithTimeout(ctx, 30*time.Second)
 				defer ccancel()
 				var b []byte
@@ -411,6 +414,7 @@ func (w *Web) downloadTrain(rw http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if g.err != nil {
+				<-sem
 				failed++
 				continue
 			}
@@ -423,6 +427,9 @@ func (w *Web) downloadTrain(rw http.ResponseWriter, r *http.Request) {
 			data = b
 		}
 		put(c.Kind+"/"+c.Name, data, zip.Store, c.Time)
+		if c.Remote {
+			<-sem
+		}
 	}
 	if failed > 0 {
 		log.Printf("обучение: в архив не попало %d записей с Google Диска", failed)

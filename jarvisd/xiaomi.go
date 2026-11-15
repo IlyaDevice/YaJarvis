@@ -627,7 +627,13 @@ func (x *Xiaomi) describe(ctx context.Context, devs []XiaomiDevice) {
 		urn := devs[i].Type
 		if urn == "" {
 			if types == nil {
-				types = miotTypes(ctx, c)
+				want := map[string]bool{}
+				for _, d := range devs {
+					if d.Type == "" {
+						want[d.Model] = true
+					}
+				}
+				types = miotTypes(ctx, c, want)
 			}
 			urn = types[devs[i].Model]
 		}
@@ -722,8 +728,9 @@ func miotSpecFor(ctx context.Context, c *http.Client, urn string) *miotSpec {
 	return &sp
 }
 
-// miotTypes — модель → urn по общему каталогу (большой: читаем потоком и оставляем только нужное).
-func miotTypes(ctx context.Context, c *http.Client) map[string]string {
+// miotTypes — модель → urn по общему каталогу. Каталог большой: читаем его потоком по одной записи
+// и оставляем только модели из want — весь каталог в памяти не собирается.
+func miotTypes(ctx context.Context, c *http.Client, want map[string]bool) map[string]string {
 	out := map[string]string{}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://miot-spec.org/miot-spec-v2/instances?status=released", nil)
 	resp, err := c.Do(req)
@@ -731,21 +738,45 @@ func miotTypes(ctx context.Context, c *http.Client) map[string]string {
 		return out
 	}
 	defer resp.Body.Close()
-	var all struct {
-		Instances []struct {
-			Model   string `json:"model"`
-			Type    string `json:"type"`
-			Version int    `json:"version"`
-		} `json:"instances"`
-	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&all) != nil {
+	return miotTypesFrom(io.LimitReader(resp.Body, 32<<20), want)
+}
+
+func miotTypesFrom(r io.Reader, want map[string]bool) map[string]string {
+	out := map[string]string{}
+	dec := json.NewDecoder(r)
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return out
 	}
-	best := map[string]int{}
-	for _, in := range all.Instances {
-		if in.Version >= best[in.Model] {
-			best[in.Model], out[in.Model] = in.Version, in.Type
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return out
 		}
+		if key != "instances" {
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return out
+			}
+			continue
+		}
+		if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+			return out
+		}
+		best := map[string]int{}
+		for dec.More() {
+			var in struct {
+				Model   string `json:"model"`
+				Type    string `json:"type"`
+				Version int    `json:"version"`
+			}
+			if dec.Decode(&in) != nil {
+				return out
+			}
+			if want[in.Model] && in.Version >= best[in.Model] {
+				best[in.Model], out[in.Model] = in.Version, in.Type
+			}
+		}
+		return out
 	}
 	return out
 }

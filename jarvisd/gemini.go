@@ -874,7 +874,12 @@ func (s *GeminiSession) callTools(calls []struct {
 			b, _ := json.Marshal(c.Args)
 			args = string(b)
 		}
-		result := s.tools.Call(ctx, c.Name, args)
+		var result string
+		if c.Name == "play_music" && !s.userSpoke(1500*time.Millisecond) {
+			result = staleMusicCall // модель повторяет просьбу из истории прошлых разговоров
+		} else {
+			result = s.tools.Call(ctx, c.Name, args)
+		}
 		cancel()
 		log.Printf("Gemini Live: %s(%s) → %s", c.Name, args, result)
 		out = append(out, map[string]any{"id": c.ID, "name": c.Name, "response": map[string]any{"result": result}})

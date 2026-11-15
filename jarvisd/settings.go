@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 	_ "time/tzdata" // на колонке нет базы часовых поясов
@@ -394,8 +396,21 @@ func (st *Store) Get() Settings {
 	defer st.mu.RUnlock()
 	c := *st.s
 	c.Profiles = append([]Profile(nil), st.s.Profiles...)
+	for i := range c.Profiles {
+		if led := st.s.Profiles[i].Led; led != nil {
+			value := *led
+			c.Profiles[i].Led = &value
+		}
+	}
 	c.Prompts = append([]Prompt(nil), st.s.Prompts...)
 	c.LiveVoices = append([]CustomVoice(nil), st.s.LiveVoices...)
+	// карты и срезы — тоже свои: панель меняет их под замком, а копию читают без него
+	c.VPN, c.HomeUse = maps.Clone(st.s.VPN), maps.Clone(st.s.HomeUse)
+	c.GeminiKeys, c.ElevenKeys = slices.Clone(st.s.GeminiKeys), slices.Clone(st.s.ElevenKeys)
+	c.HomeAssistant.Rooms = slices.Clone(st.s.HomeAssistant.Rooms)
+	for i := range c.HomeAssistant.Rooms {
+		c.HomeAssistant.Rooms[i].Aliases = slices.Clone(st.s.HomeAssistant.Rooms[i].Aliases)
+	}
 	return c
 }
 

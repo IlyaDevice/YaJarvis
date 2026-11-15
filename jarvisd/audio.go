@@ -115,6 +115,7 @@ type Player struct {
 	in     io.WriteCloser
 	queue  chan []byte
 	done   chan struct{}
+	exited chan struct{}  // only the Start goroutine calls cmd.Wait
 	Volume func() int     // 0..100, читается на каждом куске
 	Trim   func() float64 // поправка к громкости голоса от громкости самой колонки (1 — без поправки)
 	lim    *limiter
@@ -153,6 +154,9 @@ func (p *Player) Start(rate int) error {
 	p.lim, p.boost = newLimiter(rate), 1
 	p.queue = make(chan []byte, 512)
 	p.done = make(chan struct{})
+	p.exited = make(chan struct{})
+	exited := p.exited
+	go func() { _ = cmd.Wait(); close(exited) }()
 	go p.pump(in, p.queue, p.done)
 	return nil
 }
@@ -247,18 +251,18 @@ func (p *Player) Write(pcm []int16) error {
 	if p.boost > 0 {
 		g *= p.boost
 	}
+	defer p.mu.Unlock() // отправка тоже под замком: Stop/Finish закрывают канал под ним же — иначе «send on closed channel»
 	q, lim := p.queue, p.lim
+	if q == nil {
+		return errors.New("плеер не запущен")
+	}
 	if lim != nil {
 		for i, s := range pcm {
 			binary.LittleEndian.PutUint16(b[2*i:], uint16(lim.next(float64(s)*g)))
 		}
 	}
-	p.mu.Unlock()
-	if q == nil {
-		return errors.New("плеер не запущен")
-	}
 	select {
-	case q <- b:
+	case q <- b: // не блокирует: при полном канале — default
 		return nil
 	default:
 		return errors.New("плеер не успевает")
@@ -268,18 +272,20 @@ func (p *Player) Write(pcm []int16) error {
 // Finish — доиграть то, что уже отдано, и закрыть.
 func (p *Player) Finish(timeout time.Duration) {
 	p.mu.Lock()
-	cmd, q, done := p.cmd, p.queue, p.done
+	cmd, q, done, exited := p.cmd, p.queue, p.done, p.exited
 	p.queue = nil
+	if q != nil {
+		close(q) // повторный Finish (или Finish после Stop) канал уже закрыл
+	}
 	p.mu.Unlock()
 	if cmd == nil {
 		return
 	}
-	close(q)
 	select {
 	case <-done:
 	case <-time.After(timeout):
 	}
-	waitOrInt(cmd, timeout)
+	waitPlayer(cmd, exited, timeout)
 	p.mu.Lock()
 	if p.cmd == cmd {
 		p.cmd = nil
@@ -290,19 +296,32 @@ func (p *Player) Finish(timeout time.Duration) {
 // Stop — оборвать сразу (now) или дать доиграть буфер ALSA.
 func (p *Player) Stop(now bool) {
 	p.mu.Lock()
-	cmd, q := p.cmd, p.queue
+	cmd, q, exited := p.cmd, p.queue, p.exited
 	p.cmd, p.queue = nil, nil
+	if q != nil {
+		close(q)
+	}
 	p.mu.Unlock()
 	if cmd == nil {
 		return
 	}
-	if q != nil {
-		close(q)
-	}
 	if now {
 		_ = cmd.Process.Signal(syscall.SIGINT)
 	}
-	waitOrInt(cmd, 2*time.Second)
+	waitPlayer(cmd, exited, 2*time.Second)
+}
+
+func waitPlayer(cmd *exec.Cmd, exited <-chan struct{}, timeout time.Duration) {
+	select {
+	case <-exited:
+	case <-time.After(timeout):
+		_ = cmd.Process.Signal(syscall.SIGINT)
+		select {
+		case <-exited:
+		case <-time.After(time.Second):
+			_ = cmd.Process.Kill()
+		}
+	}
 }
 
 func waitOrInt(cmd *exec.Cmd, timeout time.Duration) {
