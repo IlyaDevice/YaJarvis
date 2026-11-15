@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -136,6 +137,7 @@ func (s *ChatGPTSession) run() {
 }
 
 func (s *ChatGPTSession) connect() error {
+	t0 := time.Now()
 	actx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 	a, err := s.getAuth(actx)
 	cancel()
@@ -143,40 +145,22 @@ func (s *ChatGPTSession) connect() error {
 		return err
 	}
 	s.auth = a
-	m := &webrtc.MediaEngine{}
-	opus := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2, SDPFmtpLine: "minptime=10;useinbandfec=1"}
-	if err := m.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: opus, PayloadType: 111}, webrtc.RTPCodecTypeAudio); err != nil {
-		return err
-	}
-	se := webrtc.SettingEngine{}
-	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithSettingEngine(se))
-	pc, err := api.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		return err
-	}
-	s.pc = pc
-	go func() { <-s.ctx.Done(); _ = pc.Close() }()
-	track, err := webrtc.NewTrackLocalStaticSample(opus, "audio", "jarvis")
-	if err != nil {
-		return err
-	}
-	if _, err := pc.AddTrack(track); err != nil {
-		return err
-	}
-	s.track = track
-	dc, err := pc.CreateDataChannel("oai-events", nil)
-	if err != nil {
-		return err
-	}
-	s.dc = dc
-	opened := make(chan struct{})
-	dc.OnOpen(func() { close(opened) })
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if msg.IsString {
-			s.event(msg.Data)
+	tAuth := time.Since(t0)
+	prep, warm := takeRTC(), true
+	if prep == nil {
+		warm = false
+		if prep, err = prepareRTC(); err != nil {
+			return err
 		}
-	})
+	}
+	defer warmRTC() // следующий звонок — уже на готовом соединении
+	tPrep := time.Since(t0) - tAuth
+	pc := prep.pc
+	s.pc, s.track, s.dc = pc, prep.track, prep.dc
+	go func() { <-s.ctx.Done(); _ = pc.Close() }()
+	prep.mu.Lock()
+	prep.sink = func(msg string) { s.event([]byte(msg)) }
+	prep.mu.Unlock()
 	pc.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		if tr.Kind() == webrtc.RTPCodecTypeAudio && s.ctx.Err() == nil {
 			s.players.Add(1)
@@ -189,35 +173,29 @@ func (s *ChatGPTSession) connect() error {
 			s.cancel()
 		}
 	})
-
-	offer, err := pc.CreateOffer(nil)
+	t1 := time.Now()
+	answer, err := s.createCall(prep.sdp)
 	if err != nil {
 		return err
 	}
-	gathered := webrtc.GatheringCompletePromise(pc)
-	if err := pc.SetLocalDescription(offer); err != nil {
-		return err
-	}
-	select {
-	case <-gathered:
-	case <-time.After(3 * time.Second):
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	}
-	answer, err := s.createCall(pc.LocalDescription().SDP)
-	if err != nil {
-		return err
-	}
+	tCall := time.Since(t1)
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
 		return fmt.Errorf("ответ OpenAI не подошёл: %w", err)
 	}
+	t2 := time.Now()
 	select {
-	case <-opened:
+	case <-prep.opened:
 	case <-time.After(10 * time.Second):
 		return errors.New("звонок не соединился за 10 с — возможно, OpenAI не пропускает звук из этой сети")
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	}
+	how := "соединение с нуля"
+	if warm {
+		how = "готовое соединение"
+	}
+	log.Printf("GPT-Live (подписка): вход %.2f с, %s %.2f с, запрос звонка %.2f с, рукопожатие %.2f с",
+		tAuth.Seconds(), how, tPrep.Seconds(), tCall.Seconds(), time.Since(t2).Seconds())
 	s.start(nil)
 	return nil
 }
@@ -226,6 +204,10 @@ func (s *ChatGPTSession) createCall(sdp string) (string, error) {
 	voice := chatgptVoice(s.prof.Voice)
 	session := map[string]any{"model": chatgptLiveModel, "instructions": s.instructions + liveRules,
 		"audio": map[string]any{"output": map[string]any{"voice": voice}}, "delegation": map[string]any{"type": "client"}}
+	// Голос подписки слушает характер и память только из начального сообщения разработчика: одни instructions
+	// он игнорирует и представляется «ChatGPT от OpenAI» (проверено звонками: с initial_items — «Я Джарвис»).
+	session["initial_items"] = []any{map[string]any{"type": "message", "role": "developer",
+		"content": []any{map[string]any{"type": "input_text", "text": s.instructions + liveRules}}}}
 	body, _ := json.Marshal(map[string]any{"sdp": sdp, "session": session})
 	ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 	defer cancel()
@@ -405,24 +387,14 @@ func chunkBytes(text string, n int) []string {
 	return out
 }
 
-// play — голос модели: RTP → Opus → 16 кГц.
+// play — голос модели: RTP → буфер против джиттера → Opus → 16 кГц.
 func (s *ChatGPTSession) play(tr *webrtc.TrackRemote) {
 	dec, err := gopus.NewDecoder(gopus.DefaultDecoderConfig(MicRate, 1))
 	if err != nil {
 		log.Printf("GPT-Live (подписка): декодер: %v", err)
 		return
 	}
-	buf := make([]int16, MicRate/10)
-	for {
-		pkt, _, err := tr.ReadRTP()
-		if err != nil {
-			return
-		}
-		n, err := dec.DecodeInt16(pkt.Payload, buf)
-		if err != nil || n <= 0 {
-			continue
-		}
-		pcm := append([]int16(nil), buf[:n]...)
+	jb := newJitterBuf(dec, func(pcm []int16) {
 		s.level.add(pcm, MicRate)
 		if loud(pcm) {
 			s.heardVoice()
@@ -432,6 +404,28 @@ func (s *ChatGPTSession) play(tr *webrtc.TrackRemote) {
 		case s.Out <- pcm:
 		default:
 		}
+	})
+	defer func() {
+		if jb.lost > 0 {
+			log.Printf("GPT-Live (подписка): потерянных пакетов голоса за звонок — %d, закрыты восстановлением", jb.lost)
+		}
+	}()
+	for {
+		_ = tr.SetReadDeadline(time.Now().Add(120 * time.Millisecond))
+		pkt, _, err := tr.ReadRTP()
+		if err != nil {
+			var ne net.Error
+			if (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, os.ErrDeadlineExceeded) {
+				jb.flush() // фраза кончилась раньше, чем набрался запас, — отдать, что есть
+				if s.ctx.Err() != nil {
+					return
+				}
+				continue
+			}
+			jb.flush()
+			return
+		}
+		jb.push(pkt)
 	}
 }
 

@@ -44,6 +44,9 @@ func TestMemoryWorthy(t *testing.T) {
 	if memoryWorthy("Home Assistant недоступен — проверь адрес и включён ли сервер") {
 		t.Fatal("ошибку запоминать не надо")
 	}
+	if memoryWorthy("Я ChatGPT, голосовой помощник для разговоров и идей") || memoryWorthy("Я большая языковая модель от Google") {
+		t.Fatal("ответ, где модель назвала себя не Джарвисом, в память не берём")
+	}
 	if !memoryWorthy("Готово: «Mijia Robot Vacuum 5» vacuum.start-sweep") {
 		t.Fatal("успешную команду надо запомнить")
 	}

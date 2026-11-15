@@ -399,8 +399,14 @@ func (e *Engine) instructions(s Settings, p Profile) string {
 	if e.music.hasProposal() {
 		text += "\n\nЕсть предложенный, но НЕ запущенный ролик. На «да» вызови music_control с command «да», на отказ — command «дальше». Дождись ответа, не включай сам и не добавляй подбор в очередь."
 	}
-	return text + speakerContentRules + speakerWaitRules
+	return text + speakerContentRules + speakerWaitRules + identityRules
 }
+
+// identityRules — в самом конце инструкций (его модель соблюдает лучше всего): голос в колонке — Джарвис,
+// а не ChatGPT, Gemini или Grok. Иначе на «кто ты?» модель называла себя по-своему и это попадало в память.
+const identityRules = "\n\nТебя зовут Джарвис. Спросят, кто ты, как тебя зовут или на чём ты работаешь, — ты Джарвис, голосовой ассистент " +
+	"в умной колонке хозяина. Никогда не называй себя ChatGPT, GPT, Gemini, Grok, Алисой, «языковой моделью» или «ассистентом OpenAI/Google/xAI». " +
+	"Если хозяин сам прямо спросит, какая нейросеть внутри, — можно сказать, что Джарвис работает на ней, но ты всё равно Джарвис."
 
 // newSession — открыть разговор с моделью тем движком, который выбран у ассистента.
 func (e *Engine) newSession(s Settings, p Profile) Session {

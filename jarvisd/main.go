@@ -251,6 +251,10 @@ func main() {
 		sess.Close()
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "probe-chatgpt-who" { // спросить голос подписки «кто ты?» текстом
+		runChatGPTWhoProbe(os.Args[2:], "/data/opt/jarvisd")
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "probe-chatgpt-mic" { // N звонков ChatGPT по подписке с записанной фразой
 		runChatGPTMicProbe(os.Args[2:], "/data/opt/jarvisd")
 		return
@@ -624,6 +628,7 @@ func main() {
 	go watchElevenKeys(store)
 	go memGuard(func() bool { return !engine.Talking() && !engine.music.Playing() })
 	go WatchNight(store, leds)
+	go WarmChatGPTLoop(func() bool { s := store.Get(); return s.ActiveProfile().Engine == "chatgpt" }) // звонок по подписке — на готовом соединении
 	yandexClient := &http.Client{Timeout: 10 * time.Second, Transport: proxy.TransportFor("yandex")}
 	engine.alice = NewAliceMusic(func() *http.Client { return yandexClient })
 	engine.alice.OnStart = engine.aliceStarted

@@ -133,3 +133,85 @@ func runChatGPTMicProbe(args []string, dataDir string) {
 	}
 	fmt.Printf("итог: %d из %d\n", ok, n)
 }
+
+// runChatGPTWhoProbe — спросить модель текстом «кто ты?» и показать ответ: проверка, слушает ли голос
+// в подписке наши инструкции (вопрос — записанной фразой).
+//
+//	jarvisd probe-chatgpt-who "Кто ты? Как тебя зовут?"
+func runChatGPTWhoProbe(args []string, dataDir string) {
+	if len(args) < 1 {
+		fmt.Println("использование: probe-chatgpt-who <вопрос.wav>")
+		return
+	}
+	q := args[0]
+	store, err := OpenStore(dataDir + "/settings.json")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	st := store.Get()
+	proxy := &Proxy{}
+	proxy.use = func(svc string) bool { s := store.Get(); return s.UseVPN(svc) }
+	if err := proxy.Apply(st.Vless); err != nil {
+		fmt.Println("VPN:", err)
+	}
+	auth := func(context.Context) (ChatGPTAuth, error) {
+		s := store.Get()
+		if !s.ChatGPT.SignedIn() || time.Until(time.Unix(s.ChatGPT.Expires, 0)) < time.Minute {
+			return s.ChatGPT, errors.New("нет действующего входа в ChatGPT")
+		}
+		return s.ChatGPT, nil
+	}
+	p := st.ActiveProfile()
+	instr := st.PromptText(p.Prompt) + identityRules
+	sess := NewChatGPTSession(context.Background(), auth, p, instr, proxy.LiveClientFor("chatgpt"),
+		func(context.Context, string) (string, error) { return "Готово.", nil }, &Journal{})
+	defer sess.Close()
+	if err := sess.Ready(15 * time.Second); err != nil {
+		fmt.Println("звонок:", err)
+		return
+	}
+	phrase, err := readWav16(q)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	sess.Feed(phrase)
+	go func() {
+		noise := make([]int16, MicRate/100)
+		for i := 0; i < 1200 && sess.ctx.Err() == nil; i++ {
+			time.Sleep(10 * time.Millisecond)
+			sess.Feed(noise)
+		}
+	}()
+	answer := ""
+	var sentAt, voiceAt time.Time
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case pcm := <-sess.Audio():
+			if loud(pcm) && voiceAt.IsZero() {
+				voiceAt = time.Now()
+			}
+		case <-time.After(20 * time.Millisecond):
+		}
+		sess.pendingMu.Lock()
+		if sentAt.IsZero() && len(sess.pending) < 4*(MicRate/50) {
+			sentAt = time.Now() // фраза ушла целиком — дальше в очереди только тишина
+		}
+		sess.pendingMu.Unlock()
+		sess.mu.Lock()
+		if b := strings.TrimSpace(sess.turnBot); len(b) > len(answer) {
+			answer = b
+		}
+		sess.mu.Unlock()
+	}
+	sess.statMu.Lock()
+	ev := fmt.Sprint(sess.events)
+	sess.statMu.Unlock()
+	lat := "голоса не было"
+	if !voiceAt.IsZero() && !sentAt.IsZero() {
+		lat = fmt.Sprintf("%.2f с от конца фразы до голоса", voiceAt.Sub(sentAt).Seconds())
+	}
+	fmt.Printf("звонок — %s\nответ: %s\nсобытия: %s\n", lat, answer, ev)
+}
