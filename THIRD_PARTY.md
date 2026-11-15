@@ -2,6 +2,10 @@
 
 YaJavis uses the dependencies pinned in `jarvisd/go.mod`, `jarvisd/go.sum` and `installer/go.mod`. Their licenses apply separately from YaJavis's MIT license. Corresponding upstream source versions are identified by these files.
 
+The panel's visual design was inspired by **dimap's [yapanel](https://github.com/dimap/yapanel-web)** (MIT, copyright 2026 dimap). The attribution remains in `jarvisd/ui/app.css`; its license is preserved in `LICENSES/yapanel-LICENSE`. See [CREDITS.md](CREDITS.md) for the authors and technical references used throughout the project.
+
+- Lucide icons — ISC, https://github.com/lucide-icons/lucide; license preserved in `LICENSES/Lucide-LICENSE`.
+
 - Xray-core — MPL-2.0, https://github.com/XTLS/Xray-core. Used without local modifications; source is available at the version pinned in `go.mod`.
 - goja — MIT, https://github.com/dop251/goja.
 - Pion WebRTC — MIT, https://github.com/pion/webrtc.

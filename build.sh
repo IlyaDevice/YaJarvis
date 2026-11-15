@@ -2,7 +2,7 @@
 # Public release build. Never reads local settings or .env files.
 set -eu
 cd "$(dirname "$0")"
-VERSION=${VERSION:-0.9.41}
+VERSION=${VERSION:-0.9.42}
 REPO=${REPO:-newfpv/YaJavis}
 GO=${GO:-go}
 ZIG=${ZIG:-zig}
@@ -34,6 +34,6 @@ if [ "${RELEASE:-0}" = 1 ]; then
     cp "$P/jarvisd-arm64" "$P/jarvisd-armv7" "$R/"
     sed "s#__REPO__#$REPO#g" installer/install.sh | tr -d '\r' > "$R/install.sh"
     sed "s#__REPO__#$REPO#g" installer/install.ps1 | tr -d '\r' > "$R/install.ps1"
-    tar -czf "$R/THIRD_PARTY_NOTICES.tar.gz" LICENSE LICENSES THIRD_PARTY.md
+    tar -czf "$R/THIRD_PARTY_NOTICES.tar.gz" LICENSE LICENSES THIRD_PARTY.md CREDITS.md
     (cd "$R" && sha256sum JarvisSetup-* jarvisd-* install.* THIRD_PARTY_NOTICES.tar.gz > SHA256SUMS)
 fi

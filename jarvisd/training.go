@@ -139,7 +139,8 @@ func (t *Trainer) Save(kind string, pcm []int16, note string) {
 	}
 	dir := t.dir(kind)
 	_ = os.MkdirAll(dir, 0o700)
-	name := time.Now().Format("20060102-150405.000")
+	// Fast filesystems can save multiple clips in one millisecond. Keep each clip.
+	name := time.Now().Format("20060102-150405.000") + "_" + randHex(4)
 	if note != "" {
 		name += "_" + note
 	}
