@@ -18,6 +18,8 @@ YaJavis появился благодаря открытым проектам и
 
 ## Распознавание, звук и инфраструктура
 
+В качестве визуальных референсов движения установщика использовалась подборка [DesignBookmark Motion](https://designbookmark.com/motion): переходы шагов, отклик кнопок и смена состояний. Реализация использует CSS и Web Animations API вместе с анимациями самой панели YaJavis.
+
 | Авторы | Компонент | Роль |
 | :--- | :--- | :--- |
 | **dscripka и участники openWakeWord; Google** | [openWakeWord](https://github.com/dscripka/openWakeWord) | Мел-признаки и speech embedding для локального слова активации. |

@@ -18,8 +18,8 @@
   <div class="wizard">
     <ol class="steps" aria-label="Этапы установки"><li data-s="1">Колонка</li><li data-s="2">Проверка</li><li data-s="3">Настройки</li><li data-s="4">Установка</li></ol>
     <section id="s1" class="card">
-      <span class="eyebrow">Начнём знакомство</span><h1>Найдём вашу<br>колонку.</h1>
-      <p class="lead">Ещё несколько шагов — и у вашей Станции появится новый голосовой помощник.</p>
+      <span class="eyebrow">Начнём знакомство</span><h1>Найдём вашу<br> Станцию.</h1>
+      <p class="lead">Выберите Станцию. Голос, музыку и умный дом настроим после установки.</p>
       <div class="prerequisite"><span class="status-dot"></span><p>Колонка с root-доступом и ADB по сети.<br>Компьютер и Станция — в одной локальной сети.</p></div>
       <button class="btn accent wide" id="scan">Найти колонку в сети <span aria-hidden="true">→</span></button>
       <p class="scan-status" id="scan-st" role="status" aria-live="polite"></p>
@@ -29,35 +29,36 @@
     </section>
     <section id="s2" class="card hidden">
       <span class="eyebrow">Проверка устройства</span><h1 id="sp-title">Ваша Станция</h1><p class="lead">Проверим прошивку и подберём файлы под вашу модель.</p>
-      <div class="kv" id="sp-info"></div><div id="sp-problems"></div>
+      <details class="device-details"><summary>Сведения об устройстве</summary><div class="kv" id="sp-info"></div></details><div id="sp-problems"></div>
       <div class="actions"><button class="btn ghost" data-back="1">Назад</button><button class="btn accent" id="to3">Продолжить</button></div><button class="btn danger hidden" id="uninstall">Удалить Джарвиса</button>
     </section>
     <section id="s3" class="card hidden">
-      <span class="eyebrow">Последний штрих</span><h1>Сделайте его<br>своим.</h1><p class="lead">Задайте пароль панели. Остальное можно настроить после установки.</p>
-      <div class="f"><label for="pw">Пароль панели</label><input type="password" id="pw" autocomplete="new-password" placeholder="Не меньше 6 символов"><input type="password" id="pw2" autocomplete="new-password" placeholder="Повторите пароль" aria-label="Повторите пароль"><small>На колонку передаётся хэш пароля.</small></div>
+      <span class="eyebrow">Последний штрих</span><h1>Почти готово.</h1><p class="lead">Придумайте пароль. Сервисы и голос можно добавить позже.</p>
+      <div class="f"><label for="pw">Пароль панели · от 6 символов</label><div class="password-row"><input type="password" id="pw" autocomplete="new-password" placeholder="Пароль"><input type="password" id="pw2" autocomplete="new-password" placeholder="Повторите" aria-label="Повторите пароль"></div><small>Защитит доступ к настройкам колонки.</small></div>
       <div class="f"><label for="tz">Часовой пояс</label><select id="tz"></select></div>
       <details class="optional"><summary>Сразу подключить OpenAI и VPN <span>необязательно</span></summary><div class="f"><label for="openai">Ключ OpenAI</label><input type="password" id="openai" autocomplete="off" placeholder="sk-…"></div><div class="f"><label for="vless">Ссылка VLESS</label><textarea id="vless" placeholder="vless://…" spellcheck="false"></textarea></div><p class="hint">Gemini, ElevenLabs и другие подключения доступны в панели после установки.</p></details>
-      <p class="err" id="s3-err" role="alert"></p><div class="actions"><button class="btn ghost" data-back="2">Назад</button><button class="btn accent" id="install">Установить Джарвиса <span aria-hidden="true">→</span></button></div>
+      <p class="err" id="s3-err" role="alert"></p><div class="actions"><button class="btn ghost" data-back="2">Назад</button><button class="btn accent" id="install">Установить <span aria-hidden="true">→</span></button></div>
     </section>
     <section id="s4" class="card install-card hidden" aria-live="polite">
-      <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br>Джарвиса.</h1>
+      <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br> Джарвиса.</h1>
       <p class="lead" id="job-description">Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями справа.</p>
       <progress id="install-progress" aria-label="Ход установки" max="100"></progress><p id="job-status" class="job-status" role="status">Подключаемся к колонке…</p>
       <details class="job-details" id="job-details"><summary>Технический журнал</summary><pre class="log" id="log"></pre></details>
       <div class="finish-actions"><a class="btn accent wide hidden" id="open" target="_blank" rel="noopener">Открыть панель Джарвиса <span aria-hidden="true">↗</span></a><button class="btn ghost wide hidden" id="again">Другая колонка</button></div>
     </section>
-    <p class="foot">Установщик работает локально на вашем компьютере.<br>Оставьте окно программы открытым до завершения.</p>
+    <p class="foot">Не закрывайте программу до завершения установки.</p>
   </div>
   <aside class="showcase" aria-label="Знакомство с YaJavis">
-    <div class="showcase-heading"><span class="eyebrow">Больше возможностей вашей Станции</span><h2>Один помощник.<br>Ваши правила.</h2><p>Разговаривайте, слушайте музыку и управляйте домом.<br>Выбирайте голос, характер и сервисы под себя.</p></div>
-    <div class="preview-window"><div class="preview-bar"><span></span><span></span><span></span><small>Панель YaJavis</small></div><img id="tour-image" src="screenshots/dashboard.png" alt="Главная панель YaJavis" width="2000" height="1125"></div>
+    <div class="showcase-heading"><span class="eyebrow">Больше возможностей вашей Станции</span><h2>Ваша Станция. <span>Новые возможности.</span></h2><p>Выберите голос. Включите музыку. Управляйте домом.</p></div>
+    <button type="button" class="preview-window" id="tour-zoom" aria-label="Рассмотреть скриншот панели"><span class="preview-bar"><span></span><span></span><span></span><small>Панель YaJavis</small><span class="zoom-hint">Развернуть ↗</span></span><img id="tour-image" src="screenshots/dashboard.png" alt="Главная панель YaJavis" width="2000" height="1125"></button>
     <div class="tour-caption"><div class="tour-copy"><span class="tour-number" id="tour-number">01 / 04</span><h3 id="tour-title">Всё под рукой.</h3><p id="tour-text">Диалог с помощником, музыкальный плеер и состояние колонки — на одной странице.</p></div><div class="tour-controls"><button class="icon-btn" id="tour-prev" type="button" aria-label="Предыдущий скриншот">←</button><button class="icon-btn" id="tour-pause" type="button" aria-label="Приостановить показ" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg></button><button class="icon-btn" id="tour-next" type="button" aria-label="Следующий скриншот">→</button></div></div>
     <div class="tour-dots" id="tour-dots" aria-label="Скриншоты панели"></div>
     <div class="feature-strip"><span><i></i>Активация на колонке</span><span><i></i>AI на ваш выбор</span><span><i></i>Без своего сервера</span></div>
     <p class="demo-note">Пример настроенной панели. Свои аккаунты вы подключите после установки.</p>
   </aside>
   </div>
-  <footer class="bottom-bar"><span>YaJavis · Независимый проект сообщества</span><a href="https://github.com/newfpv/YaJavis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">Авторы и благодарности</a></footer>
+  <footer class="bottom-bar"><span>Установка на вашу колонку · Без отдельного сервера</span><a href="https://github.com/newfpv/YaJavis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">Авторы и благодарности</a></footer>
 </main>
+<dialog id="tour-dialog" class="image-dialog" aria-labelledby="large-title"><header><strong id="large-title">Панель YaJavis</strong><button class="icon-btn" id="tour-close" type="button" aria-label="Закрыть скриншот">×</button></header><img id="tour-large" alt=""><p>Esc — закрыть</p></dialog>
 </body>
 </html>

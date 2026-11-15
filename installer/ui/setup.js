@@ -2,6 +2,15 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let speaker = null;
+// Keep the wizard inside the viewport; its action stays visible when fields expand.
+document.querySelectorAll(".wizard > .card").forEach(card => {
+  const action = card.querySelector(".actions, .finish-actions, #scan");
+  const body = document.createElement("div"), footer = document.createElement("div");
+  body.className = "step-body"; footer.className = "step-footer";
+  if (action) footer.append(action);
+  body.append(...card.childNodes);
+  card.append(body, footer);
+});
 
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: { "Content-Type": "application/json", "X-Token": window.TOKEN }, body: body ? JSON.stringify(body) : undefined });
@@ -12,6 +21,13 @@ async function api(method, url, body) {
 
 function step(n) {
   [1, 2, 3, 4].forEach((i) => $("#s" + i).classList.toggle("hidden", i !== n));
+  document.body.dataset.step = String(n);
+  $(".steps").style.setProperty("--step", String(n - 1));
+  const card = $("#s" + n);
+  card.classList.remove("enter");
+  void card.offsetWidth;
+  card.classList.add("enter");
+  card.querySelector(".step-body").scrollTop = 0;
   document.querySelectorAll(".steps li").forEach((li) => { const s = +li.dataset.s; li.className = s === n ? "on" : s < n ? "done" : ""; });
 }
 
@@ -65,7 +81,7 @@ function show(sp) {
 document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => step(+b.dataset.back)));
 $("#to3").addEventListener("click", () => {
   // при обновлении пароль и ключи уже на колонке — поля можно оставить пустыми
-  $("#pw").placeholder = speaker.installed ? "оставьте пустым, чтобы не менять" : "минимум 6 символов";
+  $("#pw").placeholder = speaker.installed ? "Не менять" : "Пароль";
   step(3);
 });
 
@@ -121,14 +137,20 @@ step(1);
 
 // Product tour is local to the installer and does not contact external services.
 const tourSlides = [
-  { image: "dashboard", title: "Всё под рукой.", text: "Диалог с помощником, музыкальный плеер и состояние колонки — на одной странице.", alt: "Главная панель YaJavis" },
-  { image: "connections", title: "Вы выбираете, с кем говорить.", text: "OpenAI, Gemini, Grok и ElevenLabs. Подключите свой сервис и устройства умного дома.", alt: "Подключения AI и умного дома" },
-  { image: "assistant", title: "Голос и характер — ваши.", text: "Создавайте ассистентов с разными голосами, моделями и характером. Переключайтесь между ними в панели.", alt: "Настройки голосового ассистента" },
-  { image: "charts", title: "Понимайте свою Станцию.", text: "Следите за памятью, процессором, температурой и Wi-Fi. Всё доступно из браузера.", alt: "Графики состояния колонки" },
+  { image: "dashboard", title: "Всё под рукой.", text: "Диалог, музыка и состояние Станции — на одной странице.", alt: "Главная панель YaJavis" },
+  { image: "connections", title: "Вы выбираете, с кем говорить.", text: "Подключите OpenAI, Gemini, Grok или ElevenLabs и устройства умного дома.", alt: "Подключения AI и умного дома" },
+  { image: "assistant", title: "Голос и характер — ваши.", text: "Выберите голос, модель и характер. Создавайте разных ассистентов и переключайте их в панели.", alt: "Настройки голосового ассистента" },
+  { image: "charts", title: "Понимайте свою Станцию.", text: "Память, процессор, температура и Wi-Fi — всё состояние Станции в браузере.", alt: "Графики состояния колонки" },
 ];
 let tourIndex = 0, tourPaused = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 function drawTour() {
   const slide = tourSlides[tourIndex];
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    [$("#tour-image"), $(".tour-copy")].forEach(el => {
+      el.getAnimations().forEach(a => a.cancel());
+      el.animate([{opacity: 0, transform: "translateY(8px)"}, {opacity: 1, transform: "translateY(0)"}], {duration: 420, easing: "cubic-bezier(.22,1,.36,1)"});
+    });
+  }
   $("#tour-image").src = "screenshots/" + slide.image + ".png";
   $("#tour-image").alt = slide.alt;
   $("#tour-number").textContent = String(tourIndex + 1).padStart(2, "0") + " / 04";
@@ -137,9 +159,9 @@ function drawTour() {
   document.querySelectorAll("#tour-dots button").forEach((b, i) => { b.classList.toggle("on", i === tourIndex); b.setAttribute("aria-current", i === tourIndex ? "true" : "false"); });
 }
 $("#tour-dots").innerHTML = tourSlides.map((s, i) => `<button type="button" data-slide="${i}" aria-label="${esc(s.title)}"></button>`).join("");
-$("#tour-dots").addEventListener("click", e => { const b = e.target.closest("[data-slide]"); if (b) { tourIndex = +b.dataset.slide; drawTour(); } });
-$("#tour-next").addEventListener("click", () => { tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); });
-$("#tour-prev").addEventListener("click", () => { tourIndex = (tourIndex + tourSlides.length - 1) % tourSlides.length; drawTour(); });
+$("#tour-dots").addEventListener("click", e => { const b = e.target.closest("[data-slide]"); if (b) { tourPaused = true; drawTourPause(); tourIndex = +b.dataset.slide; drawTour(); } });
+$("#tour-next").addEventListener("click", () => { tourPaused = true; drawTourPause(); tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); });
+$("#tour-prev").addEventListener("click", () => { tourPaused = true; drawTourPause(); tourIndex = (tourIndex + tourSlides.length - 1) % tourSlides.length; drawTour(); });
 function drawTourPause() {
   $("#tour-pause").setAttribute("aria-pressed", String(tourPaused));
   $("#tour-pause").setAttribute("aria-label", tourPaused ? "Продолжить показ" : "Приостановить показ");
@@ -148,3 +170,29 @@ function drawTourPause() {
 $("#tour-pause").addEventListener("click", () => { tourPaused = !tourPaused; drawTourPause(); });
 setInterval(() => { if (!tourPaused && !document.hidden) { tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); } }, 8500);
 drawTour(); drawTourPause();
+
+// Same cursor-edge treatment used by the panel, limited to one paint per frame.
+let pointerFrame = 0, lastPointer = null;
+document.addEventListener("pointermove", event => {
+  if (event.pointerType === "touch" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  lastPointer = event;
+  if (pointerFrame) return;
+  pointerFrame = requestAnimationFrame(() => {
+    pointerFrame = 0;
+    const card = lastPointer.target.closest(".card");
+    if (!card) return;
+    const box = card.getBoundingClientRect();
+    card.style.setProperty("--mx", (lastPointer.clientX - box.left) + "px");
+    card.style.setProperty("--my", (lastPointer.clientY - box.top) + "px");
+  });
+});
+$("#tour-zoom").addEventListener("click", () => {
+  tourPaused = true; drawTourPause();
+  const slide = tourSlides[tourIndex];
+  $("#tour-large").src = $("#tour-image").src;
+  $("#tour-large").alt = slide.alt;
+  $("#large-title").textContent = slide.title;
+  $("#tour-dialog").showModal();
+});
+$("#tour-close").addEventListener("click", () => $("#tour-dialog").close());
+$("#tour-dialog").addEventListener("click", event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
