@@ -24,20 +24,21 @@ type WakeDetector interface {
 }
 
 type Engine struct {
-	store   *Store
-	proxy   *Proxy
-	mic     *Mic
-	player  *Player
-	leds    *Leds
-	tools   *Tools
-	journal *Journal
-	wake    WakeDetector
-	stt     *STT        // быстрая расшифровка для команд (соединение держится заранее)
-	cmds    *CmdSpotter // «стоп», «громче», «тише» штатным распознавателем Станции
-	music   *Music      // музыка с YouTube
-	alice   *AliceMusic // что играет у Алисы (Яндекс Музыка)
-	train   *Trainer    // записи для дообучения слова
-	bg      *BgRecorder // длинная запись фона на сервер
+	micLevel levelMeter // голос в микрофоне за разговор (до усиления) — в журнал: видно, что модель слышит тихо
+	store    *Store
+	proxy    *Proxy
+	mic      *Mic
+	player   *Player
+	leds     *Leds
+	tools    *Tools
+	journal  *Journal
+	wake     WakeDetector
+	stt      *STT        // быстрая расшифровка для команд (соединение держится заранее)
+	cmds     *CmdSpotter // «стоп», «громче», «тише» штатным распознавателем Станции
+	music    *Music      // музыка с YouTube
+	alice    *AliceMusic // что играет у Алисы (Яндекс Музыка)
+	train    *Trainer    // записи для дообучения слова
+	bg       *BgRecorder // длинная запись фона на сервер
 
 	dataDir string
 
@@ -91,21 +92,26 @@ func (e *Engine) Run(ctx context.Context) {
 			e.hold = append(e.hold, pcm...)
 		}
 		e.mu.Unlock()
+		if busy || live != nil {
+			e.leds.Hear(peakOf(pcm) / 9000)
+			e.micLevel.add(pcm, MicRate)
+		}
+		raw := pcm
+		if db := e.store.Flags().MicBoostDB; db > 0 && (busy || live != nil) {
+			pcm = boostPCM(pcm, db) // только для того, что уходит модели; слово активации слушает как есть
+		}
 		if busy && e.stt != nil {
 			e.stt.Feed(pcm)
 		}
-		if busy || live != nil {
-			e.leds.Hear(peakOf(pcm) / 9000)
-		}
-		e.bg.Feed(pcm, busy || live != nil)
+		e.bg.Feed(raw, busy || live != nil)
 		if busy || e.music.Playing() {
-			e.cmds.Feed(pcm)
+			e.cmds.Feed(raw)
 		} else {
 			e.cmds.Idle()
 		}
 		wakeHit := false
 		if e.wake != nil && e.store.Flags().WakeEnabled {
-			wakeHit = e.wake.Feed(pcm) // поток признаков непрерывный, в том числе при проверке имени
+			wakeHit = e.wake.Feed(raw) // поток признаков непрерывный, в том числе при проверке имени
 			if !busy && live == nil && !wakeHit && e.train != nil {
 				var p float32
 				if k, ok := e.wake.(*KWS); ok {
@@ -210,6 +216,10 @@ func (e *Engine) Trigger(source string) {
 				e.wake.Reset()
 			}
 			e.leds.Set(LedOff)
+			if l := e.micLevel.level(); l.secs > 0 {
+				log.Printf("микрофон: за разговор голос %.1f дБ, пик %.1f дБ (усиление для ИИ +%d дБ)", l.rms, l.peak, e.store.Flags().MicBoostDB)
+			}
+			e.micLevel.reset()
 			if queued {
 				e.Trigger("слово")
 			}
@@ -549,7 +559,7 @@ func (e *Engine) converse(byWord, sure bool, preroll, clip []int16, quick <-chan
 		}
 		sess = e.newSession(s, p)
 		e.mu.Lock()
-		sess.Feed(append(append([]int16(nil), preroll...), e.hold...))
+		sess.Feed(boostPCM(append(append([]int16(nil), preroll...), e.hold...), e.store.Flags().MicBoostDB))
 		e.hold, e.holding = nil, false
 		e.live = sess
 		e.mu.Unlock()

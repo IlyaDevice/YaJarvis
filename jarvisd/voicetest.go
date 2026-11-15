@@ -174,3 +174,22 @@ func (e *Engine) VoiceTest() {
 	}
 	log.Printf("громкость голоса: %s", strings.Join(out, "; "))
 }
+
+func (m *levelMeter) reset() {
+	m.mu.Lock()
+	m.rms, m.peak = nil, 0
+	m.mu.Unlock()
+}
+
+// boostPCM — копия звука с усилением db (с ограничением по краям шкалы); db <= 0 — тот же срез.
+func boostPCM(pcm []int16, db int) []int16 {
+	if db <= 0 || len(pcm) == 0 {
+		return pcm
+	}
+	k := math.Pow(10, float64(db)/20)
+	out := make([]int16, len(pcm))
+	for i, v := range pcm {
+		out[i] = int16(max(-32767, min(32767, float64(v)*k)))
+	}
+	return out
+}

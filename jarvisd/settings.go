@@ -86,6 +86,7 @@ type Settings struct {
 	WakeEnabled     bool    `json:"wake_enabled"`
 	WakeCheck       bool    `json:"wake_check"`       // перед ответом проверять имя расшифровкой (медленнее; без неё — сразу, как Алиса)
 	WakeSensitivity int     `json:"wake_sensitivity"` // 1..10
+	MicBoostDB      int     `json:"mic_boost_db"`     // доп. усиление микрофона для ИИ, 0..18 дБ (на Лайт 2 голос после обработки тише)
 	FollowUpS       float64 `json:"follow_up_s"`
 	City            string  `json:"city"`
 	Timezone        string  `json:"timezone"`     // например Europe/Moscow: часы колонки в UTC
@@ -404,12 +405,13 @@ type WakeFlags struct {
 	WakeEnabled     bool
 	WakeSensitivity int
 	TrainMode       bool
+	MicBoostDB      int
 }
 
 func (st *Store) Flags() WakeFlags {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
-	return WakeFlags{st.s.WakeEnabled, st.s.WakeSensitivity, st.s.TrainMode}
+	return WakeFlags{st.s.WakeEnabled, st.s.WakeSensitivity, st.s.TrainMode, st.s.MicBoostDB}
 }
 
 // Update — изменить и сохранить.
