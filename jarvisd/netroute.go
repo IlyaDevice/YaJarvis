@@ -1,0 +1,137 @@
+package main
+
+// VPN по подключениям: у каждого облака своя галочка «через VPN». Например, в России YouTube без VPN
+// не работает, а Яндекс через зарубежный VPN, наоборот, может начать сбоить.
+
+import (
+	"context"
+	"crypto/tls"
+	"net"
+	"net/http"
+	"time"
+)
+
+type netService struct {
+	ID, Name string
+	Def      bool // по умолчанию через VPN
+}
+
+// Яндекс и Home Assistant — свои/домашние, их VPN не касается (Home Assistant вообще в домашней сети).
+var netServices = []netService{
+	{"chatgpt", "Подписка ChatGPT", true},
+	{"openai", "OpenAI", true},
+	{"gemini", "Google Gemini", true},
+	{"grok", "xAI Grok", true},
+	{"elevenlabs", "ElevenLabs", true},
+	{"youtube", "YouTube", false},
+	{"xiaomi", "Xiaomi Home", false},
+	{"smartlife", "Smart Life", false},
+	{"gdrive", "Google Диск", false},
+	{"yandex", "Яндекс", false},
+}
+
+// UseVPN — ходит ли подключение через VPN (если VPN вообще задан).
+func (s Settings) UseVPN(svc string) bool {
+	if v, ok := s.VPN[svc]; ok {
+		return v
+	}
+	if svc == "yandex" {
+		return s.ProxyYandex
+	}
+	for _, n := range netServices {
+		if n.ID == svc {
+			return n.Def
+		}
+	}
+	return true // неизвестное облако — как раньше, через VPN
+}
+
+// VPNState — для панели: галочка каждого подключения.
+func (s Settings) VPNState() map[string]bool {
+	out := map[string]bool{}
+	for _, n := range netServices {
+		out[n.ID] = s.UseVPN(n.ID)
+	}
+	return out
+}
+
+func knownService(svc string) bool {
+	for _, n := range netServices {
+		if n.ID == svc {
+			return true
+		}
+	}
+	return false
+}
+
+// engineService — к какому подключению относится движок ассистента.
+func engineService(engine string) string {
+	switch engine {
+	case "gemini", "grok", "chatgpt":
+		return engine
+	case "elevenlabs", "eleven_realtime":
+		return "elevenlabs"
+	}
+	return "openai"
+}
+
+var directDialer = &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+
+// viaVPN — пойдёт ли это подключение через туннель прямо сейчас.
+func (p *Proxy) viaVPN(svc string) bool {
+	if svc != "" && p.use != nil && !p.use(svc) {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.inst != nil
+}
+
+// DialFor — соединение для подключения svc: через VPN или напрямую, по его галочке.
+func (p *Proxy) DialFor(svc string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if !p.viaVPN(svc) {
+			return directDialer.DialContext(ctx, network, addr)
+		}
+		return p.DialContext(ctx, network, addr)
+	}
+}
+
+// ClientFor — HTTP-клиент подключения svc (timeout 0 — без общего ограничения).
+func (p *Proxy) ClientFor(svc string, timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: p.TransportFor(svc)}
+}
+
+func (p *Proxy) TransportFor(svc string) *http.Transport {
+	return &http.Transport{
+		DialContext: p.DialFor(svc), ForceAttemptHTTP2: true, MaxIdleConns: 8,
+		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second,
+	}
+}
+
+// LiveClientFor — клиент для открытия разговора: готовое соединение берём, только если оно через тот же путь.
+func (p *Proxy) LiveClientFor(svc string) *http.Client {
+	if p.use == nil || p.use(svc) { // без туннеля LiveClient сам ходит напрямую и тоже держит готовое соединение
+		return p.LiveClient()
+	}
+	return &http.Client{Transport: &http.Transport{
+		DialContext: directDialer.DialContext,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := directDialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			c := tls.Client(raw, &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}, MinVersion: tls.VersionTLS12})
+			if err := c.HandshakeContext(ctx); err != nil {
+				raw.Close()
+				return nil, err
+			}
+			return c, nil
+		},
+		MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second,
+	}}
+}

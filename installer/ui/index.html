@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Установка Джарвиса</title>
+<link rel="stylesheet" href="setup.css">
+<script src="token.js"></script>
+<script src="setup.js" defer></script>
+</head>
+<body>
+<main class="wrap">
+  <div class="brand"><span class="logo"></span>Установка Джарвиса <span class="ver" id="ver"></span></div>
+  <ol class="steps"><li data-s="1">Колонка</li><li data-s="2">Проверка</li><li data-s="3">Настройки</li><li data-s="4">Установка</li></ol>
+
+  <section id="s1" class="card">
+    <h1>Найдём колонку</h1>
+    <p class="muted">Колонка должна быть разлочена (root) и с ADB по сети. Компьютер — в той же Wi-Fi сети.
+      <span class="tip" tabindex="0" data-tip="Разлочка делается один раз по инструкции hackalice.me. После неё на колонке открыт ADB (порт 5555) — через него и ставится Джарвис.">?</span></p>
+    <div class="row"><button class="btn accent" id="scan">Искать в сети</button><span class="muted" id="scan-st"></span></div>
+    <div id="found"></div>
+    <details><summary class="muted">Ввести IP вручную</summary>
+      <div class="row mt"><input type="text" id="ip" placeholder="192.168.1.50"><button class="btn" id="ip-go">Проверить</button></div>
+      <p class="hint">IP колонки видно в приложении «Дом с Алисой» → колонка → «Информация об устройстве» или в настройках роутера.</p></details>
+  </section>
+
+  <section id="s2" class="card hidden">
+    <h1 id="sp-title">Колонка</h1>
+    <div class="kv" id="sp-info"></div>
+    <div id="sp-problems"></div>
+    <div class="row mt"><button class="btn" data-back="1">Назад</button><button class="btn accent" id="to3">Дальше</button>
+      <button class="btn danger hidden" id="uninstall" data-tip="Удалить Джарвиса с колонки и вернуть всё как было.">Удалить Джарвиса</button></div>
+  </section>
+
+  <section id="s3" class="card hidden">
+    <h1>Настройки</h1>
+    <p class="muted">Это можно поменять потом в настройках колонки. Поля, кроме пароля, необязательны.</p>
+    <div class="f"><label>Пароль для настроек <span class="tip" tabindex="0" data-tip="С ним вы будете заходить в настройки Джарвиса в браузере. На колонку он попадает только в зашифрованном виде.">?</span></label>
+      <input type="password" id="pw" autocomplete="new-password" placeholder="минимум 6 символов"><input type="password" id="pw2" autocomplete="new-password" placeholder="ещё раз"></div>
+    <div class="f"><label>Ключ OpenAI <span class="tip" tabindex="0" data-tip="Для голоса и мозга Джарвиса. platform.openai.com → API keys. Можно добавить позже.">?</span></label>
+      <input type="password" id="openai" autocomplete="off" placeholder="sk-…"></div>
+    <div class="f"><label>Ссылка VLESS <span class="tip" tabindex="0" data-tip="Из России и Беларуси OpenAI напрямую не работает. Вставьте ссылку vless://… от вашего VPN — через неё пойдёт только Джарвис.">?</span></label>
+      <textarea id="vless" placeholder="vless://…" spellcheck="false"></textarea></div>
+    <div class="f"><label>Часовой пояс</label><select id="tz"></select></div>
+    <p class="err" id="s3-err"></p>
+    <div class="row"><button class="btn" data-back="2">Назад</button><button class="btn accent" id="install">Установить</button></div>
+  </section>
+
+  <section id="s4" class="card hidden">
+    <h1 id="s4-title">Устанавливаю…</h1>
+    <pre class="log" id="log"></pre>
+    <div class="row"><a class="btn accent hidden" id="open" target="_blank" rel="noopener">Открыть настройки Джарвиса</a><button class="btn hidden" id="again">Другая колонка</button></div>
+  </section>
+  <p class="foot muted">Не закрывайте чёрное окно программы, пока идёт установка.</p>
+</main>
+</body>
+</html>
