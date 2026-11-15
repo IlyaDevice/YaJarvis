@@ -88,3 +88,36 @@ func probeGeminiInterruption() error {
 		}
 	}
 }
+
+// probeGeminiModels — открыть сессию каждой моделью (без звука) и сказать, какая пускает с этим ключом.
+//
+//	jarvisd probe-gemini-models [settings.json]
+func probeGeminiModels(path string) {
+	store, err := OpenStore(path)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	cfg := store.Get()
+	proxy := &Proxy{}
+	proxy.use = func(svc string) bool { s := store.Get(); return s.UseVPN(svc) }
+	if err := proxy.Apply(cfg.Vless); err != nil {
+		fmt.Println("VPN:", err)
+	}
+	for _, m := range GeminiModels {
+		p := cfg.ActiveProfile()
+		p.LiveModel = m
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		s := &GeminiSession{ctx: ctx, key: cfg.GeminiKey, prof: p, instructions: "Ты Джарвис.", tools: NewTools(func() string { return "" }, DirectClient),
+			client: proxy.LiveClientFor("gemini")}
+		t0 := time.Now()
+		ws, err := s.dialSetup()
+		if err == nil {
+			ws.CloseNow()
+			fmt.Printf("%s: открылась за %.2f с\n", m, time.Since(t0).Seconds())
+		} else {
+			fmt.Printf("%s: %v\n", m, strings.TrimSpace(err.Error()))
+		}
+		cancel()
+	}
+}

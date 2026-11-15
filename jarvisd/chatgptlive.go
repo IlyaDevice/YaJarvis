@@ -234,8 +234,12 @@ func (s *ChatGPTSession) createCall(sdp string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+s.auth.Access)
 	req.Header.Set("ChatGPT-Account-ID", s.auth.Account)
 	req.Header.Set("OpenAI-Alpha", "quicksilver=v2")
-	req.Header.Set("session-id", newID())
-	req.Header.Set("thread-id", newID())
+	thread := chatgptChat.Thread() // один чат: все звонки — одна беседа
+	if thread == "" {
+		thread = newID()
+	}
+	req.Header.Set("session-id", thread)
+	req.Header.Set("thread-id", thread)
 	req.Header.Set("x-session-id", newID())
 	req.Header.Set("originator", "codex_cli_rs")
 	resp, err := s.client.Do(req)
@@ -319,7 +323,14 @@ func (s *ChatGPTSession) event(raw []byte) {
 			go s.delegate(id, t)
 		}
 	case "error":
-		log.Printf("GPT-Live (подписка): ошибка: %s", errMessage(ev))
+		msg := errMessage(ev)
+		log.Printf("GPT-Live (подписка): ошибка: %s", msg)
+		if chatgptLimitText(msg) {
+			chatgptLimitedUntil.Store(time.Now().Add(chatgptLimitRest).UnixNano())
+			log.Printf("GPT-Live (подписка): кончился лимит голоса в подписке ChatGPT — час говорю через Gemini, потом попробую снова")
+			s.FinishTurn("кончился лимит голоса в подписке ChatGPT — позовите ещё раз, ответит Gemini")
+			s.cancel()
+		}
 	case "session.closed":
 		s.cancel()
 	}
@@ -345,6 +356,14 @@ func (s *ChatGPTSession) delegate(id, task string) {
 // withHistory — голосовая модель передаёт бэкенду только последнюю фразу («ну в Москве посмотри»),
 // поэтому добавляем ход разговора за последние полчаса: без него бэкенд не понимает, о чём речь.
 func (s *ChatGPTSession) withHistory(task string) string {
+	if chatgptChat != nil { // общий чат: весь недавний разговор, а не только последние полчаса
+		lines := chatLines(chatgptChat.Recent(4000))
+		if len(lines) == 0 {
+			return task
+		}
+		return "Разговор до этого (для контекста):\n" + strings.Join(lines, "\n") +
+			"\n\nЗадача от голосового ассистента — выполни её с учётом разговора выше: " + task
+	}
 	items := s.journal.Items(16)
 	var lines []string
 	for i := len(items) - 1; i >= 0; i-- {

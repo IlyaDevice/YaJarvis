@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +28,51 @@ const geminiRate = 24000 // частота голоса модели
 
 var geminiURL = "wss://" + geminiHost + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
-var GeminiModels = []string{"gemini-3.8-live", "gemini-3.8-live-extended-thinking"}
+var GeminiModels = []string{"gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-3.1-flash-live-preview",
+	"gemini-2.5-flash-native-audio-preview-12-2025"}
+
+// GeminiModelInfo — подписи для панели. На бесплатном ключе (AI Studio без карты) лимит у каждой модели свой.
+var GeminiModelInfo = []map[string]string{
+	{"id": "gemini-3.8-live", "name": "Gemini 3.8 Live", "note": "быстрая и умная · бесплатно в пределах лимита"},
+	{"id": "gemini-3.8-live-extended-thinking", "name": "Gemini 3.8 Live, думает дольше", "note": "для сложных вопросов, отвечает медленнее · бесплатно в пределах лимита"},
+	{"id": "gemini-3.1-flash-live-preview", "name": "Gemini 3.1 Flash Live", "note": "попроще, свой отдельный бесплатный лимит"},
+	{"id": "gemini-2.5-flash-native-audio-preview-12-2025", "name": "Gemini 2.5 Flash", "note": "старая, свой отдельный бесплатный лимит"},
+}
+
+// Кончился лимит модели — какое-то время её не берём, сразу открываем следующую.
+var geminiSpent sync.Map // модель → time.Time, до какого времени не пробовать
+
+const geminiRestAfterQuota = time.Hour
+
+func geminiQuotaErr(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "quota") || strings.Contains(m, "resource_exhausted") || strings.Contains(m, "rate limit")
+}
+
+// geminiCandidates — выбранная модель, за ней остальные, у которых лимит не кончался недавно.
+func geminiCandidates(chosen string) []string {
+	chosen = geminiModel(chosen)
+	fresh := func(m string) bool {
+		until, ok := geminiSpent.Load(m)
+		return !ok || time.Now().After(until.(time.Time))
+	}
+	var out []string
+	for _, m := range append([]string{chosen}, GeminiModels...) {
+		if fresh(m) && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{chosen} // у всех кончился — всё равно пробуем выбранную
+	}
+	return out
+}
+
+// geminiQuotaText — понятное объяснение вместо «You exceeded your current quota».
+func geminiQuotaText(msg string) string {
+	return "у ключа Gemini кончился бесплатный лимит на все модели — подождите до завтра (лимит обновляется около 10–11 утра по Москве) " +
+		"или включите оплату в AI Studio (aistudio.google.com → Billing). Ответ Google: " + msg
+}
 
 var GeminiVoiceGroups = []VoiceGroup{{"Gemini", []VoiceInfo{
 	{"Charon", "деловой"}, {"Kore", "твёрдый"}, {"Puck", "бодрый"}, {"Zephyr", "яркий"}, {"Fenrir", "энергичный"},
@@ -245,6 +290,9 @@ func geminiHomeArgs(args map[string]any) string {
 func (s *GeminiSession) setup() map[string]any {
 	gen := map[string]any{"responseModalities": []string{"AUDIO"},
 		"speechConfig": map[string]any{"voiceConfig": map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": geminiVoice(s.prof.Voice)}}}}
+	if strings.Contains(geminiModel(s.prof.LiveModel), "extended-thinking") { // без уровня эта модель не открывается
+		gen["thinkingConfig"] = map[string]any{"thinkingLevel": "high"}
+	}
 	setup := map[string]any{
 		"model":                    "models/" + geminiModel(s.prof.LiveModel),
 		"generationConfig":         gen,
@@ -275,10 +323,33 @@ func (s *GeminiSession) send(v any) error {
 	return s.ws.Write(ctx, websocket.MessageText, b)
 }
 
-func (s *GeminiSession) run() {
-	defer close(s.out)
-	defer s.cancel()
-	t0 := time.Now()
+// open — открыть сессию; кончился лимит модели — сразу следующая модель (у каждой свой бесплатный лимит).
+func (s *GeminiSession) open() (*websocket.Conn, error) {
+	chosen := geminiModel(s.prof.LiveModel)
+	var lastQuota string
+	for _, m := range geminiCandidates(chosen) {
+		s.prof.LiveModel = m
+		ws, err := s.dialSetup()
+		if err == nil {
+			if m != chosen {
+				log.Printf("Gemini Live: у %s кончился лимит — говорю через %s", chosen, m)
+				s.mu.Lock()
+				s.dialog.model = m
+				s.mu.Unlock()
+			}
+			return ws, nil
+		}
+		if !geminiQuotaErr(err.Error()) {
+			return nil, err
+		}
+		geminiSpent.Store(m, time.Now().Add(geminiRestAfterQuota))
+		lastQuota = err.Error()
+		log.Printf("Gemini Live: у модели %s кончился лимит (%s)", m, err)
+	}
+	return nil, errors.New(geminiQuotaText(lastQuota))
+}
+
+func (s *GeminiSession) dialSetup() (*websocket.Conn, error) {
 	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
 	// ключ — в заголовке, а не в адресе: адрес попадает в тексты ошибок и в журнал
 	ws, resp, err := websocket.Dial(ctx, geminiURL, &websocket.DialOptions{HTTPClient: s.client,
@@ -286,34 +357,46 @@ func (s *GeminiSession) run() {
 	cancel()
 	if err != nil {
 		msg := "не подключиться к Gemini: " + shortErr(err)
-		if resp != nil && (resp.StatusCode == 400 || resp.StatusCode == 401 || resp.StatusCode == 403) {
+		if resp != nil && resp.StatusCode == 429 {
+			msg = "quota: Gemini ответил 429"
+		} else if resp != nil && (resp.StatusCode == 400 || resp.StatusCode == 401 || resp.StatusCode == 403) {
 			msg = fmt.Sprintf("Gemini не принял ключ или страну (ответ %d) — проверьте ключ и VPN", resp.StatusCode)
 		}
-		s.started <- errors.New(msg)
-		return
+		return nil, errors.New(msg)
 	}
 	ws.SetReadLimit(16 << 20)
 	s.ws = ws
-	defer ws.CloseNow()
 	if err := s.send(s.setup()); err != nil {
-		s.started <- err
-		return
+		ws.CloseNow()
+		return nil, err
 	}
 	for {
 		ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
 		_, raw, err := ws.Read(ctx)
 		cancel()
 		if err != nil {
-			s.started <- fmt.Errorf("Gemini не ответил: %s", closeReason(err))
-			return
+			ws.CloseNow()
+			return nil, fmt.Errorf("Gemini не ответил: %s", closeReason(err))
 		}
 		var ev map[string]any
 		_ = json.Unmarshal(raw, &ev)
 		if _, ok := ev["setupComplete"]; ok {
-			break
+			return ws, nil
 		}
 	}
-	log.Printf("Gemini Live: сессия открыта за %.2f с (голос %s)", time.Since(t0).Seconds(), geminiVoice(s.prof.Voice))
+}
+
+func (s *GeminiSession) run() {
+	defer close(s.out)
+	defer s.cancel()
+	t0 := time.Now()
+	ws, err := s.open()
+	if err != nil {
+		s.started <- err
+		return
+	}
+	defer ws.CloseNow()
+	log.Printf("Gemini Live: сессия открыта за %.2f с (%s, голос %s)", time.Since(t0).Seconds(), s.prof.LiveModel, geminiVoice(s.prof.Voice))
 	s.started <- nil
 	go s.feeder()
 	go s.audioPump()
@@ -617,7 +700,27 @@ func askGemini(ctx context.Context, client *http.Client, key, instructions, text
 		body["tools"] = []any{map[string]any{"googleSearch": map[string]any{}}}
 	}
 	raw, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+geminiHost+"/v1beta/models/gemini-3.8-flash:generateContent", strings.NewReader(string(raw)))
+	var lastErr error
+	for _, model := range []string{"gemini-3.8-flash", "gemini-3.5-flash-lite"} {
+		if until, ok := geminiSpent.Load(model); ok && time.Now().Before(until.(time.Time)) {
+			continue
+		}
+		answer, err := askGeminiModel(ctx, client, key, model, raw)
+		if err == nil || !geminiQuotaErr(err.Error()) {
+			return answer, err
+		}
+		geminiSpent.Store(model, time.Now().Add(geminiRestAfterQuota))
+		log.Printf("Gemini: у %s кончился лимит — пробую следующую модель", model)
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("лимит Gemini кончился")
+	}
+	return "", errors.New(geminiQuotaText(lastErr.Error()))
+}
+
+func askGeminiModel(ctx context.Context, client *http.Client, key, model string, raw []byte) (string, error) {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+geminiHost+"/v1beta/models/"+model+":generateContent", strings.NewReader(string(raw)))
 	req.Header.Set("x-goog-api-key", key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -636,6 +739,9 @@ func askGemini(ctx context.Context, client *http.Client, key, instructions, text
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	if resp.StatusCode != 200 {
 		msg := fmt.Sprintf("Gemini ответил %d", resp.StatusCode)
+		if resp.StatusCode == 429 {
+			msg = "quota: " + msg
+		}
 		if out.Error != nil {
 			msg += ": " + out.Error.Message
 		}

@@ -352,9 +352,27 @@ func (e *Engine) instructions(s Settings, p Profile) string {
 		text += "\n\nСейчас ночь, в доме могут спать: отвечай коротко и спокойно, без длинных списков."
 	}
 	if st := e.music.Status(); st != "" {
-		text += "\n\nСейчас на колонке играет " + st + ". Управлять им: инструмент music_control или play_music."
+		if p.Engine == "chatgpt" {
+			text += "\n\nСейчас на колонке играет " + st + ". Спросят, что играет, — отвечай сам по этим данным; управлять — через бэкенд."
+		} else {
+			text += "\n\nСейчас на колонке играет " + st + ". Управлять им: инструмент music_control или play_music."
+		}
 	}
-	if h := e.journal.History(); len(h) > 0 {
+	if p.Engine == "chatgpt" && chatgptChat != nil {
+		if lines := chatLines(chatgptChat.Recent(chatKeepChars)); len(lines) > 0 {
+			text += "\n\nЭто продолжение одного вашего разговора: человек помнит, о чём вы говорили раньше, и может сослаться на это. " +
+				"Не пересказывай историю и не здоровайся заново. В квадратных скобках — что ты уже сделал на колонке (включил видео, выполнил команду). " +
+				"Предыдущие реплики:\n" + strings.Join(lines, "\n")
+		}
+		// напоминание после истории: в длинном чате модель иначе сползает в обычный стиль ChatGPT
+		persona := strings.TrimSpace(s.PromptText(p.Prompt))
+		if r := []rune(persona); len(r) > 2500 {
+			persona = string(r[:2500]) + "…"
+		}
+		text += "\n\nГлавное, не забывай: ты — голосовой ассистент Джарвис внутри умной колонки Яндекс Станция у хозяина дома, " +
+			"а не ChatGPT в приложении. Говоришь вслух, коротко, своим характером. Что делать на колонке (музыка, YouTube, свет, " +
+			"поиск, погода) — передаёшь бэкенду, он делает. Твой характер:\n" + persona
+	} else if h := e.journal.History(); len(h) > 0 {
 		var ctx []map[string]string
 		for _, t := range h {
 			ctx = append(ctx, map[string]string{"user": t.Text, "jarvis": t.Answer})
@@ -383,6 +401,12 @@ func (e *Engine) newSession(s Settings, p Profile) Session {
 	if p.Engine == "grok" {
 		return NewGrokSession(context.Background(), s.GrokKey, p, e.instructions(s, p), e.tools, e.proxy.LiveClientFor("grok"), e.journal)
 	}
+	if p.Engine == "chatgpt" && chatgptLimited() && s.GeminiKey != "" {
+		g := p // лимит подписки кончился — тот же характер, но голос Gemini
+		g.Engine, g.Voice, g.LiveModel = "gemini", geminiVoice(""), ""
+		log.Printf("Джарвис: лимит ChatGPT ещё не обновился — отвечаю через Gemini")
+		return NewGeminiSession(context.Background(), s.GeminiKey, g, e.instructions(s, p), e.tools, e.proxy.LiveClientFor("gemini"), e.journal)
+	}
 	if p.Engine == "chatgpt" {
 		return NewChatGPTSession(context.Background(), e.chatgptAuth, p, e.instructions(s, p), e.proxy.LiveClientFor("chatgpt"),
 			e.brain(s, p), e.journal)
@@ -405,8 +429,12 @@ func (e *Engine) chatgptAuth(ctx context.Context) (ChatGPTAuth, error) {
 // brain — кто думает и управляет домом, когда голосовая модель передаёт задачу: модель OpenAI по ключу,
 // иначе Gemini, иначе модель подписки ChatGPT.
 func (e *Engine) brain(s Settings, p Profile) Brain {
-	instr := backendRules + e.tools.Context()
+	base := backendRules + e.tools.Context()
 	return func(ctx context.Context, task string) (string, error) {
+		instr := base
+		if st := e.music.Status(); st != "" {
+			instr += "\n\nСейчас на колонке играет " + st + "."
+		}
 		switch {
 		case s.OpenAIKey != "":
 			return askOpenAI(ctx, e.proxy.ClientFor("openai", 60*time.Second), s.OpenAIKey, p, instr, task, e.tools)
@@ -1075,11 +1103,30 @@ func (e *Engine) aliceStarted() {
 }
 
 // youtubeStarted — YouTube Джарвиса зазвучал: музыку Алисы — на паузу, чтобы не играли одновременно.
+var lastFactTrack atomic.Value // id видео, о котором уже записали в чат
+
 func (e *Engine) youtubeStarted() {
+	e.chatgptFact()
 	if !e.alice.Playing() {
 		return
 	}
 	if err := AliceText("пауза", true); err == nil {
 		log.Printf("музыка: у Алисы играла своя — поставил её на паузу")
 	}
+}
+
+// chatgptFact — включилось новое видео: записать в общий чат ChatGPT, чтобы он знал, что играет.
+func (e *Engine) chatgptFact() {
+	st := e.store.Get()
+	if chatgptChat == nil || st.ActiveProfile().Engine != "chatgpt" {
+		return
+	}
+	e.music.mu.Lock()
+	id, title, author := e.music.cur.ID, e.music.cur.Title, e.music.cur.Author
+	e.music.mu.Unlock()
+	if id == "" || title == "" || lastFactTrack.Load() == id {
+		return
+	}
+	lastFactTrack.Store(id)
+	chatgptChat.AddFact("включил на YouTube: «" + title + "» — " + author)
 }

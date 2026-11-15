@@ -115,7 +115,8 @@ type Player struct {
 	in     io.WriteCloser
 	queue  chan []byte
 	done   chan struct{}
-	Volume func() int // 0..100, читается на каждом куске
+	Volume func() int     // 0..100, читается на каждом куске
+	Trim   func() float64 // поправка к громкости голоса от громкости самой колонки (1 — без поправки)
 	lim    *limiter
 	boost  float64 // доп. усиление голоса конкретного движка (ChatGPT по подписке приходит тише)
 	aplay  string
@@ -239,6 +240,9 @@ func (p *Player) Write(pcm []int16) error {
 	}
 	b := make([]byte, 2*len(pcm))
 	g := float64(vol) / 50 * playGain // 50% — прежний максимум, 100% — вдвое громче
+	if p.Trim != nil {
+		g *= p.Trim()
+	}
 	p.mu.Lock()
 	if p.boost > 0 {
 		g *= p.boost

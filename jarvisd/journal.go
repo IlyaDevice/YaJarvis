@@ -12,6 +12,8 @@ type Journal struct {
 	items   []*Turn
 	next    int64
 	history []Turn // последние реплики для контекста
+
+	OnRemember func(Turn) // реплика закончилась (main: общий чат ChatGPT)
 }
 
 func (j *Journal) New(route, model string) *Turn {
@@ -37,13 +39,18 @@ func (j *Journal) Update(t *Turn, fn func(*Turn)) {
 
 func (j *Journal) Remember(t *Turn) {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	if t.Text == "" && t.Answer == "" {
+		j.mu.Unlock()
 		return
 	}
 	j.history = append(j.history, *t)
 	if len(j.history) > 12 {
 		j.history = j.history[len(j.history)-12:]
+	}
+	hook, done := j.OnRemember, *t
+	j.mu.Unlock()
+	if hook != nil {
+		hook(done)
 	}
 }
 

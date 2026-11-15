@@ -98,6 +98,7 @@ func (w *Web) Serve(addr string) error {
 	mux.HandleFunc("PUT /api/keys", w.auth(w.putKeys))
 	mux.HandleFunc("POST /api/chatgpt/login", w.auth(w.chatgptLogin))
 	mux.HandleFunc("DELETE /api/chatgpt", w.auth(w.chatgptLogout))
+	mux.HandleFunc("POST /api/chatgpt/newchat", w.auth(w.chatgptNewChat))
 	mux.HandleFunc("PUT /api/vless", w.auth(w.putVless))
 	mux.HandleFunc("PUT /api/youtube", w.auth(w.putYouTube))
 	mux.HandleFunc("GET /api/elevenlabs/voices", w.auth(w.elevenVoices))
@@ -392,9 +393,9 @@ func (w *Web) state(rw http.ResponseWriter, r *http.Request) {
 		"voice_groups": LiveVoiceGroups, "backend_models": BackendModels, "efforts": Efforts,
 		"keys":        map[string]string{"openai": mask(s.OpenAIKey), "gemini": mask(s.GeminiKey), "grok": mask(s.GrokKey), "elevenlabs": mask(s.ElevenLabsKey), "yandex": mask(s.YandexToken)},
 		"eleven_keys": s.ElevenKeysState(), "vpn": s.VPNState(),
-		"gemini_models": GeminiModels, "gemini_voice_groups": GeminiVoiceGroups, "chatgpt_voice_groups": ChatGPTVoiceGroups, "grok_voice_groups": GrokVoiceGroups,
+		"gemini_models": GeminiModels, "gemini_model_info": GeminiModelInfo, "gemini_voice_groups": GeminiVoiceGroups, "chatgpt_voice_groups": ChatGPTVoiceGroups, "grok_voice_groups": GrokVoiceGroups,
 		"chatgpt": map[string]any{"signed_in": s.ChatGPT.SignedIn(), "plan": s.ChatGPT.Plan, "email": s.ChatGPT.Email,
-			"login": w.chatLogin.State()},
+			"login": w.chatLogin.State(), "chat": chatgptChat.State(), "limited_until": chatgptLimitedUntil.Load() / 1e9},
 		"vless": vless, "youtube": w.youtubeState(), "home_assistant": w.haState(), "xiaomi": w.xiaomiState(), "smartlife": w.smartLifeState(), "rooms": w.knownRooms(), "update_available": w.updater != nil && w.updater.Available(),
 		"speaker": map[string]any{"model": stationModel().Name, "model_id": stationModel().ID, "mic": w.engine.mic.Online(), "leds": w.engine.leds.Available(), "wake_model": wakeModel,
 			"talking": w.engine.Talking(), "uptime_s": int(time.Since(w.started).Seconds()), "volume": speakerVolume()},
@@ -1057,6 +1058,12 @@ func (w *Web) chatgptLogin(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(rw, 200, w.chatLogin.State())
+}
+
+// chatgptNewChat — начать новый чат с ChatGPT: прошлые реплики забыть.
+func (w *Web) chatgptNewChat(rw http.ResponseWriter, r *http.Request) {
+	chatgptChat.Reset()
+	writeJSON(rw, 200, map[string]any{"ok": true})
 }
 
 func (w *Web) chatgptLogout(rw http.ResponseWriter, r *http.Request) {

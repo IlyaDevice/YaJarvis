@@ -72,6 +72,14 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "probe-gemini-models" {
+		path := "/data/opt/jarvisd/settings.json"
+		if len(os.Args) > 2 {
+			path = os.Args[2]
+		}
+		probeGeminiModels(path)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "probe-gemini-config" {
 		path := "/data/opt/jarvisd/settings.json"
 		if len(os.Args) > 2 {
@@ -480,6 +488,17 @@ func main() {
 		log.Printf("VLESS: %v (работаю напрямую)", err)
 	}
 	journal := &Journal{}
+	chatgptChat = LoadChatThread(filepath.Join(*dataDir, "chatgpt-chat.json"))
+	journal.OnRemember = func(t Turn) {
+		switch {
+		case t.Model == chatgptLiveModel:
+			chatgptChat.Add(t.Text, t.Answer)
+		case t.Model == "" && t.Answer != "": // выполнено без модели (умный дом, Алиса, музыка) — ChatGPT тоже должен знать
+			if st := store.Get(); st.ActiveProfile().Engine == "chatgpt" {
+				chatgptChat.Add(t.Text, "["+t.Answer+"]")
+			}
+		}
+	}
 	tools := NewTools(func() string { return store.Get().YandexToken }, &http.Client{Timeout: 10 * time.Second, Transport: proxy.TransportFor("yandex")})
 	tools.HomeAssistant = &HomeAssistant{config: func() HASettings { return store.Get().HomeAssistant }, client: &http.Client{Timeout: 15 * time.Second}}
 	tools.now = func() time.Time { s := store.Get(); return s.Now() }
@@ -493,6 +512,7 @@ func main() {
 	go mic.Run()
 	player := NewPlayer()
 	player.Volume = func() int { s := store.Get(); return s.VoiceVolume() }
+	player.Trim = func() float64 { return voiceTrim(speakerLevel()) }
 	speechLang = func() string { return store.Get().Language }
 	leds := NewLeds()
 	leds.Source = func() LedSettings { s := store.Get(); return s.LedFor() }
