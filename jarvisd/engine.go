@@ -642,9 +642,13 @@ func (e *Engine) converse(byWord, sure bool, preroll, clip []int16, quick <-chan
 			held = nil
 		}
 		if isStop(cmd) {
-			log.Printf("Джарвис: «%s» — стоп (%s)", text, from)
 			quiet()
-			e.music.Stop()
+			if isStopAll(cmd) {
+				log.Printf("Джарвис: «%s» — стоп (%s)", text, from)
+				e.music.Stop()
+			} else {
+				log.Printf("Джарвис: «%s» — разговор закрыт, музыка не тронута (%s)", text, from)
+			}
 			note("стоп", text, "")
 			return true
 		}
@@ -1007,9 +1011,14 @@ func (e *Engine) interrupt(sess Session) {
 	e.leds.Set(LedListening)
 }
 
-// Stop — прервать разговор (Алиса, кнопка «Стоп» в настройках).
+// Stop — прервать разговор и музыку (Алиса, кнопка «Стоп» в настройках, «стоп»).
 func (e *Engine) Stop(reason string) {
 	e.music.Stop()
+	e.EndChat(reason)
+}
+
+// EndChat — закончить только разговор («хватит», «закрой чат»): музыка, если играет, играет дальше.
+func (e *Engine) EndChat(reason string) {
 	e.mu.Lock()
 	if e.opCancel != nil {
 		e.opCancel()

@@ -112,7 +112,11 @@ func (e *Engine) TextTurn(text string, speak bool) {
 		return
 	}
 	if isStop(text) {
-		e.Stop("написали «стоп»")
+		if isStopAll(text) {
+			e.Stop("написали «стоп»")
+		} else {
+			e.EndChat("написали «" + text + "»")
+		}
 		e.journal.note("стоп", text, "")
 		return
 	}

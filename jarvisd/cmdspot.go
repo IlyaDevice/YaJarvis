@@ -150,7 +150,11 @@ func (e *Engine) onCommand(phrase string) {
 		}
 	}
 	switch {
-	case strings.Contains(w, "стоп") || strings.Contains(w, "хватит") || strings.Contains(w, "пауза"):
+	case strings.Contains(w, "хватит"): // закрыть разговор, музыку не трогать
+		log.Printf("Джарвис: «%s» — разговор закрыт, музыка не тронута (встроенный распознаватель)", phrase)
+		e.EndChat("сказали «" + phrase + "»")
+		e.journal.note("стоп", phrase, "")
+	case strings.Contains(w, "стоп") || strings.Contains(w, "пауза"):
 		log.Printf("Джарвис: «%s» — стоп (встроенный распознаватель)", phrase)
 		e.Stop("сказали «" + phrase + "»")
 		e.journal.note("стоп", phrase, "")
