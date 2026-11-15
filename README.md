@@ -53,6 +53,15 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 Панель доступна по адресу **`http://IP-КОЛОНКИ:8080`**. Для погоды и местного времени задайте свой город и часовой пояс во вкладке «Колонка».
 
 <details>
+<summary><strong>Как выглядит установщик</strong></summary>
+
+Пока устанавливается Джарвис, справа показываются скриншоты и возможности проекта. Прогресс и журнал доступны рядом.
+
+![Установщик YaJavis со знакомством с возможностями проекта](docs/screenshots/installer.png)
+
+</details>
+
+<details>
 <summary><strong>Скачать установщик вручную</strong></summary>
 
 Можно предварительно просмотреть скрипт или скачать готовый файл из [последнего релиза](https://github.com/newfpv/YaJavis/releases/latest).
@@ -146,7 +155,24 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 Если YaJavis пригодился, поставьте **Star** вверху страницы. О проблемах расскажите в [Issues](https://github.com/newfpv/YaJavis/issues): укажите модель колонки, версию YaJavis и шаги для повторения, предварительно убрав личные данные из логов.
 
-## Авторы и вдохновение
+## Contributors и авторы проектов
+
+Авторы открытых проектов и исследований, на которые опирался YaJavis.
+
+<table>
+<tr>
+<td align="center" width="110"><a href="https://github.com/dimap"><img src="https://github.com/dimap.png?size=96" width="48" alt="dimap"><br><sub><b>dimap</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/Marker284"><img src="https://github.com/Marker284.png?size=96" width="48" alt="Marker284"><br><sub><b>Marker284</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/rison1337"><img src="https://github.com/rison1337.png?size=96" width="48" alt="rison1337"><br><sub><b>rison1337</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/amirilivice"><img src="https://github.com/amirilivice.png?size=96" width="48" alt="amirilivice"><br><sub><b>amirilivice</b></sub></a></td>
+</tr>
+<tr>
+<td align="center" width="110"><a href="https://github.com/tangenx"><img src="https://github.com/tangenx.png?size=96" width="48" alt="tangenx"><br><sub><b>tangenx</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/Morvex885"><img src="https://github.com/Morvex885.png?size=96" width="48" alt="Morvex885"><br><sub><b>Morvex885</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/nyakokitsu"><img src="https://github.com/nyakokitsu.png?size=96" width="48" alt="nyakokitsu"><br><sub><b>nyakokitsu</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/dscripka"><img src="https://github.com/dscripka.png?size=96" width="48" alt="dscripka"><br><sub><b>dscripka</b></sub></a></td>
+</tr>
+</table>
 
 **Дизайн YaJavis вдохновлён [yapanel](https://github.com/dimap/yapanel-web) автора [dimap](https://github.com/dimap).** Тёмная тема, тёплый оранжевый акцент, карточки состояния и подача графиков стали визуальным ориентиром для нашей панели. Спасибо dimap за открытый проект.
 

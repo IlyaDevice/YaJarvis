@@ -4,55 +4,60 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Установка Джарвиса</title>
+<meta name="theme-color" content="#111116">
+<title>YaJavis — установка Джарвиса</title>
 <link rel="stylesheet" href="setup.css">
 <script src="token.js"></script>
 <script src="setup.js" defer></script>
 </head>
 <body>
 <main class="wrap">
-  <div class="brand"><span class="logo"></span>Установка Джарвиса <span class="ver" id="ver"></span></div>
-  <ol class="steps"><li data-s="1">Колонка</li><li data-s="2">Проверка</li><li data-s="3">Настройки</li><li data-s="4">Установка</li></ol>
-
-  <section id="s1" class="card">
-    <h1>Найдём колонку</h1>
-    <p class="muted">Колонка должна быть разлочена (root) и с ADB по сети. Компьютер — в той же Wi-Fi сети.
-      <span class="tip" tabindex="0" data-tip="Разлочка делается один раз по инструкции hackalice.me. После неё на колонке открыт ADB (порт 5555) — через него и ставится Джарвис.">?</span></p>
-    <div class="row"><button class="btn accent" id="scan">Искать в сети</button><span class="muted" id="scan-st"></span></div>
-    <div id="found"></div>
-    <details><summary class="muted">Ввести IP вручную</summary>
-      <div class="row mt"><input type="text" id="ip" placeholder="192.168.1.50"><button class="btn" id="ip-go">Проверить</button></div>
-      <p class="hint">IP колонки видно в приложении «Дом с Алисой» → колонка → «Информация об устройстве» или в настройках роутера.</p></details>
-  </section>
-
-  <section id="s2" class="card hidden">
-    <h1 id="sp-title">Колонка</h1>
-    <div class="kv" id="sp-info"></div>
-    <div id="sp-problems"></div>
-    <div class="row mt"><button class="btn" data-back="1">Назад</button><button class="btn accent" id="to3">Дальше</button>
-      <button class="btn danger hidden" id="uninstall" data-tip="Удалить Джарвиса с колонки и вернуть всё как было.">Удалить Джарвиса</button></div>
-  </section>
-
-  <section id="s3" class="card hidden">
-    <h1>Настройки</h1>
-    <p class="muted">Это можно поменять потом в настройках колонки. Поля, кроме пароля, необязательны.</p>
-    <div class="f"><label>Пароль для настроек <span class="tip" tabindex="0" data-tip="С ним вы будете заходить в настройки Джарвиса в браузере. На колонку он попадает только в зашифрованном виде.">?</span></label>
-      <input type="password" id="pw" autocomplete="new-password" placeholder="минимум 6 символов"><input type="password" id="pw2" autocomplete="new-password" placeholder="ещё раз"></div>
-    <div class="f"><label>Ключ OpenAI <span class="tip" tabindex="0" data-tip="Для голоса и мозга Джарвиса. platform.openai.com → API keys. Можно добавить позже.">?</span></label>
-      <input type="password" id="openai" autocomplete="off" placeholder="sk-…"></div>
-    <div class="f"><label>Ссылка VLESS <span class="tip" tabindex="0" data-tip="Из России и Беларуси OpenAI напрямую не работает. Вставьте ссылку vless://… от вашего VPN — через неё пойдёт только Джарвис.">?</span></label>
-      <textarea id="vless" placeholder="vless://…" spellcheck="false"></textarea></div>
-    <div class="f"><label>Часовой пояс</label><select id="tz"></select></div>
-    <p class="err" id="s3-err"></p>
-    <div class="row"><button class="btn" data-back="2">Назад</button><button class="btn accent" id="install">Установить</button></div>
-  </section>
-
-  <section id="s4" class="card hidden">
-    <h1 id="s4-title">Устанавливаю…</h1>
-    <pre class="log" id="log"></pre>
-    <div class="row"><a class="btn accent hidden" id="open" target="_blank" rel="noopener">Открыть настройки Джарвиса</a><button class="btn hidden" id="again">Другая колонка</button></div>
-  </section>
-  <p class="foot muted">Не закрывайте чёрное окно программы, пока идёт установка.</p>
+  <header class="topbar"><a class="brand" href="#" aria-label="YaJavis"><span class="logo"></span><span>YaJavis<small>Установка Джарвиса</small></span></a>
+    <div class="top-meta"><span class="ver" id="ver"></span><a href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">Проект на GitHub <span aria-hidden="true">↗</span></a></div></header>
+  <div class="setup-grid">
+  <div class="wizard">
+    <ol class="steps" aria-label="Этапы установки"><li data-s="1">Колонка</li><li data-s="2">Проверка</li><li data-s="3">Настройки</li><li data-s="4">Установка</li></ol>
+    <section id="s1" class="card">
+      <span class="eyebrow">Начнём знакомство</span><h1>Найдём вашу<br>колонку.</h1>
+      <p class="lead">Ещё несколько шагов — и у вашей Станции появится новый голосовой помощник.</p>
+      <div class="prerequisite"><span class="status-dot"></span><p>Колонка с root-доступом и ADB по сети.<br>Компьютер и Станция — в одной локальной сети.</p></div>
+      <button class="btn accent wide" id="scan">Найти колонку в сети <span aria-hidden="true">→</span></button>
+      <p class="scan-status" id="scan-st" role="status" aria-live="polite"></p>
+      <div id="found"></div>
+      <details class="manual"><summary>Указать IP вручную</summary><div class="row mt"><input type="text" id="ip" placeholder="192.168.1.50" aria-label="IP-адрес колонки"><button class="btn" id="ip-go">Проверить</button></div><p class="hint">IP есть в приложении «Дом с Алисой» → колонка → «Информация об устройстве».</p></details>
+      <a class="help-link" href="https://hackalice.me/" target="_blank" rel="noopener noreferrer">Как подготовить колонку <span aria-hidden="true">↗</span></a>
+    </section>
+    <section id="s2" class="card hidden">
+      <span class="eyebrow">Проверка устройства</span><h1 id="sp-title">Ваша Станция</h1><p class="lead">Проверим прошивку и подберём файлы под вашу модель.</p>
+      <div class="kv" id="sp-info"></div><div id="sp-problems"></div>
+      <div class="actions"><button class="btn ghost" data-back="1">Назад</button><button class="btn accent" id="to3">Продолжить</button></div><button class="btn danger hidden" id="uninstall">Удалить Джарвиса</button>
+    </section>
+    <section id="s3" class="card hidden">
+      <span class="eyebrow">Последний штрих</span><h1>Сделайте его<br>своим.</h1><p class="lead">Задайте пароль панели. Остальное можно настроить после установки.</p>
+      <div class="f"><label for="pw">Пароль панели</label><input type="password" id="pw" autocomplete="new-password" placeholder="Не меньше 6 символов"><input type="password" id="pw2" autocomplete="new-password" placeholder="Повторите пароль" aria-label="Повторите пароль"><small>На колонку передаётся хэш пароля.</small></div>
+      <div class="f"><label for="tz">Часовой пояс</label><select id="tz"></select></div>
+      <details class="optional"><summary>Сразу подключить OpenAI и VPN <span>необязательно</span></summary><div class="f"><label for="openai">Ключ OpenAI</label><input type="password" id="openai" autocomplete="off" placeholder="sk-…"></div><div class="f"><label for="vless">Ссылка VLESS</label><textarea id="vless" placeholder="vless://…" spellcheck="false"></textarea></div><p class="hint">Gemini, ElevenLabs и другие подключения доступны в панели после установки.</p></details>
+      <p class="err" id="s3-err" role="alert"></p><div class="actions"><button class="btn ghost" data-back="2">Назад</button><button class="btn accent" id="install">Установить Джарвиса <span aria-hidden="true">→</span></button></div>
+    </section>
+    <section id="s4" class="card install-card hidden" aria-live="polite">
+      <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br>Джарвиса.</h1>
+      <p class="lead" id="job-description">Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями справа.</p>
+      <progress id="install-progress" aria-label="Ход установки" max="100"></progress><p id="job-status" class="job-status" role="status">Подключаемся к колонке…</p>
+      <details class="job-details" id="job-details"><summary>Технический журнал</summary><pre class="log" id="log"></pre></details>
+      <div class="finish-actions"><a class="btn accent wide hidden" id="open" target="_blank" rel="noopener">Открыть панель Джарвиса <span aria-hidden="true">↗</span></a><button class="btn ghost wide hidden" id="again">Другая колонка</button></div>
+    </section>
+    <p class="foot">Установщик работает локально на вашем компьютере.<br>Оставьте окно программы открытым до завершения.</p>
+  </div>
+  <aside class="showcase" aria-label="Знакомство с YaJavis">
+    <div class="showcase-heading"><span class="eyebrow">Больше возможностей вашей Станции</span><h2>Один помощник.<br>Ваши правила.</h2><p>Разговаривайте, слушайте музыку и управляйте домом.<br>Выбирайте голос, характер и сервисы под себя.</p></div>
+    <div class="preview-window"><div class="preview-bar"><span></span><span></span><span></span><small>Панель YaJavis</small></div><img id="tour-image" src="screenshots/dashboard.png" alt="Главная панель YaJavis" width="2000" height="1125"></div>
+    <div class="tour-caption"><div class="tour-copy"><span class="tour-number" id="tour-number">01 / 04</span><h3 id="tour-title">Всё под рукой.</h3><p id="tour-text">Диалог с помощником, музыкальный плеер и состояние колонки — на одной странице.</p></div><div class="tour-controls"><button class="icon-btn" id="tour-prev" type="button" aria-label="Предыдущий скриншот">←</button><button class="icon-btn" id="tour-pause" type="button" aria-label="Приостановить показ" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg></button><button class="icon-btn" id="tour-next" type="button" aria-label="Следующий скриншот">→</button></div></div>
+    <div class="tour-dots" id="tour-dots" aria-label="Скриншоты панели"></div>
+    <div class="feature-strip"><span><i></i>Активация на колонке</span><span><i></i>AI на ваш выбор</span><span><i></i>Без своего сервера</span></div>
+    <p class="demo-note">Пример настроенной панели. Свои аккаунты вы подключите после установки.</p>
+  </aside>
+  </div>
+  <footer class="bottom-bar"><span>YaJavis · Независимый проект сообщества</span><a href="https://github.com/newfpv/YaJavis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">Авторы и благодарности</a></footer>
 </main>
 </body>
 </html>

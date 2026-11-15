@@ -30,7 +30,7 @@ function speakerRow(sp) {
 }
 
 $("#scan").addEventListener("click", async (e) => {
-  e.target.disabled = true;
+  $("#scan").disabled = true;
   $("#scan-st").innerHTML = `<span class="spin"></span> ищу колонки с ADB…`;
   $("#found").innerHTML = "";
   try {
@@ -40,13 +40,13 @@ $("#scan").addEventListener("click", async (e) => {
     $("#found").innerHTML = list.map(speakerRow).join("");
     window._list = list;
   } catch (err) { $("#scan-st").textContent = err.message; }
-  e.target.disabled = false;
+  $("#scan").disabled = false;
 });
 $("#found").addEventListener("click", (e) => { const row = e.target.closest(".sp"); if (row) show(window._list.find((s) => s.ip === row.dataset.ip)); });
 $("#ip-go").addEventListener("click", async (e) => {
-  e.target.disabled = true;
+  $("#ip-go").disabled = true;
   try { show(await api("POST", "/api/check", { ip: $("#ip").value.trim() })); } catch (err) { alert(err.message); }
-  e.target.disabled = false;
+  $("#ip-go").disabled = false;
 });
 
 function show(sp) {
@@ -90,7 +90,12 @@ $("#uninstall").addEventListener("click", async () => {
 
 function run(title) {
   step(4);
-  $("#s4-title").innerHTML = `<span class="spin"></span> ${esc(title)}`;
+  $("#s4-title").textContent = title;
+  $("#install-progress").removeAttribute("value");
+  $("#install-orb").classList.remove("done", "error");
+  $("#job-description").textContent = "Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями " + (window.matchMedia("(max-width: 760px)").matches ? "ниже." : "справа.");
+  $("#job-status").textContent = "Подключаемся к колонке…";
+  $("#job-details").open = false;
   $("#open").classList.add("hidden");
   $("#again").classList.add("hidden");
   const t = setInterval(async () => {
@@ -98,9 +103,14 @@ function run(title) {
     try { d = await api("GET", "/api/job"); } catch { return; }
     $("#log").textContent = (d.lines || []).join("\n");
     $("#log").scrollTop = 1e9;
+    $("#job-status").textContent = d.error || (d.lines || []).at(-1) || "Подготавливаем установку…";
     if (d.done) {
       clearInterval(t);
-      $("#s4-title").textContent = d.error ? "Не получилось" : "Готово";
+      $("#s4-title").textContent = d.error ? "Нужна ваша помощь." : "Всё готово.";
+      $("#install-progress").value = 100;
+      $("#install-orb").classList.add(d.error ? "error" : "done");
+      $("#job-description").textContent = d.error ? "Установка остановлена. Причина показана ниже; подробности есть в журнале." : d.url ? "Джарвис установлен. Откройте панель, подключите любимый AI-сервис и выберите голос." : "Операция завершена. Можно вернуться к выбору колонки.";
+      if (d.error) $("#job-details").open = true;
       if (d.url) { $("#open").href = d.url; $("#open").classList.remove("hidden"); }
       $("#again").classList.remove("hidden");
     }
@@ -108,3 +118,33 @@ function run(title) {
 }
 $("#again").addEventListener("click", () => { $("#log").textContent = ""; step(1); });
 step(1);
+
+// Product tour is local to the installer and does not contact external services.
+const tourSlides = [
+  { image: "dashboard", title: "Всё под рукой.", text: "Диалог с помощником, музыкальный плеер и состояние колонки — на одной странице.", alt: "Главная панель YaJavis" },
+  { image: "connections", title: "Вы выбираете, с кем говорить.", text: "OpenAI, Gemini, Grok и ElevenLabs. Подключите свой сервис и устройства умного дома.", alt: "Подключения AI и умного дома" },
+  { image: "assistant", title: "Голос и характер — ваши.", text: "Создавайте ассистентов с разными голосами, моделями и характером. Переключайтесь между ними в панели.", alt: "Настройки голосового ассистента" },
+  { image: "charts", title: "Понимайте свою Станцию.", text: "Следите за памятью, процессором, температурой и Wi-Fi. Всё доступно из браузера.", alt: "Графики состояния колонки" },
+];
+let tourIndex = 0, tourPaused = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function drawTour() {
+  const slide = tourSlides[tourIndex];
+  $("#tour-image").src = "screenshots/" + slide.image + ".png";
+  $("#tour-image").alt = slide.alt;
+  $("#tour-number").textContent = String(tourIndex + 1).padStart(2, "0") + " / 04";
+  $("#tour-title").textContent = slide.title;
+  $("#tour-text").textContent = slide.text;
+  document.querySelectorAll("#tour-dots button").forEach((b, i) => { b.classList.toggle("on", i === tourIndex); b.setAttribute("aria-current", i === tourIndex ? "true" : "false"); });
+}
+$("#tour-dots").innerHTML = tourSlides.map((s, i) => `<button type="button" data-slide="${i}" aria-label="${esc(s.title)}"></button>`).join("");
+$("#tour-dots").addEventListener("click", e => { const b = e.target.closest("[data-slide]"); if (b) { tourIndex = +b.dataset.slide; drawTour(); } });
+$("#tour-next").addEventListener("click", () => { tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); });
+$("#tour-prev").addEventListener("click", () => { tourIndex = (tourIndex + tourSlides.length - 1) % tourSlides.length; drawTour(); });
+function drawTourPause() {
+  $("#tour-pause").setAttribute("aria-pressed", String(tourPaused));
+  $("#tour-pause").setAttribute("aria-label", tourPaused ? "Продолжить показ" : "Приостановить показ");
+  $("#tour-pause").innerHTML = tourPaused ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg>' : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg>';
+}
+$("#tour-pause").addEventListener("click", () => { tourPaused = !tourPaused; drawTourPause(); });
+setInterval(() => { if (!tourPaused && !document.hidden) { tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); } }, 8500);
+drawTour(); drawTourPause();

@@ -269,7 +269,13 @@ function viewHome() {
       <div><dt>Интернет ${tip("Как колонка ходит в OpenAI: через ваш VPN (VLESS) или напрямую.")}</dt><dd id="t-net"></dd></div>
       <div><dt>Свободно на диске ${tip("На флешке колонки мало места. Если свободно меньше 5 МБ, обновления могут не встать.")}</dt><dd id="t-disk"></dd></div>
     </dl></div>
-    <div class="card" id="github-support"><h2>Нравится YaJavis?</h2><p class="note">Поставьте звезду на GitHub — это поможет проекту.</p><div class="row"><a class="btn sm" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">★ Поставить звезду</a><button class="btn sm ghost" id="github-dismiss" type="button">Скрыть</button></div></div>
+    <section class="card github-support" id="github-support" aria-label="Поддержать проект">
+      <button class="github-close" id="github-dismiss" type="button" aria-label="Больше не показывать просьбу поддержать проект" title="Больше не показывать">${icon("x")}</button>
+      <span class="github-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 19c-4.3 1.3-4.3-2.2-6-2.6M15 22v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.2-1.5 6.2-6.9a5.4 5.4 0 0 0-1.5-3.7 5 5 0 0 0-.1-3.7S17.5.8 15 2.6a12.8 12.8 0 0 0-6 0C6.5.8 5.3 1.2 5.3 1.2a5 5 0 0 0-.1 3.7 5.4 5.4 0 0 0-1.5 3.7c0 5.4 3.2 6.6 6.2 6.9a3.4 3.4 0 0 0-.9 2.6V22"/></svg></span>
+      <div class="github-copy"><h2>Поддержать YaJavis</h2><p>Нравится проект? Оставьте звезду на GitHub.</p>
+        <a class="github-link" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">Поставить звезду ${icon("ext")}</a>
+      </div>
+    </section>
     ${playerHtml()}
     <section class="card home-logs tight" id="hlogs"><div class="card-head"><h2>Логи</h2><a class="meta hl-all" href="#logs">Все логи ${icon("right")}</a></div><div class="logbox" id="hlogbox"></div></section>
   </aside>
