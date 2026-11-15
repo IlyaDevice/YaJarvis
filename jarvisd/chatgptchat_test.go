@@ -39,3 +39,12 @@ func TestChatThread(t *testing.T) {
 		t.Fatal("журнал не сообщил о реплике")
 	}
 }
+
+func TestMemoryWorthy(t *testing.T) {
+	if memoryWorthy("Home Assistant недоступен — проверь адрес и включён ли сервер") {
+		t.Fatal("ошибку запоминать не надо")
+	}
+	if !memoryWorthy("Готово: «Mijia Robot Vacuum 5» vacuum.start-sweep") {
+		t.Fatal("успешную команду надо запомнить")
+	}
+}

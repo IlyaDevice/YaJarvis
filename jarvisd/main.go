@@ -495,7 +495,7 @@ func main() {
 		switch {
 		case t.Model != "": // разговор с моделью — в общую память, какой бы ассистент ни отвечал
 			chatgptChat.Add(t.Text, t.Answer)
-		case t.Answer != "": // выполнено без модели (умный дом, Алиса, музыка) — модель тоже должна знать
+		case t.Answer != "" && memoryWorthy(t.Answer): // выполнено без модели (умный дом, Алиса, музыка) — модель тоже должна знать
 			chatgptChat.Add(t.Text, "["+t.Answer+"]")
 		}
 	}

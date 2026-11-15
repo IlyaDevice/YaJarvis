@@ -362,6 +362,7 @@ func (e *Engine) instructions(s Settings, p Profile) string {
 		if lines := chatLines(chatgptChat.Recent(chatKeepChars)); len(lines) > 0 {
 			text += "\n\nЭто продолжение одного вашего разговора: человек помнит, о чём вы говорили раньше, и может сослаться на это. " +
 				"Не пересказывай историю и не здоровайся заново. В квадратных скобках — что ты уже сделал на колонке (включил видео, выполнил команду). " +
+				"Если раньше что-то не работало (сервис был недоступен) — это устарело: всё равно вызывай инструмент заново. " +
 				"Предыдущие реплики:\n" + strings.Join(lines, "\n")
 		}
 	}
@@ -727,7 +728,9 @@ func (e *Engine) converse(byWord, sure bool, preroll, clip []int16, quick <-chan
 				return true
 			}
 		}
-		if h := e.tools.HomeAssistant; h.vacuumIntent(cmd) {
+		// быстрый путь для пылесоса в Home Assistant — только если HA включён галочкой и отвечает;
+		// иначе фразу разбирает модель (пылесос может быть в Xiaomi Home или Smart Life)
+		if h := e.tools.HomeAssistant; e.tools.use("homeassistant") && h.vacuumIntent(cmd) && h.alive() {
 			quiet()
 			closeVoice()
 			ctx, finish := e.beginMedia()

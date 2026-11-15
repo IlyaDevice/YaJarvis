@@ -155,3 +155,15 @@ func (c *ChatThread) AddFact(fact string) {
 		c.Add("", "["+fact+"]")
 	}
 }
+
+// memoryWorthy — ответ без модели стоит запомнить: ошибки («недоступен», «не удалось») не запоминаем,
+// иначе модель потом повторяет их вместо того, чтобы вызвать инструмент.
+func memoryWorthy(answer string) bool {
+	a := strings.ToLower(answer)
+	for _, bad := range []string{"недоступ", "не подключ", "ошибк", "не удалось", "не получилось", "не отвеча", "не нашл"} {
+		if strings.Contains(a, bad) {
+			return false
+		}
+	}
+	return true
+}
