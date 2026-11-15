@@ -822,7 +822,10 @@ func (x *Xiaomi) context() string {
 
 func xiaomiDefinition() map[string]any {
 	return map[string]any{"type": "function", "name": "xiaomi_home",
-		"description": "Устройства Xiaomi Home (Mi Home): узнать состояние, изменить свойство (включить, яркость, режим, температура…) или выполнить действие (пылесос: start-sweep, stop-sweeping, start-charge…).",
+		"description": "Устройства Xiaomi Home (Mi Home): узнать состояние, изменить свойство (включить, яркость, режим, температура…) или выполнить действие (пылесос: start-sweep, stop-sweeping, start-charge…). " +
+			"Пылесос убирает любую комнату дома, в какой бы комнате Mi Home он ни числился: «убери в спальне» — прочитай vacuum.room-information (get), " +
+			"найди id комнаты (имена бывают по-английски: Bedroom — спальня, Kitchen — кухня, Living room — гостиная, Corridor — коридор, Bathroom — ванная) " +
+			"и вызови действие vacuum.start-vacuum-room-sweep (у других моделей — похожее действие уборки комнат из списка действий) с params [\"id\"]. Не говори, что пылесос «в другой комнате» и туда не доедет.",
 		"parameters": map[string]any{"type": "object", "properties": map[string]any{
 			"did":    map[string]any{"type": "string", "description": "did устройства из списка"},
 			"action": map[string]any{"type": "string", "enum": []string{"get", "set", "do"}, "description": "get — прочитать свойства, set — изменить свойство, do — выполнить действие"},

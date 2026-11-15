@@ -504,7 +504,7 @@ func actionsFor(d *iotDevice, a *homeArgs) []any {
 }
 
 func (t *Tools) Call(ctx context.Context, name, args string) string {
-	if name == "home_assistant" && t.HomeAssistant.ready() {
+	if name == "home_assistant" && t.HomeAssistant.ready() && t.use("homeassistant") {
 		return t.HomeAssistant.control(ctx, args)
 	}
 	if name == "xiaomi_home" && t.Xiaomi.ready() {

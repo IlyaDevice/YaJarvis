@@ -303,7 +303,7 @@ func (s *GeminiSession) Interruptions() <-chan struct{} { return s.interrupts }
 // geminiTools — те же инструменты, что у GPT, в виде, который понимает Gemini (простая схема без вложенных словарей).
 func geminiTools(t *Tools, webSearch bool) []any {
 	var tools []any
-	if t.HomeAssistant.ready() {
+	if t.HomeAssistant.ready() && t.use("homeassistant") && t.HomeAssistant.alive() { // как в tools.go: галочка «умный дом» снята — инструмента нет
 		d := haDefinition()
 		tools = append(tools, map[string]any{"functionDeclarations": []any{map[string]any{"name": d["name"], "description": d["description"], "parameters": geminiSchema(d["parameters"]), "behavior": "BLOCKING"}}})
 	}
