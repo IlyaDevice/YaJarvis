@@ -26,10 +26,7 @@ func askOpenAI(ctx context.Context, client *http.Client, key string, p Profile, 
 	if model == "" {
 		model = BackendModels[0]
 	}
-	effort := p.Effort
-	if effort == "" {
-		effort = "low"
-	}
+	effort := normalizedModelEffort(model, p.Effort)
 	defs := append([]any{}, tools.Definitions()...)
 	if p.WebSearch {
 		defs = append(defs, map[string]any{"type": "web_search"})
@@ -313,10 +310,7 @@ func askCodex(ctx context.Context, client *http.Client, a ChatGPTAuth, p Profile
 	if model == "" {
 		model = BackendModels[0]
 	}
-	effort := p.Effort
-	if effort == "" {
-		effort = "low"
-	}
+	effort := normalizedModelEffort(model, p.Effort)
 	defs := append([]any{}, tools.Definitions()...)
 	if p.WebSearch {
 		defs = append(defs, map[string]any{"type": "web_search"})

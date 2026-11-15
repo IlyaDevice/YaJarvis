@@ -132,14 +132,11 @@ func (s *LiveSession) sessionConfig() map[string]any {
 			instr += "\n\nКак звучит твой голос: " + s.voicePrompt
 		}
 	}
-	effort := p.Effort
-	if effort == "" {
-		effort = "low"
-	}
 	model := p.BackendModel
 	if model == "" {
 		model = BackendModels[0]
 	}
+	effort := normalizedModelEffort(model, p.Effort)
 	tools := append([]any{}, s.tools.Definitions()...) // всегда массив, не null
 	if p.WebSearch {
 		tools = append(tools, map[string]any{"type": "web_search"})

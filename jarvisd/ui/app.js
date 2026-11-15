@@ -418,7 +418,7 @@ function viewProfile(id) {
       <div class="eng" data-for="elevenlabs eleven_realtime"><p class="note">Голос выбирается ниже из вашего аккаунта ElevenLabs.</p><button class="btn" id="p-el-refresh" type="button">Обновить голоса ElevenLabs</button></div>
       <div class="eng" data-for="gemini"><div class="f half"><label>Модель ${tip("С бесплатным ключом из AI Studio все эти модели работают без оплаты, но у каждой свой дневной лимит. Когда он кончается, Джарвис сам переходит на следующую модель в списке.")}</label><select id="p-gmodel">${(S.gemini_model_info?.length ? S.gemini_model_info : S.gemini_models.map((id) => ({ id, name: id, note: "" }))).map((m) => `<option value="${esc(m.id)}"${m.id === p.live_model ? " selected" : ""}>${esc(m.name)}${m.note ? ` — ${esc(m.note)}` : ""}</option>`).join("")}</select></div></div>
     <div class="eng" data-for="openai chatgpt elevenlabs"><div class="f half"><label>Текстовая модель ${tip("Чем умнее модель, тем дольше она думает. Для голосового помощника обычно хватает самой быстрой.")}</label><select id="p-model">${S.backend_models.map((m) => `<option${m === p.backend_model ? " selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
-      <div class="f"><label>Сколько думать ${tip("Не думать — отвечает сразу; немного — рекомендуется; средне и долго — для сложных вопросов, но ответ придёт позже.")}</label><div class="seg" id="p-effort">${S.efforts.map((e) => `<button type="button" data-v="${e}" class="${e === p.effort ? "on" : ""}">${({ none: "не думать", low: "немного", medium: "средне", high: "долго" })[e] || e}</button>`).join("")}</div></div>
+      <div class="f"><label>Сколько думать ${tip("Доступные уровни зависят от выбранной текстовой модели: не все модели поддерживают «не думать». Немного — быстрее, средне и долго — для сложных вопросов.")}</label><div class="seg" id="p-effort">${S.efforts.map((e) => `<button type="button" data-v="${e}" class="${e === p.effort ? "on" : ""}">${({ none: "не думать", low: "немного", medium: "средне", high: "долго" })[e] || e}</button>`).join("")}</div></div>
     <label class="sw"><input type="checkbox" id="p-priority"${p.priority ? " checked" : ""}><span class="tr"></span>Приоритет ${tip("Запросы обрабатываются в быстрой очереди OpenAI: ответ быстрее, но стоит дороже.")}</label></div>
     <div class="stack">
       <label class="sw"><input type="checkbox" id="p-web"${p.web_search ? " checked" : ""}><span class="tr"></span>Поиск в интернете ${tip("Для погоды, новостей, курсов и всего свежего. Без него Джарвис знает только то, чему его научили.")}</label></div>
@@ -439,6 +439,17 @@ function viewProfile(id) {
     ${!isNew && !active ? `<button class="btn ghost danger" id="p-del">Удалить</button>` : ""}<span class="dirty hidden" id="dirty">есть несохранённые изменения</span></div>`;
 
   const mark = () => { dirty = true; $("#dirty").classList.remove("hidden"); };
+  const effortOptions = (model) => S.model_efforts?.[model] || S.efforts;
+  const refreshEffortOptions = () => {
+    const allowed = effortOptions($("#p-model").value);
+    if (!allowed.includes(p.effort)) { p.effort = "low"; mark(); }
+    $$("#p-effort button").forEach((b) => {
+      b.style.display = allowed.includes(b.dataset.v) ? "" : "none";
+      b.classList.toggle("on", b.dataset.v === p.effort);
+    });
+  };
+  refreshEffortOptions();
+  $("#p-model").addEventListener("change", () => { p.backend_model = $("#p-model").value; refreshEffortOptions(); mark(); });
   $("#view").oninput = mark;
   $("#view").onchange = mark;
   $("#p-name").addEventListener("input", (e) => { p.name = e.target.value; $("#pav").innerHTML = avatar(p, true); });

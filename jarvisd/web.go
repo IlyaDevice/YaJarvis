@@ -392,7 +392,7 @@ func (w *Web) state(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, 200, map[string]any{
 		"version":  version,
 		"profiles": s.Profiles, "active": s.Active, "prompts": s.Prompts, "live_voices": s.LiveVoices,
-		"voice_groups": LiveVoiceGroups, "backend_models": BackendModels, "efforts": Efforts,
+		"voice_groups": LiveVoiceGroups, "backend_models": BackendModels, "efforts": Efforts, "model_efforts": modelEffortOptions(),
 		"keys":        map[string]string{"openai": mask(s.OpenAIKey), "gemini": mask(s.GeminiKey), "grok": mask(s.GrokKey), "elevenlabs": mask(s.ElevenLabsKey), "yandex": mask(s.YandexToken)},
 		"eleven_keys": s.ElevenKeysState(), "gemini_keys": GeminiKeysState(s.GeminiKeys), "vpn": s.VPNState(),
 		"gemini_models": GeminiModels, "gemini_model_info": GeminiModelInfo, "gemini_voice_groups": GeminiVoiceGroups, "chatgpt_voice_groups": ChatGPTVoiceGroups, "grok_voice_groups": GrokVoiceGroups,
@@ -630,9 +630,7 @@ func (w *Web) putProfile(rw http.ResponseWriter, r *http.Request) {
 	if p.Mode != "live" && p.Mode != "classic" {
 		p.Mode = "live"
 	}
-	if p.Effort == "" {
-		p.Effort = "low"
-	}
+	p.Effort = normalizedModelEffort(p.BackendModel, p.Effort)
 	if isClassic(p) {
 		classicDefaults(&p)
 	} else if p.Engine == "eleven_realtime" {
