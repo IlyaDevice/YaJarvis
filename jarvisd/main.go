@@ -125,12 +125,24 @@ func main() {
 		if _, err := fmt.Sscan(os.Args[2], &lvl); err != nil {
 			log.Fatal("jarvisd volume 0..10")
 		}
-		fmt.Printf("было %.1f\n", aliceVolumeF())
+		show := func(what string) {
+			v, stamp := aliceVolumeLog()
+			fmt.Printf("%s %.1f (журнал Алисы %.1f от %s, Master %d%%)\n", what, currentVolume(), v, stamp, masterPercent())
+		}
+		show("было")
 		if err := setAliceVolume(lvl); err != nil {
 			log.Fatal(err)
 		}
-		time.Sleep(time.Second)
-		fmt.Printf("стало %.1f\n", aliceVolumeF())
+		for i := 0; i < 150; i++ { // шагает фоновый обработчик — ждём, пока дойдёт
+			time.Sleep(100 * time.Millisecond)
+			volMu.Lock()
+			busy := volBusy
+			volMu.Unlock()
+			if !busy {
+				break
+			}
+		}
+		show("стало")
 		return
 	}
 	if len(os.Args) > 2 && os.Args[1] == "alice-text" { // проверка: jarvisd alice-text "сколько времени"
