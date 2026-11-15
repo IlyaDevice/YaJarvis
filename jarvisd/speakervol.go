@@ -52,6 +52,15 @@ var aliceVolLogs = []string{"/data/quasar/daemons_logs/glagold.log", "/data/quas
 var volChangedRe = regexp.MustCompile(`Changed volume to ([0-9.]+)`)
 
 func aliceVolume() int {
+	v := aliceVolumeF()
+	if v < 0 {
+		return -1
+	}
+	return int(math.Round(v))
+}
+
+// aliceVolumeF — уровень Алисы 0..10 с половинками (у Лайт 20 шагов), -1 — не прочитать.
+func aliceVolumeF() float64 {
 	for _, p := range aliceVolLogs {
 		if v := lastVolumeIn(p); v >= 0 {
 			return v
@@ -60,8 +69,8 @@ func aliceVolume() int {
 	return -1
 }
 
-// lastVolumeIn — последний уровень из хвоста журнала (64 КБ), -1 — строки нет.
-func lastVolumeIn(path string) int {
+// lastVolumeIn — последний уровень 0..10 из хвоста журнала (64 КБ), -1 — строки нет.
+func lastVolumeIn(path string) float64 {
 	f, err := os.Open(path)
 	if err != nil {
 		return -1
@@ -79,7 +88,7 @@ func lastVolumeIn(path string) int {
 	return parseVolumeLine(buf)
 }
 
-func parseVolumeLine(b []byte) int {
+func parseVolumeLine(b []byte) float64 {
 	m := volChangedRe.FindAllSubmatch(b, -1)
 	if len(m) == 0 {
 		return -1
@@ -88,7 +97,7 @@ func parseVolumeLine(b []byte) int {
 	if err != nil || v < 0 || v > 1.001 {
 		return -1
 	}
-	return int(math.Round(v * 10))
+	return math.Round(v*20) / 2 // 0.55 → 5.5
 }
 
 // masterPercent — регулятор Master в процентах (-1 — не прочитать).
@@ -121,33 +130,40 @@ func (w *Web) setSpeakerVolume(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, 200, map[string]any{"volume": lvl})
 }
 
-// setAliceVolume — «громкость N» Алисе беззвучным запросом. На части прошивок (Мини 3) беззвучный запрос
-// громкость не меняет — тогда через 2,5 с повторяем обычным, как будто сказали голосом.
+// setAliceVolume — поставить уровень Алисы lvl (0..10). Шагами «громче»/«тише»: эти две команды Алиса
+// выполняет сама на колонке (быстрые локальные команды), без облака и без ответа голосом — работает и там,
+// где Алисе закрыт выход в интернет (у тестера на Мини 3 «громкость N» уходила в облако и не применялась).
+// Каждый шаг ждём по её журналу. Уровень не читается или шаг не сработал — просим «громкость N» у облака.
 func setAliceVolume(lvl int) error {
-	before := aliceVolume()
-	if err := AliceText(fmt.Sprintf("громкость %d", lvl), true); err != nil {
-		return err
-	}
 	volMu.Lock()
 	volSet, volSetAt = lvl, time.Now()
 	volMu.Unlock()
-	if before < 0 || before == lvl { // уровень не читается или уже такой — проверить нечем
-		return nil
-	}
-	go func() {
-		for i := 0; i < 10; i++ {
-			time.Sleep(250 * time.Millisecond)
-			if aliceVolume() != before {
-				return
-			}
+	for i := 0; i < 12; i++ {
+		cur := aliceVolumeF()
+		if cur < 0 {
+			break
 		}
-		log.Printf("громкость: беззвучный запрос не сработал — повторяю обычным (уровень %d)", lvl)
-		_ = AliceText(fmt.Sprintf("громкость %d", lvl), false)
-		volMu.Lock()
-		volSetAt = time.Now()
-		volMu.Unlock()
-	}()
-	return nil
+		if int(math.Round(cur)) == lvl {
+			return nil
+		}
+		word := "громче"
+		if cur > float64(lvl) {
+			word = "тише"
+		}
+		if err := AliceText(word, true); err != nil {
+			return err
+		}
+		changed := false
+		for j := 0; j < 16 && !changed; j++ {
+			time.Sleep(50 * time.Millisecond)
+			changed = aliceVolumeF() != cur
+		}
+		if !changed {
+			log.Printf("громкость: шаг «%s» не сработал — прошу у Алисы «громкость %d»", word, lvl)
+			break
+		}
+	}
+	return AliceText(fmt.Sprintf("громкость %d", lvl), true)
 }
 
 // Голос Джарвиса идёт через тот же регулятор Master, что и Алиса: громкость колонки и так делает его тише или

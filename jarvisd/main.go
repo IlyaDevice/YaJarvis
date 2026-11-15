@@ -120,6 +120,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 2 && os.Args[1] == "volume" { // проверка: jarvisd volume 3 — поставить громкость Алисы шагами
+		var lvl int
+		if _, err := fmt.Sscan(os.Args[2], &lvl); err != nil {
+			log.Fatal("jarvisd volume 0..10")
+		}
+		fmt.Printf("было %.1f\n", aliceVolumeF())
+		if err := setAliceVolume(lvl); err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(time.Second)
+		fmt.Printf("стало %.1f\n", aliceVolumeF())
+		return
+	}
 	if len(os.Args) > 2 && os.Args[1] == "alice-text" { // проверка: jarvisd alice-text "сколько времени"
 		if err := AliceText(os.Args[2], false); err != nil {
 			log.Fatal(err)
