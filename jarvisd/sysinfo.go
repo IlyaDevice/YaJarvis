@@ -3,9 +3,13 @@ package main
 // Состояние самой колонки для главной страницы настроек: температура, память, Wi-Fi, место на диске.
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 type SysInfo struct {
@@ -55,10 +59,51 @@ func readSys(dataDir string) SysInfo {
 			f := strings.Fields(line)
 			if len(f) >= 4 && strings.HasSuffix(f[0], ":") { // «wlan0: 0000 60. -50. -256 …» — третье число и есть уровень
 				lvl, _ := strconv.ParseFloat(strings.TrimSuffix(f[3], "."), 64)
-				s.WifiDBm = int(lvl)
+				if lvl < 0 {
+					s.WifiDBm = int(lvl)
+				}
 			}
 		}
 	}
+	if s.WifiDBm == 0 {
+		s.WifiDBm = wifiRSSI()
+	}
 	s.DiskFreeMB, s.DiskTotalMB = diskSpace(dataDir)
 	return s
+}
+
+// wifiRSSI — уровень Wi-Fi от wpa_supplicant («RSSI=-52»): у части драйверов (Мини 3) /proc/net/wireless
+// пустой. Ответ запоминаем на 10 с, чтобы не запускать wpa_cli на каждый опрос панели.
+var wifiCache struct {
+	sync.Mutex
+	at  time.Time
+	dbm int
+}
+
+func wifiRSSI() int {
+	wifiCache.Lock()
+	defer wifiCache.Unlock()
+	if time.Since(wifiCache.at) < 10*time.Second {
+		return wifiCache.dbm
+	}
+	wifiCache.at, wifiCache.dbm = time.Now(), 0
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "wpa_cli", "-i", "wlan0", "signal_poll").Output()
+	if err != nil {
+		return 0
+	}
+	wifiCache.dbm = parseRSSI(string(out))
+	return wifiCache.dbm
+}
+
+func parseRSSI(out string) int {
+	for _, l := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(l), "RSSI="); ok {
+			if n, err := strconv.Atoi(v); err == nil && n < 0 && n > -120 {
+				return n
+			}
+		}
+	}
+	return 0
 }

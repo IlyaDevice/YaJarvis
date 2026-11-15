@@ -103,10 +103,16 @@ func (p *Proxy) ClientFor(svc string, timeout time.Duration) *http.Client {
 }
 
 func (p *Proxy) TransportFor(svc string) *http.Transport {
-	return &http.Transport{
+	t := &http.Transport{
 		DialContext: p.DialFor(svc), ForceAttemptHTTP2: true, MaxIdleConns: 8,
 		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second,
 	}
+	if svc == "youtube" {
+		// googlevideo часто отдают кэш-серверы провайдера (GGC): на части из них большое приветствие TLS
+		// с постквантовым ключом (1,8 КБ, два пакета) зависает до таймаута. Обычные X25519/P-256 — один пакет.
+		t.TLSClientConfig = &tls.Config{CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256}}
+	}
+	return t
 }
 
 // LiveClientFor — клиент для открытия разговора: готовое соединение берём, только если оно через тот же путь.

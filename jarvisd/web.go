@@ -1000,13 +1000,14 @@ func (w *Web) testNet(rw http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		resp.Body.Close()
-		res := map[string]any{"ok": resp.StatusCode == 200, "code": resp.StatusCode, "ms": time.Since(t0).Milliseconds()}
+		ok := resp.StatusCode >= 200 && resp.StatusCode < 300 // YouTube отвечает 204 — это и есть «работает»
+		res := map[string]any{"ok": ok, "code": resp.StatusCode, "ms": time.Since(t0).Milliseconds()}
 		switch {
 		case resp.StatusCode == 401:
 			res["error"] = "ключ не подошёл"
 		case resp.StatusCode == 403:
 			res["error"] = "доступ запрещён — похоже, сервис видит российский/белорусский адрес, нужен VLESS"
-		case resp.StatusCode != 200:
+		case !ok:
 			res["error"] = fmt.Sprintf("ответ %d", resp.StatusCode)
 		}
 		return res

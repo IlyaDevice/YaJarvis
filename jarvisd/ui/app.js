@@ -640,7 +640,7 @@ function connDefs() {
     { id: "youtube", group: "home", mono: "YT", name: "YouTube", about: "Музыка и видео голосом. Вход — для ваших рекомендаций и видео 18+", more: "Там, где YouTube заблокирован (Россия), включите «Через VPN»",
       on: !!(ya.signed_in || yt.set), state: ya.signed_in ? "вход выполнен" : yt.set ? "куки загружены" : ya.code ? "ждёт код" : "не подключено",
       wait: !ya.signed_in && !!ya.code,
-      body: ya.code ? `<div class="ycode"><span>Откройте <a href="${esc(ya.url)}" target="_blank" rel="noopener">${esc(ya.url.replace("https://", ""))}</a> и введите</span><b class="code-big">${esc(ya.code)}</b><small class="muted">окно само увидит вход</small></div>`
+      body: ya.code ? `<div class="ycode"><span>Откройте <a href="${esc(ya.url)}" target="_blank" rel="noopener">${esc(ya.url.replace("https://", ""))}</a> и введите</span><b class="code-big" role="button" tabindex="0" title="Нажмите, чтобы скопировать">${esc(ya.code)}</b><small class="muted">окно само увидит вход</small></div>`
         : ya.signed_in ? `<div class="cn-ok">${icon("done")}<span>Колонка вошла в YouTube<small>видео 18+ тоже играют</small></span></div>`
         : `${ya.error ? `<p class="err">${esc(ya.error)}</p>` : ""}<div class="row"><button class="btn primary" id="ya-in">Войти в YouTube</button><small class="muted">кодом, как на телевизоре — пароль колонка не видит</small></div>
           <details class="mini"><summary>Не получается кодом? Куки браузера</summary><ol class="how"><li>Расширение «Get cookies.txt LOCALLY» → окно инкогнито → войдите на youtube.com.</li><li>Export (Netscape) → скопируйте весь текст сюда → закройте окно, не выходя из аккаунта.</li></ol>
@@ -980,6 +980,11 @@ async function waitRestart(msg) {
   toast("Колонка долго не отвечает — обновите страницу через минуту", true);
 }
 
+// коды входа (YouTube, Google Диск, ChatGPT…) копируются нажатием
+document.addEventListener("click", (e) => {
+  const c = e.target.closest?.(".code-big");
+  if (c) copyText(c.textContent.trim()).then(() => toast("Код скопирован"), () => toast("Не получилось скопировать", true));
+});
 // скопировать текст: на http (адрес колонки в сети) navigator.clipboard недоступен — запасной способ
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return; } catch { /* ниже */ }

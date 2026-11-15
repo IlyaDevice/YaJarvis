@@ -353,7 +353,7 @@ details .inner { display: grid; gap: 16px; }
   .ring.talk .arc { animation: none; stroke-dasharray: none; }
 }
 
-.code-big { font: 600 1.25rem/1.2 ui-monospace, monospace; letter-spacing: .08em; }
+.code-big { font: 600 1.25rem/1.2 ui-monospace, monospace; letter-spacing: .08em; cursor: copy; }
 
 /* ---------- обучение ---------- */
 .tlist { display: grid; gap: 8px; }

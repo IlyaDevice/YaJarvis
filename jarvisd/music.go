@@ -845,6 +845,7 @@ type ytReader struct {
 	eof     bool
 	refresh func() (*ytStream, error)
 	renewed int
+	fails   int       // сетевых сбоев подряд
 	main    *ytStream // пока играет начало с запасной ссылки: основная, на которую перейти после «рекламы»
 }
 
@@ -886,6 +887,9 @@ func (r *ytReader) Read(p []byte) (int, error) {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", r.pos, r.pos+r.chunk-1))
 			resp, err := r.client.Do(req)
 			if err != nil {
+				if r.retry(err) {
+					continue
+				}
 				return 0, err
 			}
 			if resp.StatusCode == 416 {
@@ -941,8 +945,31 @@ func (r *ytReader) Read(p []byte) (int, error) {
 			}
 			continue
 		}
+		if err != nil && r.ctx.Err() == nil { // связь оборвалась посреди куска — докачиваем с этого места
+			r.body.Close()
+			r.body = nil
+			if n > 0 {
+				return n, nil
+			}
+			if r.retry(err) {
+				continue
+			}
+		}
+		if err == nil {
+			r.fails = 0
+		}
 		return n, err
 	}
+}
+
+// retry — сеть до YouTube споткнулась (таймаут TLS, обрыв): ждём и пробуем ещё, до 4 раз подряд.
+func (r *ytReader) retry(err error) bool {
+	if r.ctx.Err() != nil || r.fails >= 4 {
+		return false
+	}
+	r.fails++
+	log.Printf("музыка: связь с YouTube споткнулась (%s) — повтор %d из 4", shortErr(err), r.fails)
+	return sleepCtx(r.ctx, time.Duration(r.fails)*time.Second) == nil
 }
 
 // webm — минимальный разбор Matroska: из кластеров достаём кадры дорожки (SimpleBlock/Block) и их время.
