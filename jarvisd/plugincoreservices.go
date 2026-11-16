@@ -8,6 +8,31 @@ import (
 	"reflect"
 )
 
+// Account logout remains available even when its optional provider is stopped.
+func forgetHomeAccount(store *Store, service string) error {
+	if err := store.Update(func(s *Settings) error {
+		switch service {
+		case "smartlife":
+			s.Tuya = TuyaAuth{}
+		case "xiaomi":
+			s.Xiaomi = XiaomiAuth{}
+		default:
+			return errors.New("неизвестное подключение")
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	name := map[string]string{"smartlife": "tuya-devices.json", "xiaomi": "xiaomi-devices.json"}[service]
+	dir := filepath.Dir(store.path)
+	for _, path := range []string{filepath.Join(dir, name), filepath.Join(dir, "plugins", "home", "data", name)} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Explicit per-provider mapping: never hand all of settings.json to a plugin.
 func coreServices(store *Store, proxy *Proxy, dataDir string) func(string, string, json.RawMessage) (any, error) {
 	return func(id, method string, params json.RawMessage) (any, error) {

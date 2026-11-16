@@ -95,7 +95,10 @@ func (t *Xiaomi) state() map[string]any {
 	}
 	return out
 }
-func (t *Xiaomi) Logout() { _ = t.invoke("logout", nil, nil) }
+func (t *Xiaomi) Logout() error {
+	_ = t.invoke("logout", nil, nil)
+	return forgetHomeAccount(t.store, "xiaomi")
+}
 func (t *Xiaomi) context() (out string) {
 	if !t.ready() {
 		return ""
@@ -161,6 +164,9 @@ func (w *Web) xiaomiRefresh(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) xiaomiLogout(rw http.ResponseWriter, r *http.Request) {
-	w.engine.tools.Xiaomi.Logout()
+	if err := w.engine.tools.Xiaomi.Logout(); err != nil {
+		bad(rw, err.Error())
+		return
+	}
 	writeJSON(rw, 200, map[string]any{"ok": true})
 }

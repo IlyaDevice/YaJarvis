@@ -83,7 +83,10 @@ func (t *SmartLife) state() map[string]any {
 	}
 	return out
 }
-func (t *SmartLife) Logout() { _ = t.invoke("logout", nil, nil) }
+func (t *SmartLife) Logout() error {
+	_ = t.invoke("logout", nil, nil)
+	return forgetHomeAccount(t.store, "smartlife")
+}
 func (t *SmartLife) context() (out string) {
 	if !t.ready() {
 		return ""
@@ -161,6 +164,9 @@ func (w *Web) smartLifeRefresh(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) smartLifeLogout(rw http.ResponseWriter, r *http.Request) {
-	w.engine.tools.SmartLife.Logout()
+	if err := w.engine.tools.SmartLife.Logout(); err != nil {
+		bad(rw, err.Error())
+		return
+	}
 	writeJSON(rw, 200, map[string]any{"ok": true})
 }

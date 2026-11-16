@@ -222,7 +222,8 @@ export async function plClick(e) {
   }
   if (t.dataset.plDel) {
     const p = plInstalled(t.dataset.plDel);
-    if (!confirm(`Удалить плагин «${p?.name || t.dataset.plDel}» вместе с его настройками и данными?`)) return;
+    const kept = ["home", "vpn", "youtube", "chatgpt"].includes(p?.id) ? " Подключения колонки сохранятся." : "";
+    if (!confirm(`Удалить плагин «${p?.name || t.dataset.plDel}» вместе с его отдельными настройками и данными?${kept}`)) return;
     await act(t, async () => { await api("DELETE", `/api/plugins/${encodeURIComponent(t.dataset.plDel)}`); await plLoad(); }, "Плагин удалён");
   }
 }

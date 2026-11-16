@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,5 +76,24 @@ func TestProviderRefreshPreservesHomeSwitch(t *testing.T) {
 	}
 	if !s.Get().UseHome("xiaomi") {
 		t.Fatal("explicit new login did not enable its channel")
+	}
+}
+
+func TestProviderLogoutWhilePluginStopped(t *testing.T) {
+	dir := t.TempDir()
+	s := &Store{s: defaultSettings(), path: filepath.Join(dir, "settings.json")}
+	s.s.Tuya = TuyaAuth{Endpoint: "https://example.invalid", RefreshToken: "test"}
+	s.s.Xiaomi = XiaomiAuth{UserID: "other-account"}
+	path := filepath.Join(dir, "plugins", "home", "data", "tuya-devices.json")
+	_ = os.MkdirAll(filepath.Dir(path), 0700)
+	_ = os.WriteFile(path, []byte(`[]`), 0600)
+	if err := forgetHomeAccount(s, "smartlife"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Get().Tuya.SignedIn() || s.Get().Xiaomi.UserID != "other-account" {
+		t.Fatal("logout scope")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("private device cache retained", err)
 	}
 }
