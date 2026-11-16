@@ -538,6 +538,7 @@ func main() {
 	tools.Room = func() string { return store.Get().SpeakerRoom }
 	go tuyaLAN.Listen(func() bool { return store.Get().Tuya.SignedIn() })
 	mic := NewMic(*micSock)
+	mic.GainDB = func() int { return store.Flags().MicGainDB }
 	go mic.Run()
 	go WatchAliceMic(mic) // Midi/Mini: Алиса стартует раньше S98jarvisd — без перезапуска микрофона нет
 	player := NewPlayer()

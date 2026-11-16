@@ -96,7 +96,10 @@ func (s *ChatGPTSession) stat(f func()) {
 }
 
 func (s *ChatGPTSession) Audio() <-chan []int16 { return s.Out }
-func (s *ChatGPTSession) Rate() int             { return MicRate }
+func (s *ChatGPTSession) Rate() int             { return chatgptRate }
+
+// chatgptRate — голос ChatGPT приходит в Opus 48 кГц; раньше декодировали в 16 кГц, и он звучал как по телефону.
+const chatgptRate = OutRate
 
 // OutBoost — голос ChatGPT по подписке приходит тише Gemini примерно на 13 дБ (замеры voicetest.go и живых разговоров:
 // ChatGPT −27…−28 дБ, Gemini −12…−16,5 дБ): ×4,5 выравнивает их, пики держит ограничитель плеера.
@@ -387,15 +390,15 @@ func chunkBytes(text string, n int) []string {
 	return out
 }
 
-// play — голос модели: RTP → буфер против джиттера → Opus → 16 кГц.
+// play — голос модели: RTP → буфер против джиттера → Opus → 48 кГц.
 func (s *ChatGPTSession) play(tr *webrtc.TrackRemote) {
-	dec, err := gopus.NewDecoder(gopus.DefaultDecoderConfig(MicRate, 1))
+	dec, err := gopus.NewDecoder(gopus.DefaultDecoderConfig(chatgptRate, 1))
 	if err != nil {
 		log.Printf("GPT-Live (подписка): декодер: %v", err)
 		return
 	}
 	jb := newJitterBuf(dec, func(pcm []int16) {
-		s.level.add(pcm, MicRate)
+		s.level.add(pcm, chatgptRate)
 		if loud(pcm) {
 			s.heardVoice()
 			s.stat(func() { s.gotLoud++ })
@@ -408,6 +411,10 @@ func (s *ChatGPTSession) play(tr *webrtc.TrackRemote) {
 	defer func() {
 		if jb.lost > 0 {
 			log.Printf("GPT-Live (подписка): потерянных пакетов голоса за звонок — %d, закрыты восстановлением", jb.lost)
+		}
+		if jb.under > 0 {
+			log.Printf("GPT-Live (подписка): голос приходил рывками — %d провалов, всего %.0f мс; запас вырос до %d мс",
+				jb.under, jb.underMs, jb.preroll*20)
 		}
 	}()
 	for {

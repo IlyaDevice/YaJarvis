@@ -893,6 +893,8 @@ function viewSpeaker() {
     <label class="sw"><input type="checkbox" id="s-check"${s.wake_check ? " checked" : ""}><span class="tr"></span>Проверять имя перед ответом ${tip("Выключено — как у Алисы: услышал слово, сразу загорается кольцо и Джарвис слушает. Включено — сначала облако проверяет, что прозвучало именно «Джарвис»: ложных разговоров меньше, но отклик на полсекунды-секунду позже.")}</label>
     <div class="f"><label>Чувствительность ${tip("Выше — слышит издалека и тихо, но чаще срабатывает зря (например, на разговор в Discord). Ниже — реже ошибается, но звать нужно чётче.")}<b id="s-sens-v" class="val">${s.wake_sensitivity}</b></label>
       <input type="range" id="s-sens" min="1" max="10" value="${s.wake_sensitivity}"><div class="scale"><span>осторожно</span><span>слышит всё</span></div></div>
+    <div class="f"><label>Общее усиление микрофона ${tip("Для колонок, которые слышат вас только вблизи (так бывает на Станции Мини 2: её обработка отдаёт голос тихо). Усиливает звук для всего: слова «Джарвис», ИИ и записей для обучения. Прибавляйте по 6 дБ и проверяйте; слишком много — чаще ложные срабатывания. На Лайт обычно не нужно.")}<b id="s-gain-v" class="val">+${s.mic_gain_db || 0} дБ</b></label>
+      <input type="range" id="s-gain" min="0" max="30" step="3" value="${s.mic_gain_db || 0}"><div class="scale"><span>как есть</span><span>+30 дБ</span></div></div>
     <div class="f"><label>Усиление микрофона для ИИ ${tip("Если модель плохо слышит и переспрашивает, хотя вы говорите не тихо (так бывает на Станции Лайт 2: её обработка отдаёт голос тише), прибавьте 6–12 дБ. Слово «Джарвис» это не меняет. Уровень голоса за каждый разговор пишется в журнал: «микрофон: за разговор голос …».")}<b id="s-mic-v" class="val">+${s.mic_boost_db || 0} дБ</b></label>
       <input type="range" id="s-mic" min="0" max="18" step="3" value="${s.mic_boost_db || 0}"><div class="scale"><span>как есть</span><span>+18 дБ</span></div></div>
     ${S.speaker.wake_model ? "" : `<p class="note">Модель слова ещё не установлена — пока Джарвиса можно позвать только кнопкой «Поговорить» на главной.</p>`}`)}
@@ -921,6 +923,8 @@ function viewSpeaker() {
   $("#s-tz").addEventListener("change", (e) => put({ timezone: e.target.value }).then(() => toast("Часовой пояс сохранён — время в журнале тоже по нему")));
   $("#s-sens").addEventListener("input", (e) => ($("#s-sens-v").textContent = e.target.value));
   $("#s-sens").addEventListener("change", (e) => put({ wake_sensitivity: +e.target.value }).then(() => toast("Чувствительность сохранена")));
+  $("#s-gain").addEventListener("input", (e) => { $("#s-gain-v").textContent = `+${e.target.value} дБ`; });
+  $("#s-gain").addEventListener("change", (e) => put({ mic_gain_db: +e.target.value }).then(() => toast("Общее усиление микрофона сохранено")));
   $("#s-mic").addEventListener("input", (e) => { $("#s-mic-v").textContent = `+${e.target.value} дБ`; });
   $("#s-mic").addEventListener("change", (e) => put({ mic_boost_db: +e.target.value }).then(() => toast("Усиление микрофона сохранено")));
   const night = { enabled: false, from: "23:00", to: "08:00", voice: 20, bright: 10, speaker: 3, ...(s.night || {}) };

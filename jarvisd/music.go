@@ -33,7 +33,7 @@ import (
 const (
 	ytVRVersion = "1.65.10"
 	ytVRAgent   = "com.google.android.apps.youtube.vr.oculus/" + ytVRVersion + " (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-	musicRate   = 24000
+	musicRate   = OutRate // Opus и так 48 кГц: при 24 кГц терялись верха, а ALSA ещё и грубо пересчитывала обратно в 48
 )
 
 type Track struct {
@@ -1193,9 +1193,9 @@ func (m *Music) playOpus(ctx context.Context, gen int, id string, st *ytStream, 
 		for _, s := range pcm[:n] {
 			// приглушение быстрое (~20 мс), возврат плавный (~1 с): музыка не «выпрыгивает» после ответа
 			if target < gain {
-				gain += (target - gain) * 0.002
+				gain += (target - gain) * (0.002 * 24000 / musicRate)
 			} else {
-				gain += (target - gain) * 0.00015
+				gain += (target - gain) * (0.00015 * 24000 / musicRate)
 			}
 			out = binary.LittleEndian.AppendUint16(out, uint16(int16(float64(s)*gain)))
 		}

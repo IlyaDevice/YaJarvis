@@ -145,9 +145,10 @@ func WarmChatGPTLoop(active func() bool) {
 // ---- буфер против джиттера
 
 const (
-	jbFrame   = MicRate / 50 // 20 мс при 16 кГц
-	jbHold    = 3            // сколько пакетов после дырки ждём опоздавший, прежде чем считать его потерянным
-	jbPreroll = 4            // пакетов (80 мс) запаса в начале фразы
+	jbFrame   = chatgptRate / 50 // 20 мс
+	jbHold    = 3                // сколько пакетов после дырки ждём опоздавший, прежде чем считать его потерянным
+	jbPreroll = 4                // пакетов (80 мс) запаса в начале фразы
+	jbMaxPre  = 12               // до 240 мс запаса, если сеть (Wi-Fi, VPN) отдаёт пакеты рывками
 	jbGap     = 250 * time.Millisecond
 )
 
@@ -161,10 +162,17 @@ type jitterBuf struct {
 	spurt   [][]int16 // начало фразы копим, пока не наберётся запас
 	lastOut time.Time
 	lost    int
+
+	preroll int       // текущий запас в пакетах: растёт после каждого провала
+	playT   time.Time // с какого момента идёт непрерывный звук
+	playMs  float64   // сколько звука отдано с playT
+	under   int       // провалов: плеер опустел посреди фразы
+	underMs float64   // их суммарная длина
+	now     func() time.Time
 }
 
 func newJitterBuf(dec *gopus.Decoder, out func([]int16)) *jitterBuf {
-	return &jitterBuf{dec: dec, held: map[uint16]*rtp.Packet{}, out: out}
+	return &jitterBuf{dec: dec, held: map[uint16]*rtp.Packet{}, out: out, preroll: jbPreroll, now: time.Now}
 }
 
 // push — пришёл пакет: декодируем по порядку, дырки закрываем FEC/PLC.
@@ -203,7 +211,7 @@ func (j *jitterBuf) push(pkt *rtp.Packet) {
 }
 
 func (j *jitterBuf) decode(payload []byte) {
-	buf := make([]int16, MicRate/10)
+	buf := make([]int16, chatgptRate*12/100) // самый длинный кадр Opus — 120 мс
 	n, err := j.dec.DecodeInt16(payload, buf)
 	if err != nil || n <= 0 {
 		return
@@ -231,30 +239,48 @@ func (j *jitterBuf) conceal(next *rtp.Packet) {
 }
 
 // emit — отдать звук; в начале фразы (после паузы) сначала копим запас, чтобы плеер не пустел на рывках сети.
+// Если плеер всё же опустел посреди фразы (пакеты задержались дольше запаса), снова копим запас, уже больший:
+// одна пауза чуть длиннее звучит лучше, чем «заикание» на каждом следующем рывке.
 func (j *jitterBuf) emit(pcm []int16) {
-	now := time.Now()
-	if j.spurt == nil && now.Sub(j.lastOut) > jbGap {
-		j.spurt = [][]int16{}
+	now := j.now()
+	if j.spurt == nil {
+		if now.Sub(j.lastOut) > jbGap {
+			j.spurt = [][]int16{}
+		} else if late := float64(now.Sub(j.playT).Milliseconds()) - j.playMs; late > 30 {
+			j.under++
+			j.underMs += late
+			j.preroll = min(jbMaxPre, j.preroll+2)
+			j.spurt = [][]int16{}
+		}
 	}
 	j.lastOut = now
 	if j.spurt != nil {
 		j.spurt = append(j.spurt, pcm)
-		if len(j.spurt) < jbPreroll {
+		if len(j.spurt) < j.preroll {
 			return
 		}
-		for _, p := range j.spurt {
-			j.out(p)
-		}
-		j.spurt = nil
+		j.release(now)
 		return
 	}
+	j.send(pcm)
+}
+
+func (j *jitterBuf) release(now time.Time) {
+	j.playT, j.playMs = now, 0
+	for _, p := range j.spurt {
+		j.send(p)
+	}
+	j.spurt = nil
+}
+
+func (j *jitterBuf) send(pcm []int16) {
+	j.playMs += float64(len(pcm)) * 1000 / chatgptRate
 	j.out(pcm)
 }
 
 // flush — поток кончился: отдать накопленное начало фразы, если оно не успело уйти.
 func (j *jitterBuf) flush() {
-	for _, p := range j.spurt {
-		j.out(p)
+	if j.spurt != nil {
+		j.release(j.now())
 	}
-	j.spurt = nil
 }

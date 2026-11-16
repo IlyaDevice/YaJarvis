@@ -26,6 +26,9 @@ type Mic struct {
 	subs map[int]chan []int16
 	next int
 	Seen time.Time // последний кадр — для статуса «микрофон на связи»
+	// GainDB — общее усиление (дБ) для всех подписчиков: слово активации, ИИ, записи для обучения.
+	// На Мини 2 обработка Алисы (профиль yandexmini_2) отдаёт голос заметно тише, чем на Лайт.
+	GainDB func() int
 }
 
 func NewMic(path string) *Mic { return &Mic{path: path, subs: map[int]chan []int16{}} }
@@ -52,6 +55,21 @@ func (m *Mic) Online() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return time.Since(m.Seen) < 3*time.Second
+}
+
+// gainPCM — усилить на месте; громкие места мягко прижимаются (softClip), а не обрезаются с треском.
+func gainPCM(pcm []int16, db int) {
+	if db <= 0 {
+		return
+	}
+	k := math.Pow(10, float64(db)/20)
+	for i, v := range pcm {
+		x := float64(v) * k
+		if x > 32767 || x < -32767 { // за пределами — гарантированно в потолок
+			x = max(-40000, min(40000, x))
+		}
+		pcm[i] = softClip(x)
+	}
 }
 
 func (m *Mic) Run() {
@@ -86,6 +104,9 @@ func (m *Mic) serve() error {
 		for i := range pcm {
 			pcm[i] = int16(binary.LittleEndian.Uint16(buf[2*i:]))
 		}
+		if m.GainDB != nil {
+			gainPCM(pcm, m.GainDB())
+		}
 		m.mu.Lock()
 		m.Seen = time.Now()
 		for _, ch := range m.subs {
@@ -119,7 +140,8 @@ type Player struct {
 	Volume func() int     // 0..100, читается на каждом куске
 	Trim   func() float64 // поправка к громкости голоса от громкости самой колонки (1 — без поправки)
 	lim    *limiter
-	boost  float64 // доп. усиление голоса конкретного движка (ChatGPT по подписке приходит тише)
+	up     *upsampler // 16/24 кГц → 48 кГц своим фильтром, а не линейным пересчётом ALSA
+	boost  float64    // доп. усиление голоса конкретного движка (ChatGPT по подписке приходит тише)
 	aplay  string
 }
 
@@ -142,7 +164,12 @@ func (p *Player) Start(rate int) error {
 	p.Stop(true)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cmd := exec.Command(p.aplay, "-q", "-D", "default", "-t", "raw", "-f", "S16_LE", "-r", itoa(rate), "-c", "1")
+	var up *upsampler
+	out := rate
+	if rate > 0 && rate < OutRate && OutRate%rate == 0 {
+		up, out = newUpsampler(OutRate/rate), OutRate
+	}
+	cmd := exec.Command(p.aplay, "-q", "-D", "default", "-t", "raw", "-f", "S16_LE", "-r", itoa(out), "-c", "1")
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -151,7 +178,7 @@ func (p *Player) Start(rate int) error {
 		return err
 	}
 	p.cmd, p.in = cmd, in
-	p.lim, p.boost = newLimiter(rate), 1
+	p.lim, p.up, p.boost = newLimiter(rate), up, 1
 	p.queue = make(chan []byte, 512)
 	p.done = make(chan struct{})
 	p.exited = make(chan struct{})
@@ -242,7 +269,6 @@ func (p *Player) Write(pcm []int16) error {
 	if p.Volume != nil {
 		vol = p.Volume()
 	}
-	b := make([]byte, 2*len(pcm))
 	g := float64(vol) / 50 * playGain // 50% — прежний максимум, 100% — вдвое громче
 	if p.Trim != nil {
 		g *= p.Trim()
@@ -253,13 +279,19 @@ func (p *Player) Write(pcm []int16) error {
 	}
 	defer p.mu.Unlock() // отправка тоже под замком: Stop/Finish закрывают канал под ним же — иначе «send on closed channel»
 	q, lim := p.queue, p.lim
-	if q == nil {
+	if q == nil || lim == nil {
 		return errors.New("плеер не запущен")
 	}
-	if lim != nil {
-		for i, s := range pcm {
-			binary.LittleEndian.PutUint16(b[2*i:], uint16(lim.next(float64(s)*g)))
-		}
+	shaped := make([]int16, len(pcm))
+	for i, s := range pcm {
+		shaped[i] = lim.next(float64(s) * g)
+	}
+	if p.up != nil {
+		shaped = p.up.run(shaped)
+	}
+	b := make([]byte, 2*len(shaped))
+	for i, s := range shaped {
+		binary.LittleEndian.PutUint16(b[2*i:], uint16(s))
 	}
 	select {
 	case q <- b: // не блокирует: при полном канале — default

@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/pion/rtp"
 	"github.com/thesyncim/gopus"
@@ -26,7 +27,7 @@ func TestJitterBufReorderAndLoss(t *testing.T) {
 		}
 		pkts = append(pkts, &rtp.Packet{Header: rtp.Header{SequenceNumber: uint16(65530 + i)}, Payload: data}) // и переход через 65535
 	}
-	dec, err := gopus.NewDecoder(gopus.DefaultDecoderConfig(MicRate, 1))
+	dec, err := gopus.NewDecoder(gopus.DefaultDecoderConfig(chatgptRate, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,5 +44,35 @@ func TestJitterBufReorderAndLoss(t *testing.T) {
 	// 12 кусков: 11 настоящих + 1 восстановленный; дубликат не повторяется. Последние jbHold-1 ждут продолжения.
 	if want := 12 - (jbHold - 1); frames < want-1 || frames > 12 {
 		t.Fatalf("кусков звука %d, ждали около %d", frames, want)
+	}
+}
+
+// Рывок сети посреди фразы: провал засчитан, запас растёт, звук после рывка снова копится, а не «заикается».
+func TestJitterBufUnderrunGrowsPreroll(t *testing.T) {
+	clock := time.Unix(0, 0)
+	var got int
+	jb := newJitterBuf(nil, func([]int16) { got++ })
+	jb.now = func() time.Time { return clock }
+	frame := make([]int16, jbFrame)
+	for i := 0; i < 10; i++ { // ровно по 20 мс
+		jb.emit(frame)
+		clock = clock.Add(20 * time.Millisecond)
+	}
+	if jb.under != 0 || got != 10 {
+		t.Fatalf("ровный поток: провалов %d, кусков %d", jb.under, got)
+	}
+	clock = clock.Add(200 * time.Millisecond) // пакеты задержались, запас 80 мс кончился
+	jb.emit(frame)
+	if jb.under != 1 || jb.preroll != jbPreroll+2 {
+		t.Fatalf("после рывка: провалов %d, запас %d", jb.under, jb.preroll)
+	}
+	if got != 10 {
+		t.Fatalf("после провала звук должен снова копиться, а ушло %d", got)
+	}
+	for i := 0; i < jbPreroll+1; i++ {
+		jb.emit(frame)
+	}
+	if got != 10+jbPreroll+2 {
+		t.Fatalf("после запаса отдано %d", got)
 	}
 }

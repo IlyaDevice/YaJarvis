@@ -401,7 +401,7 @@ func (w *Web) state(rw http.ResponseWriter, r *http.Request) {
 		"vless": vless, "youtube": w.youtubeState(), "home_assistant": w.haState(), "xiaomi": w.xiaomiState(), "smartlife": w.smartLifeState(), "rooms": w.knownRooms(), "update_available": w.updater != nil && w.updater.Available(),
 		"speaker": map[string]any{"model": stationModel().Name, "model_id": stationModel().ID, "mic": w.engine.mic.Online(), "leds": w.engine.leds.Available(), "wake_model": wakeModel,
 			"talking": w.engine.Talking(), "uptime_s": int(time.Since(w.started).Seconds()), "volume": speakerVolume()},
-		"settings": map[string]any{"wake_enabled": s.WakeEnabled, "wake_sensitivity": s.WakeSensitivity, "mic_boost_db": s.MicBoostDB, "wake_check": s.WakeCheck,
+		"settings": map[string]any{"wake_enabled": s.WakeEnabled, "wake_sensitivity": s.WakeSensitivity, "mic_boost_db": s.MicBoostDB, "mic_gain_db": s.MicGainDB, "wake_check": s.WakeCheck,
 			"follow_up_s": s.FollowUpS, "city": s.City, "timezone": s.Timezone, "volume": s.Volume, "lan_only": s.LANOnly, "home_via": s.HomeVia, "home_use": s.HomeUseState(), "speaker_room": s.SpeakerRoom,
 			"led": s.Led, "train_mode": s.TrainMode, "train_limit_mb": s.TrainLimitMB, "dev_mode": s.DevMode, "language": s.Language,
 			"night": night, "night_now": s.IsNight(), "radio": !s.RadioOff},
@@ -443,6 +443,7 @@ func (w *Web) putSettings(rw http.ResponseWriter, r *http.Request) {
 		VPN             map[string]bool `json:"vpn"`
 		WakeSensitivity *int            `json:"wake_sensitivity"`
 		MicBoostDB      *int            `json:"mic_boost_db"`
+		MicGainDB       *int            `json:"mic_gain_db"`
 		FollowUpS       *float64        `json:"follow_up_s"`
 		City            *string         `json:"city"`
 		Timezone        *string         `json:"timezone"`
@@ -484,6 +485,9 @@ func (w *Web) putSettings(rw http.ResponseWriter, r *http.Request) {
 		}
 		if req.MicBoostDB != nil {
 			s.MicBoostDB = max(0, min(18, *req.MicBoostDB))
+		}
+		if req.MicGainDB != nil {
+			s.MicGainDB = max(0, min(30, *req.MicGainDB))
 		}
 		if req.FollowUpS != nil {
 			s.FollowUpS = max(0, min(30, *req.FollowUpS))
