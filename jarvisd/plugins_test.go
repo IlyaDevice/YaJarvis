@@ -513,3 +513,32 @@ func TestUnpackLyingSize(t *testing.T) {
 		t.Fatal("битый архив принят")
 	}
 }
+
+// JARVIS_NET=1 go test -run TestRealGitHubCatalog -v — каталог и установка с настоящего GitHub.
+func TestRealGitHubCatalog(t *testing.T) {
+	if os.Getenv("JARVIS_NET") != "1" {
+		t.Skip("без JARVIS_NET=1 в сеть не ходим")
+	}
+	h := NewPluginHost(t.TempDir(), PluginHooks{Client: func(d time.Duration) *http.Client { return &http.Client{Timeout: d} }},
+		func() *http.Client { return &http.Client{Timeout: 60 * time.Second} })
+	ctx := context.Background()
+	items, errText := h.Catalog(ctx, true)
+	for _, it := range items {
+		t.Logf("каталог: %s official=%v category=%s version=%s", it.ID, it.Official, it.Category, it.Version)
+	}
+	if errText != "" || len(items) < 3 {
+		t.Fatalf("каталог: %d, ошибка %q", len(items), errText)
+	}
+	m, err := h.InstallRepo(ctx, defaultRepo, "weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("установлен %s %s %s", m.ID, m.Version, m.Category)
+	ok, ans := h.Command(ctx, "погода в городе")
+	t.Logf("команда: %v %q", ok, ans)
+	done, err := h.EnsureFor(ctx, "v0.9.68", true)
+	t.Logf("нужно версии 0.9.68: %v %v", done, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
