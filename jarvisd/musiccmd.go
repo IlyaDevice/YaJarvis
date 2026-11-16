@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 )
@@ -94,7 +95,7 @@ func (e *Engine) sayMusicStatusContext(ctx context.Context, answer string) {
 			voicePrompt = v.Prompt
 		}
 	}
-	if _, err := e.sayAloudContext(ctx, s, p, voicePrompt, answer, 25*time.Second); err != nil {
+	if _, err := e.sayAloudContext(ctx, s, p, voicePrompt, answer, 25*time.Second); err != nil && !errors.Is(err, errVoiceInterrupted) {
 		log.Printf("музыка: озвучка статуса: %v", err)
 	}
 }
