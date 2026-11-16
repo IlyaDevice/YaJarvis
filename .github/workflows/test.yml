@@ -15,10 +15,10 @@ jobs:
           go-version-file: jarvisd/go.mod
           cache-dependency-path: '**/go.sum'
       - name: Go tests
+        # установщик встраивает payload, который появляется только после сборки, — его проверяет release.yml
         run: |
           (cd jarvisd && go vet ./... && go test ./...)
           (cd hardware && go test ./...)
-          (cd installer && go vet . && go test ./...)
           (cd pluginsdk && go vet ./...)
           go vet scripts/pack-plugins.go
       - name: Race detector
