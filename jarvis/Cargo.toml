@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["core"]
+
+[workspace.package]
+version = "0.9.71"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util", "fs", "process", "signal"] }
+log = "0.4"
+
+# Колонка: 87 МБ флешки и 238 МБ памяти на всё. Собираем как можно компактнее.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+debug = false
+incremental = false

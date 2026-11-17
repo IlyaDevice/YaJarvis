@@ -1,0 +1,4 @@
+# Колонка: aarch64, статическая сборка на musl, своя libc не нужна.
+# Компоновщик — встроенный rust-lld; C-код (Lua, ring) компилирует zig: см. scripts/rs-build.sh.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

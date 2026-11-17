@@ -1,0 +1,208 @@
+//! GET /api/state — всё, что панели нужно при открытии. Форма ответа та же, что у Go-версии.
+//! То, что ещё не перенесено (плагины, музыка, ChatGPT), отдаётся пустым, но в той же форме.
+
+use super::App;
+use crate::{hardware, settings::Settings, version};
+use axum::{Json, extract::State};
+use serde_json::{Map, Value, json};
+use std::sync::OnceLock;
+
+fn catalog() -> &'static Map<String, Value> {
+    static C: OnceLock<Map<String, Value>> = OnceLock::new();
+    C.get_or_init(|| serde_json::from_str(include_str!("../catalog.json")).expect("catalog.json"))
+}
+
+pub fn mask(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    if s.len() <= 8 {
+        return "задан".into();
+    }
+    format!("задан, …{}", &s[s.len() - 4..])
+}
+
+fn key_tail(k: &str) -> String {
+    if k.len() <= 8 { "…".into() } else { format!("…{}", &k[k.len() - 4..]) }
+}
+
+/// Сетевые подключения и «через VPN» по умолчанию (как netServices в Go).
+pub const NET_SERVICES: &[(&str, &str, bool)] = &[
+    ("chatgpt", "Подписка ChatGPT", true),
+    ("openai", "OpenAI", true),
+    ("gemini", "Google Gemini", true),
+    ("grok", "xAI Grok", true),
+    ("elevenlabs", "ElevenLabs", true),
+    ("youtube", "YouTube", false),
+    ("xiaomi", "Xiaomi Home", false),
+    ("smartlife", "Smart Life", false),
+    ("gdrive", "Google Диск", false),
+    ("yandex", "Яндекс", false),
+    ("plugins", "Плагины", false),
+];
+
+pub fn use_vpn(s: &Settings, svc: &str) -> bool {
+    if let Some(v) = s.vpn.get(svc) {
+        return *v;
+    }
+    if svc == "yandex" {
+        return s.proxy_yandex;
+    }
+    NET_SERVICES.iter().find(|n| n.0 == svc).is_none_or(|n| n.2)
+}
+
+/// Разбор ссылки vless://uuid@host:port?type=…&security=…&sni=…#имя — только для показа.
+fn vless_view(link: &str) -> Value {
+    let mut v = json!({"set": !link.is_empty(), "error": Value::Null});
+    let Some(rest) = link.strip_prefix("vless://") else { return v };
+    let (rest, name) = rest.split_once('#').unwrap_or((rest, ""));
+    let (addr, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let hostport = addr.rsplit_once('@').map(|x| x.1).unwrap_or(addr);
+    let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, ""));
+    let q = |k: &str| {
+        query.split('&').filter_map(|kv| kv.split_once('=')).find(|(a, _)| *a == k).map(|(_, b)| pct(b)).unwrap_or_default()
+    };
+    let o = v.as_object_mut().unwrap();
+    o.insert("name".into(), pct(name).into());
+    o.insert("host".into(), host.trim_matches(['[', ']']).into());
+    o.insert("port".into(), port.parse::<u16>().map(Value::from).unwrap_or(Value::from(port)));
+    o.insert("network".into(), q("type").into());
+    o.insert("security".into(), q("security").into());
+    o.insert("sni".into(), q("sni").into());
+    v
+}
+
+fn pct(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                if let Ok(x) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16) {
+                    out.push(x);
+                    i += 3;
+                    continue;
+                }
+                out.push(b'%');
+            }
+            b'+' => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into()
+}
+
+fn memory_state(s: &Settings) -> Value {
+    let has = |p: &str| match p {
+        "chatgpt" => crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
+        "gemini" => !s.gemini_key.is_empty(),
+        "openai" => !s.openai_key.is_empty(),
+        _ => false,
+    };
+    let backend = catalog().get("backend_models").cloned().unwrap_or(json!([]));
+    json!({
+        "off": s.memory.off, "provider": s.memory.provider, "model": s.memory.model,
+        "has": {"chatgpt": has("chatgpt"), "gemini": has("gemini"), "openai": has("openai")},
+        "models": {"chatgpt": backend, "gemini": [""], "openai": backend},
+    })
+}
+
+fn security_checks() -> Value {
+    let listening = |port: u16| {
+        std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), std::time::Duration::from_millis(300)).is_ok()
+    };
+    json!([
+        {"id": "adb", "title": "ADB по сети (порт 5555)", "open": listening(5555),
+         "hint": "Через ADB любой в вашей Wi-Fi сети получает полный доступ к колонке без пароля. Нужен только для установки и обновления — потом его можно закрыть в программе установки."},
+        {"id": "ssh", "title": "SSH (порт 2222)", "open": listening(2222),
+         "hint": "Удалённый вход в консоль колонки. Если не пользуетесь — лучше закрыть; если пользуетесь — только по ключу."},
+    ])
+}
+
+pub async fn state(State(app): State<App>) -> Json<Value> {
+    let s = app.store.get();
+    let model = hardware::station_model();
+    let now = jiff::Timestamp::now().as_second();
+    let eleven: Vec<Value> = s
+        .eleven_keys
+        .iter()
+        .map(|k| {
+            let mut m = json!({"tail": key_tail(&k.key), "active": k.key == s.elevenlabs_key});
+            if k.until != 0 && now < k.until {
+                m["until"] = k.until.into();
+                m["why"] = k.why.clone().into();
+            }
+            m
+        })
+        .collect();
+    let gemini_models = catalog().get("gemini_models").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    let gemini: Value = if s.gemini_keys.is_empty() {
+        Value::Null
+    } else {
+        s.gemini_keys.iter().map(|k| json!({"tail": key_tail(k), "spent": 0, "models": gemini_models})).collect()
+    };
+    let vpn: Map<String, Value> = NET_SERVICES.iter().map(|n| (n.0.to_string(), use_vpn(&s, n.0).into())).collect();
+    let mut night = s.night.clone();
+    night.fill();
+    let ha = &s.home_assistant;
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let mut out = json!({
+        "version": version(),
+        "home_plugin": {"available": false, "error": "плагин «Умный дом» ещё не подключён к новому ядру"},
+        "profiles": s.profiles, "active": s.active, "prompts": s.prompts, "live_voices": s.live_voices,
+        "keys": {"openai": mask(&s.openai_key), "gemini": mask(&s.gemini_key), "grok": mask(&s.grok_key),
+                 "elevenlabs": mask(&s.elevenlabs_key), "yandex": mask(&s.yandex_token)},
+        "eleven_keys": eleven, "gemini_keys": gemini, "vpn": vpn,
+        "chatgpt": {"signed_in": crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
+                    "plan": str_of(&s.chatgpt, "plan"), "email": str_of(&s.chatgpt, "email"),
+                    "login": Value::Null, "chat": Value::Null, "memory": memory_state(&s), "limited_until": 0},
+        "vless": vless_view(&s.vless),
+        "youtube": {"plugin": false},
+        "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),
+                           "rooms": ha.get("rooms").cloned().unwrap_or(Value::Null)},
+        "xiaomi": {"signed_in": s.home_connected("xiaomi")},
+        "smartlife": {"signed_in": s.home_connected("smartlife")},
+        "rooms": Value::Null,
+        "update_available": false,
+        "plugin_pages": [],
+        "speaker": {"model": model.name, "model_id": model.id, "mic": false, "mic_why": "", "leds": false,
+                    "wake_model": false, "talking": false, "uptime_s": app.started.elapsed().as_secs(), "volume": 0},
+        "settings": {"wake_enabled": s.wake_enabled, "wake_sensitivity": s.wake_sensitivity, "mic_boost_db": s.mic_boost_db,
+                     "mic_gain_db": s.mic_gain_db, "wake_check": s.wake_check, "follow_up_s": s.follow_up_s, "city": s.city,
+                     "timezone": s.timezone, "volume": s.volume, "lan_only": s.lan_only, "home_via": s.home_via,
+                     "home_use": s.home_use_state(), "speaker_room": s.speaker_room, "led": s.led, "train_mode": s.train_mode,
+                     "language": s.language, "night": night, "night_now": s.is_night(), "radio": !s.radio_off,
+                     "onboarded": s.onboarded, "plugins_warned": s.plugins_warned},
+        "plugins": {"installed": [], "enabled": []},
+        "repo": crate::DEFAULT_REPO,
+        "security": security_checks(),
+    });
+    let o = out.as_object_mut().unwrap();
+    for (k, v) in catalog() {
+        o.insert(k.clone(), v.clone());
+    }
+    Json(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masks_like_go() {
+        assert_eq!(mask(""), "");
+        assert_eq!(mask("short"), "задан");
+        assert_eq!(mask("key-1234567890abcd"), "задан, …abcd");
+    }
+
+    #[test]
+    fn parses_vless_for_display() {
+        let v = vless_view("vless://id@example.org:443?type=tcp&security=reality&sni=a.b#%D0%94%D0%BE%D0%BC");
+        assert_eq!(v["host"], "example.org");
+        assert_eq!(v["port"], 443);
+        assert_eq!(v["security"], "reality");
+        assert_eq!(v["name"], "Дом");
+    }
+}
