@@ -18,4 +18,11 @@ The panel's visual design was inspired by **dimap's [yapanel](https://github.com
 
 The standard public OAuth identifiers used by upstream clients identify applications; they are not the author's account tokens or personal API keys. Each user must authenticate separately.
 
+Rust dependency versions and sources are pinned in `jarvis/Cargo.lock`.
+The optional Rust ChatGPT module bundles Opus through `libopus_sys` (BSD-style;
+full notice in `LICENSES/Opus-COPYING`) and uses webrtc-rs (MIT OR Apache-2.0).
+The optional Lua runtime uses Lua 5.4 through mlua (MIT).
+The Rust VPN module includes separate REALITY attribution and TLS notices in
+`jarvis/modules/vpn/THIRD-PARTY.md` and `RUSTLS-LICENSE-MIT.txt`.
+
 License texts for bundled fonts, model components and Go dependencies are collected under `LICENSES/`. Release archives include these notices alongside the binaries.

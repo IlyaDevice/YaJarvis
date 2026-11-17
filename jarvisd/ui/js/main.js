@@ -3,14 +3,13 @@ import { viewProfile } from "./assistant.js";
 import { viewCharacters } from "./characters.js";
 import { CH, ST, chartsData, navPill, statsData, viewCharts } from "./charts.js";
 import { connOpen, viewConnections } from "./connections.js";
-import { $, $$, act, api, dirty, esc, ring, setDirty } from "./core.js";
+import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
 import { HL, LOGS, homeLogs, logsData, viewLogs } from "./logs.js";
 import { drawVolume, musicData, viewPlayer } from "./player.js";
-import { viewPlugins } from "./plugins.js";
+import { viewMemory } from "./memory.js";
 import { viewSecurity } from "./security.js";
 import { viewSpeaker } from "./speaker.js";
-import { viewTraining } from "./training.js";
 import { wizOpen } from "./wizard.js";
 
 export let S = null;          // состояние с колонки
@@ -144,7 +143,9 @@ export function renderSide() {
       await act(null, async () => { await api("POST", "/api/profiles/order", { ids }); await reload(); });
     });
   });
-  $("#nav-train")?.classList.toggle("hidden", !S.settings.dev_mode);
+  // страницы плагинов — в меню «Колонка», только пока плагин стоит и работает
+  const ext = (S.plugin_pages || []).map((x) => `<a href="#ext/${esc(x.plugin)}/${esc(x.id)}" data-page="ext:${esc(x.plugin)}/${esc(x.id)}">${icon(ICONS[x.icon] ? x.icon : "puzzle")}${esc(x.title || x.id)}</a>`).join("");
+  if ($("#nav-ext").innerHTML !== ext) $("#nav-ext").innerHTML = ext;
   $$(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === page));
   navPill();
 }
@@ -168,15 +169,38 @@ export function route() {
   const v0 = $("#view"); v0.oninput = v0.onchange = v0.onclick = null;   // обработчики прошлой страницы
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
   else if (h.startsWith("connections/")) { page = "connections"; viewConnections(); connOpen(h.slice(12)); }
+  else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
+  else if (h === "training") { location.replace("#ext/training/training"); return; } // обучение — плагин
+  else if (h.startsWith("ext/")) { page = "ext:" + h.slice(4); viewExt(h.slice(4)); }
   else {
-    page = ["home", "player", "charts", "logs", "characters", "connections", "plugins", "speaker", "security", "training"].includes(h) ? h : "home";
-    if (page === "training" && !S.settings.dev_mode) page = "security";
-    ({ home: viewHome, player: viewPlayer, charts: viewCharts, logs: viewLogs, characters: viewCharacters, connections: viewConnections, plugins: viewPlugins, speaker: viewSpeaker, training: viewTraining, security: viewSecurity })[page]();
+    page = ["home", "player", "charts", "logs", "characters", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
+    ({ home: viewHome, player: viewPlayer, charts: viewCharts, logs: viewLogs, characters: viewCharacters, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);
   const v = $("#view");          // одно появление на переход между страницами
   v.classList.remove("enter"); void v.offsetWidth; v.classList.add("enter");
+}
+
+// viewExt — страница плагина: модуль /p/<плагин>/<страница>.js, его default() рисует #view.
+async function viewExt(path) {
+  const [id, pg] = path.split("/");
+  const known = (S.plugin_pages || []).find((x) => x.plugin === id && x.id === pg);
+  if (!known) {
+    $("#view").innerHTML = `<header class="ph"><h1>Нет такой страницы</h1><p class="sub">Её приносит плагин, а он не установлен или выключен. Плагины — в <a class="lnk" href="#connections/plugins">«Подключениях»</a>.</p></header>`;
+    return;
+  }
+  if (!document.querySelector(`link[data-ext="${id}/${pg}"]`)) {
+    const l = document.createElement("link");
+    l.rel = "stylesheet"; l.href = `/p/${encodeURIComponent(id)}/${encodeURIComponent(pg)}.css`; l.dataset.ext = `${id}/${pg}`;
+    document.head.append(l);
+  }
+  try {
+    const mod = await import(`/p/${encodeURIComponent(id)}/${encodeURIComponent(pg)}.js`);
+    if (page === "ext:" + path) await mod.default();
+  } catch (e) {
+    $("#view").innerHTML = `<header class="ph"><h1>${esc(known.title || pg)}</h1></header><p class="err">Страница плагина не загрузилась: ${esc(e.message)}</p>`;
+  }
 }
 
 // ---------------------------------------------------------------- запуск

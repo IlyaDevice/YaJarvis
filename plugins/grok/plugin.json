@@ -1,0 +1,1 @@
+{"id":"grok","name":"Grok","version":"0.1.0","kind":"module","main":"grok","api":1,"category":"system","icon":"bolt","provides":["grok"],"description":"xAI API: текстовые запросы и модели. Rust.","author":"YaJarvis"}

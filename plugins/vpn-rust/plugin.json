@@ -1,0 +1,13 @@
+{
+  "id": "vpn",
+  "name": "VPN (Rust)",
+  "version": "0.2.0",
+  "description": "VLESS TCP/WebSocket, TLS, REALITY и Vision на Rust. Использует TLS fingerprint rustls.",
+  "kind": "module",
+  "main": "vpn",
+  "api": 1,
+  "category": "system",
+  "icon": "shield",
+  "provides": ["vpn"],
+  "author": "YaJarvis"
+}

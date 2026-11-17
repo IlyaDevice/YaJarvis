@@ -3,18 +3,25 @@
 #![recursion_limit = "256"]
 
 mod alice;
+mod launchpatch;
 mod audio;
 mod chatgpt;
 mod buttons;
 mod speakervol;
 mod cmdspot;
 mod memory;
+mod music;
 mod engine;
 mod fastcmd;
 mod hardware;
 mod jlog;
 mod journal;
 mod led;
+mod llm;
+#[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
+mod cloud_voice;
+#[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
+mod classic_voice;
 mod net;
 mod plugins;
 mod rules;
@@ -71,6 +78,20 @@ fn flags() -> Flags {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("patch-launch") {
+        let args: Vec<_> = std::env::args().skip(2).collect();
+        let result = if args.len() == 4 {
+            launchpatch::patch(&args[0], &args[1], &args[2], &args[3])
+        } else {
+            Err("usage: jarvis patch-launch <launch.json> <out.json> <vqe_tap.so> <mic.sock>".into())
+        };
+        if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("modules") {
+        println!("{}", serde_json::to_string(&plugins::compiled_modules()).expect("список модулей"));
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("version") {
         println!("{}", version());
         return;
@@ -122,7 +143,9 @@ fn info(store: &settings::Store) -> Value {
 
 async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
     let proxy = vpn::Proxy::new(store.clone());
+    let music = Arc::new(music::Music::default());
     let host_cell: Arc<std::sync::OnceLock<std::sync::Weak<plugins::Host>>> = Arc::default();
+    let engine_cell: Arc<std::sync::OnceLock<std::sync::Weak<engine::Engine>>> = Arc::default();
     let svc = {
         let (store, proxy, data, cell) = (store.clone(), proxy.clone(), f.data.clone(), host_cell.clone());
         let st2 = store.clone();
@@ -138,6 +161,7 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         let st = store.clone();
         let svc = svc.clone();
         plugins::Hooks {
+            network: {let proxy=proxy.clone();Box::new(move ||proxy.network_reply("plugins"))},
             request: Box::new(move |id, method, params| {
                 let svc = svc.clone();
                 Box::pin(async move {
@@ -151,8 +175,23 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
                 })
             }),
             alice: Box::new(|text, silent| Box::pin(async move { tokio::task::spawn_blocking(move || alice::text(&text, silent).is_ok()).await.unwrap_or(false) })),
-            say: Box::new(|text| log::info!("плагин просит сказать: «{}» (озвучка ещё не перенесена)", plugins::clip(&text, 200))),
+            say: {
+                let cell = engine_cell.clone();
+                Box::new(move |text| {
+                    // плагин просит сказать вслух (напоминание, ответ на событие): голосом ассистента
+                    if let Some(e) = cell.get().and_then(std::sync::Weak::upgrade) {
+                        std::thread::spawn(move || e.say_text(&text));
+                    }
+                })
+            },
             info: Box::new(move || info(&st)),
+            event: {
+                let music = music.clone();
+                Box::new(move |manifest, name, data| {
+                    if manifest.id=="chatgpt" && manifest.kind=="module" && name=="voice.event"{chatgpt::module_voice_event(data.clone());}
+                    if manifest.provides("youtube") { music.event(name, data); }
+                })
+            },
             ..Default::default()
         }
     };
@@ -236,6 +275,20 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
     }
     let mut tools = tools::Tools::new(host.clone(), store.clone());
     tools.memory = Some(memory.clone());
+    for (target, queue) in [(&mut tools.music, false), (&mut tools.music_queue, true)] {
+        let (music, host) = (music.clone(), host.clone());
+        *target = Some(Arc::new(move |q| {
+            let (music, host) = (music.clone(), host.clone());
+            Box::pin(async move { music.play(&host, &q, queue).await })
+        }));
+    }
+    tools.music_ctl = Some({
+        let (music, host) = (music.clone(), host.clone());
+        Arc::new(move |text| {
+            let (music, host) = (music.clone(), host.clone());
+            Box::pin(async move { music.control(&host, &text).await.unwrap_or_else(|| "Сейчас музыка не играет или команда не распознана.".into()) })
+        })
+    });
     let tools = Arc::new(tools);
     let engine = engine::Engine::new(
         tokio::runtime::Handle::current(),
@@ -248,9 +301,15 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         tools,
         listener,
         f.data.clone(),
+        music.clone(),
     );
     #[cfg(unix)]
     speakervol::watch_night(store.clone(), engine.leds.clone());
+    let _ = engine_cell.set(Arc::downgrade(&engine));
+    {
+        let e = Arc::downgrade(&engine);
+        music::volume_loop(music, host.clone(), move || e.upgrade().is_some_and(|e| e.talking() || e.player.playing()));
+    }
     memory.set_summarizer(Some(engine.summarizer()));
     engine.run(det);
     let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone(), engine);

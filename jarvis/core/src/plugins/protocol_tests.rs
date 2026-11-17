@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/newfpv/YaJavis/pluginsdk"
@@ -17,6 +18,24 @@ import (
 
 func main() {
 	p := pluginsdk.New()
+	var homeReady atomic.Bool
+	p.Handle("yandexhome", func(raw json.RawMessage) (any, error) {
+		var req struct { Op string `json:"op"` }
+		_ = json.Unmarshal(raw, &req)
+		if req.Op == "context" { homeReady.Store(true); return "дом", nil }
+		if req.Op == "has-catalog" { return homeReady.Load(), nil }
+		return nil, nil
+	})
+	var pending atomic.Int64
+	p.Handle("pending", func(json.RawMessage) (any, error) { return pending.Load(), nil })
+	p.HandleContext("music", func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var req struct { Op string `json:"op"` }
+		_ = json.Unmarshal(raw, &req)
+		if req.Op == "slow" || req.Op == "propose" { pending.Add(1); defer pending.Add(-1); <-ctx.Done(); return nil, ctx.Err() }
+		state := map[string]any{"active": true, "playing": true, "status": "Тестовый трек"}
+		if req.Op == "fail" { return map[string]any{"state": state, "error": "ошибка плеера"}, nil }
+		return map[string]any{"state": state, "value": "готово"}, nil
+	})
 	p.Tool(pluginsdk.ToolDef{Name: "coin", Description: "монетка"}, func(args json.RawMessage) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -71,7 +90,7 @@ async fn native_plugin_protocol() {
     };
     std::fs::write(
         dir.join("plugins/demo/plugin.json"),
-        format!(r#"{{"id":"demo","name":"Демо","version":"1.0.0","kind":"native","category":"fun","main":"{main}"}}"#),
+        format!(r#"{{"id":"demo","name":"Демо","version":"1.0.0","kind":"native","category":"fun","provides":["youtube","homeassistant","yandexhome"],"main":"{main}"}}"#),
     )
     .unwrap();
     let hooks = Hooks {
@@ -80,6 +99,51 @@ async fn native_plugin_protocol() {
     };
     let host = Host::new(dir.clone(), hooks, None);
     host.load().await;
+    let settings=crate::settings::Store::open(dir.join("settings.json")).unwrap();
+    settings.update(|s|->Result<(),std::io::Error>{s.yandex_token="test-token".into();s.home_use.insert("alice".into(),false);Ok(())}).unwrap();
+    let tools=crate::tools::Tools::new(host.clone(),settings);
+    let (context,defs)=tools.prepare().await;
+    assert!(context.contains("дом"));
+    assert!(defs.iter().any(|d|d["name"]=="smart_home"),"в первой реплике инструмент должен видеть уже загруженный каталог");
+    for module in compiled_modules().into_iter().filter(|m| matches!(m.as_str(), "homeassistant" | "yandexhome")) {
+        let service=if module=="yandexhome" {"yandex"}else{module.as_str()};
+        assert!(host.provider(&module).unwrap().native().is_some());
+        assert_eq!(host.service_providers()[service]["plugin"],"demo");
+        host.install_module(&module).await.unwrap();
+        assert!(host.provider(&module).unwrap().native().is_none());
+        assert_eq!(host.service_providers()[service]["plugin"],module);
+        host.set_enabled(&module,false).await.unwrap();
+        assert!(host.provider(&module).is_err(),"выключенный модуль не должен заменяться старым провайдером");
+        assert_eq!(host.service_providers()[service]["available"],false);
+        assert_eq!(host.service_providers()[service]["plugin"],module);
+        host.uninstall(&module).await.unwrap();
+        assert!(host.provider(&module).is_err(),"удалённый модуль тоже не должен незаметно заменяться");
+    }
+    let music = crate::music::Music::default();
+    assert_eq!(music.call(&host,"play",json!({"query":"test"})).await.unwrap(),"готово");
+    assert!(music.state().playing);
+    assert_eq!(music.control(&host,"что играет").await.as_deref(),Some("Тестовый трек"));
+    assert_eq!(music.call(&host,"fail",Value::Null).await.unwrap_err(),"ошибка плеера");
+    assert!(music.state().active, "состояние из ответа с ошибкой тоже применяется");
+    // Отмена future запроса не оставляет висящий pending у хоста.
+    let provider = host.provider("youtube").unwrap();
+    let result = tokio::time::timeout(Duration::from_millis(50),provider.request("music",json!({"op":"slow"}),Duration::from_secs(30))).await;
+    assert!(result.is_err());
+    let pending = music.play(&host,"мои рекомендации",false);
+    tokio::pin!(pending);
+    tokio::select! {
+        result = &mut pending => panic!("операция должна ждать: {result}"),
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {},
+    }
+    assert_eq!(music.call(&host,"stop",Value::Null).await.unwrap(),"готово");
+    assert!(pending.await.contains("операция отменена"));
+    let mut left = 1;
+    for _ in 0..50 {
+        left = provider.request("pending",Value::Null,Duration::from_secs(1)).await.unwrap().as_i64().unwrap();
+        if left == 0 {break;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(left,0,"отмена должна дойти до выполняющейся операции модуля");
     let list = host.list();
     assert_eq!(list[0]["running"], true, "{list:?}");
 

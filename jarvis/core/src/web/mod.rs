@@ -8,11 +8,17 @@
 //!   - строгий CSP, запрет встраивания во фреймы.
 
 mod auth;
+mod chatgpt;
+mod config;
+mod homeassistant;
+mod keys;
 mod memory;
+mod music;
 mod plugins;
 pub mod state;
 mod talk;
 mod ui;
+mod vpn;
 
 use crate::{plugins::Host, settings::Store, vpn::Proxy};
 use axum::{
@@ -89,6 +95,17 @@ pub fn router(app: App) -> Router {
     let api = Router::new()
         .route("/api/state", get(state::state))
         .route("/api/password", put(auth::change_password))
+        .route("/api/settings", put(config::settings))
+        .route("/api/keys", put(keys::put))
+        .route("/api/gemini-keys", put(keys::gemini_pool))
+        .route("/api/eleven-keys", put(keys::eleven_pool))
+        .route("/api/elevenlabs/voices", get(keys::eleven_voices))
+        .route("/api/profile", put(config::profile).delete(config::delete_profile))
+        .route("/api/active", post(config::active))
+        .route("/api/profiles/order", post(config::order))
+        .route("/api/prompt", put(config::prompt).delete(config::delete_prompt))
+        .route("/api/home-assistant", get(homeassistant::get).put(homeassistant::put).delete(homeassistant::delete))
+        .route("/api/home-assistant/rooms/discover", post(homeassistant::rooms))
         .route("/api/plugins", get(plugins::list))
         .route("/api/plugins/catalog", get(plugins::catalog))
         .route("/api/plugins/install", post(plugins::install))
@@ -99,9 +116,14 @@ pub fn router(app: App) -> Router {
         .route("/api/plugins/{id}", delete(plugins::remove))
         .route("/api/onboarded", post(plugins::onboarded))
         .route("/api/talk", post(talk::talk))
+        .route("/api/say", post(talk::say))
+        .route("/api/chatgpt/login", post(chatgpt::login))
+        .route("/api/chatgpt", delete(chatgpt::logout))
         .route("/api/stop", post(talk::stop))
         .route("/api/journal", get(talk::journal))
         .route("/api/speaker/volume", post(talk::volume))
+        .route("/api/music", get(music::get).post(music::post))
+        .route("/api/vless", put(vpn::put))
         .route("/api/memory", get(memory::get).put(memory::put))
         .route("/api/memory/month", put(memory::month))
         .route("/api/memory/archive", get(memory::archive))
@@ -112,7 +134,7 @@ pub fn router(app: App) -> Router {
         .route("/api/p/{id}/{*path}", any(plugins::page_proxy).layer(DefaultBodyLimit::max(16 << 20)))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
     Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(|| async {Json(json!({"ready":true,"version":crate::version(),"modules":crate::plugins::compiled_modules()}))}))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/setup", post(auth::setup))

@@ -19,11 +19,11 @@ pub fn mask(s: &str) -> String {
     if s.len() <= 8 {
         return "задан".into();
     }
-    format!("задан, …{}", &s[s.len() - 4..])
+    format!("задан, …{}", s.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>())
 }
 
 fn key_tail(k: &str) -> String {
-    if k.len() <= 8 { "…".into() } else { format!("…{}", &k[k.len() - 4..]) }
+    if k.len() <= 8 { "…".into() } else { format!("…{}", k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>()) }
 }
 
 /// Сетевые подключения и «через VPN» по умолчанию (как netServices в Go).
@@ -122,6 +122,10 @@ fn security_checks() -> Value {
 }
 
 pub async fn state(State(app): State<App>) -> Json<Value> {
+    let chatgpt_login=match app.plugins.provider("chatgpt"){
+        Ok(provider)=>provider.request("login.status",Value::Null,std::time::Duration::from_secs(1)).await.unwrap_or(Value::Null),
+        Err(_)=>Value::Null,
+    };
     let s = app.store.get();
     let model = hardware::station_model();
     let now = jiff::Timestamp::now().as_second();
@@ -172,7 +176,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "eleven_keys": eleven, "gemini_keys": gemini, "vpn": vpn,
         "chatgpt": {"signed_in": crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
                     "plan": str_of(&s.chatgpt, "plan"), "email": str_of(&s.chatgpt, "email"),
-                    "login": Value::Null, "chat": super::memory::chat_state(&app), "memory": memory_state(&s), "limited_until": 0},
+                    "login": chatgpt_login, "chat": super::memory::chat_state(&app), "memory": memory_state(&s), "limited_until": crate::chatgpt::LIMITED_UNTIL.load(std::sync::atomic::Ordering::Relaxed)},
         "vless": vless,
         "youtube": {"plugin": app.plugins.provider("youtube").is_ok()},
         "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),
@@ -191,6 +195,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
                      "language": s.language, "night": night, "night_now": s.is_night(), "radio": !s.radio_off,
                      "onboarded": s.onboarded, "plugins_warned": s.plugins_warned},
         "plugins": app.plugins.summary(),
+        "providers": app.plugins.service_providers(),
         "repo": crate::DEFAULT_REPO,
         "security": security_checks(),
     });

@@ -3,7 +3,7 @@
 
 use crate::{
     journal::Journal,
-    plugins::{BoxFut, Host, native::Native},
+    plugins::{BoxFut, Host, Runtime, native::Native},
     session::{Dialog, Session, queue_mic, take_mic},
     settings::{BACKEND_MODELS, Profile},
     tools::Tools,
@@ -68,7 +68,7 @@ pub struct ChatGptSession {
     pending: Mutex<Vec<i16>>,
     out_tx: Mutex<Option<SyncSender<Vec<i16>>>>,
     out_rx: Mutex<Option<Receiver<Vec<i16>>>>,
-    native: Mutex<Option<Arc<Native>>>,
+    native: Mutex<Option<Runtime>>,
     started: Mutex<Option<Receiver<Result<(), String>>>>,
     cancelled: AtomicBool,
     wake: tokio::sync::Notify,
@@ -124,7 +124,7 @@ impl ChatGptSession {
             }
         };
         drop(host);
-        let pid = n.pid();
+        let pid = n.native().map(|n|n.pid());
         *self.native.lock().unwrap() = Some(n.clone());
         SESSIONS.lock().unwrap().insert(self.id.clone(), Arc::downgrade(&self));
         let t0 = Instant::now();
@@ -144,7 +144,7 @@ impl ChatGptSession {
                 _ = self.wake.notified() => continue,
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
-            if n.pid() != pid {
+            if pid.is_some_and(|pid|n.native().is_none_or(|n|n.pid()!=pid)) {
                 break; // плагин перезапустился — разговора на той стороне больше нет
             }
             // до 0,3 с за такт — втрое быстрее реального времени: звук, накопленный с момента слова и пока
@@ -241,11 +241,16 @@ impl Session for ChatGptSession {
 
 /// Событие голосовой сессии от плагина chatgpt.
 pub fn voice_event(n: &Arc<Native>, p: Value) {
+    event(Some(n),p);
+}
+pub fn module_voice_event(p:Value){event(None,p);}
+fn event(native:Option<&Arc<Native>>,p:Value){
     let id = p.get("id").or(p.get("ID")).and_then(Value::as_str).unwrap_or("");
     let kind = p.get("kind").or(p.get("Kind")).and_then(Value::as_str).unwrap_or("");
     let value = p.get("value").or(p.get("Value")).cloned().unwrap_or(Value::Null);
     let Some(s) = SESSIONS.lock().unwrap().get(id).and_then(Weak::upgrade) else { return };
-    if s.cancelled.load(Ordering::SeqCst) || !s.native.lock().unwrap().as_ref().is_some_and(|x| Arc::ptr_eq(x, n)) {
+    let permitted=s.native.lock().unwrap().as_ref().is_some_and(|runtime|match native{Some(native)=>runtime.native().is_some_and(|n|Arc::ptr_eq(n,native)),None=>matches!(runtime,Runtime::Module(_))});
+    if s.cancelled.load(Ordering::SeqCst) || !permitted {
         return;
     }
     let text = value.as_str().unwrap_or("");
@@ -339,12 +344,15 @@ pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str
             return if answer.is_empty() { Err("модель ничего не ответила".into()) } else { Ok(answer) };
         }
         let Some(tools) = tools else { return Err("модель попросила инструмент, которого нет".into()) };
+        if calls.len()>32{return Err("Слишком много вызовов инструментов".into());}
+        let full_output=r["output"].as_array();if let Some(output)=full_output{input.extend(output.clone());}
         for c in calls {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
+            if !defs.iter().any(|d|d["name"]==name){return Err("Модель вызвала необъявленный инструмент".into());}
             let args = c.get("arguments").and_then(Value::as_str).unwrap_or("");
             let result = tokio::time::timeout(Duration::from_secs(15), tools.call(name, args)).await.unwrap_or_else(|_| "Не успел: инструмент не ответил за 15 с.".into());
             log::info!("подписка: {name}({args}) → {result}");
-            input.push(json!({"type": "function_call", "name": c["name"], "arguments": c["arguments"], "call_id": c["call_id"]}));
+            if full_output.is_none(){input.push(json!({"type": "function_call", "name": c["name"], "arguments": c["arguments"], "call_id": c["call_id"]}));}
             input.push(json!({"type": "function_call_output", "call_id": c["call_id"], "output": result}));
         }
     }

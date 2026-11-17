@@ -1,0 +1,1 @@
+{"id":"chatgpt","name":"ChatGPT по подписке","version":"0.1.0","kind":"module","main":"chatgpt","api":1,"category":"system","icon":"bolt","provides":["chatgpt"],"description":"Вход по коду устройства, продление токена и Codex по подписке. Rust.","author":"YaJarvis"}

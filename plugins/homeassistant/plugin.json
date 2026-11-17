@@ -1,0 +1,13 @@
+{
+  "id": "homeassistant",
+  "name": "Home Assistant",
+  "version": "1.0.0",
+  "description": "Устройства Home Assistant и уборка выбранных комнат. Модуль на Rust.",
+  "kind": "module",
+  "main": "homeassistant",
+  "api": 1,
+  "category": "home",
+  "icon": "home",
+  "provides": ["homeassistant"],
+  "author": "YaJarvis"
+}

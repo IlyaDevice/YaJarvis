@@ -1,0 +1,1 @@
+{"id":"elevenlabs","name":"ElevenLabs","version":"0.1.0","kind":"module","main":"elevenlabs","api":1,"category":"system","icon":"bolt","provides":["elevenlabs"],"description":"ElevenLabs API: голоса, распознавание и синтез речи. Rust.","author":"YaJarvis"}

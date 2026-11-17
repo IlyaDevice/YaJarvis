@@ -76,12 +76,16 @@ impl Host {
                 }
             }
         }
-        let mut out = vec![];
+        let mut out:Vec<Value> = super::modules::manifests().into_iter().map(|m| {
+            let mut v=serde_json::to_value(m).expect("manifest module");
+            v["official"]=true.into();v["repo"]=crate::DEFAULT_REPO.into();v["bundled"]=true.into();v
+        }).collect();
         let mut errs = vec![];
         let index = format!("{}/{}/main/plugins/index.json", github_raw(), crate::DEFAULT_REPO);
         match crate::net::get_json(&index).await {
             Ok(idx) => {
                 for mut it in idx.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default() {
+                    if out.iter().any(|m|m["id"]==it["id"]) {continue;}
                     let Some(o) = it.as_object_mut() else { continue };
                     if !o.get("id").and_then(Value::as_str).is_some_and(valid_id) {
                         continue;
@@ -136,7 +140,14 @@ impl Host {
         for it in idx.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default() {
             let id = it.get("id").and_then(Value::as_str).unwrap_or("");
             let from = if for_next { crate::version() } else { upgrade_from };
-            if !valid_id(id) || id == "js" || !auto_needed(it.get("auto").unwrap_or(&Value::Null), settings, from) {
+            let mut selected = settings.clone();
+            if id=="home" {
+                let g=self.inner.lock().unwrap();
+                for (module,field) in [("homeassistant","home_assistant"),("yandexhome","yandex_token")] {
+                    if g.plugins.get(module).is_some_and(|p|p.manifest.kind=="module") || g.state.get(module).is_some_and(|s|s.removed) {selected.remove(field);}
+                }
+            }
+            if !valid_id(id) || id == "js" || !auto_needed(it.get("auto").unwrap_or(&Value::Null), &selected, from) {
                 continue;
             }
             let skip = {

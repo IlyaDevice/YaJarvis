@@ -1,0 +1,121 @@
+use crate::{plugins::{Host,Runtime},session::{Dialog,Session,queue_mic,take_mic},journal::Journal,settings::{Settings,Profile},tools::Tools};
+use std::{sync::{Arc,Mutex,atomic::{AtomicBool,Ordering},mpsc::{Receiver,SyncSender,sync_channel}},time::Duration};
+use serde_json::{Value,json};
+use base64::{Engine as _,engine::general_purpose::STANDARD as B64};
+use futures_util::{SinkExt,StreamExt};
+
+pub struct Voice {
+    id:String,dialog:Dialog,rt:tokio::runtime::Handle,pending:Mutex<Vec<i16>>,
+    output:Mutex<Option<SyncSender<Vec<i16>>>>,audio:Mutex<Option<Receiver<Vec<i16>>>>,
+    ready:Mutex<Option<Receiver<Result<(),String>>>>,commands:tokio::sync::mpsc::Sender<String>,
+    cancelled:AtomicBool,close:tokio::sync::Notify,interrupted:AtomicBool,
+}
+impl Voice {
+    pub fn open(rt:&tokio::runtime::Handle,host:Arc<Host>,tools:Arc<Tools>,journal:Arc<Journal>,settings:Settings,profile:Profile,instructions:String)->Arc<Self>{
+        let id=match profile.engine.as_str(){""|"live"=>"openai",id=>id}.to_string();
+        let (tx,rx)=sync_channel(128);let (ready,ready_rx)=sync_channel(1);let (commands,command_rx)=tokio::sync::mpsc::channel(16);
+        let me=Arc::new(Self{id:id.clone(),dialog:Dialog::new(journal,&id,&profile.live_model),rt:rt.clone(),pending:Mutex::default(),output:Mutex::new(Some(tx)),audio:Mutex::new(Some(rx)),ready:Mutex::new(Some(ready_rx)),commands,cancelled:AtomicBool::new(false),close:tokio::sync::Notify::new(),interrupted:AtomicBool::new(false)});
+        let run=me.clone();rt.spawn(async move{
+            let result=tokio::select!{result=run.run(host,tools,settings,profile,instructions,ready.clone(),command_rx)=>result,_=run.close.notified()=>Ok(())};
+            if let Err(error)=result {let _=ready.try_send(Err(error.clone()));run.dialog.finish_turn(&error);}
+            run.output.lock().unwrap().take();run.cancelled.store(true,Ordering::SeqCst);
+        });me
+    }
+    async fn run(&self,host:Arc<Host>,tools:Arc<Tools>,settings:Settings,p:Profile,instructions:String,ready:SyncSender<Result<(),String>>,mut commands:tokio::sync::mpsc::Receiver<String>)->Result<(),String>{
+        let Runtime::Module(module)=host.provider(&self.id)?else{return Err("Выбранный голосовой провайдер должен быть Rust-модулем".into());};
+        let key=match self.id.as_str(){"openai"=>&settings.openai_key,"gemini"=>&settings.gemini_key,"grok"=>&settings.grok_key,_=>return Err("Этот движок требует классический режим".into())};
+        let (context,defs)=tools.prepare().await;
+        let (mut socket,mut stop)=module.cloud_socket(key).await?;
+        let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
+        let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
+        let start=match self.id.as_str(){
+            "gemini"=>{let declarations:Vec<_>=defs.iter().filter(|d|d["type"]=="function").map(|d|json!({"name":d["name"],"description":d["description"],"parameters":d["parameters"]})).collect();json!({"setup":{"model":format!("models/{model}"),"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":voice}}}},"systemInstruction":{"parts":[{"text":format!("{instructions}\n{context}")}]},"inputAudioTranscription":{},"outputAudioTranscription":{},"tools":[{"functionDeclarations":declarations}]}})},
+            "grok"=>json!({"type":"session.update","session":{"instructions":format!("{instructions}\n{context}"),"voice":voice,"turn_detection":{"type":"server_vad"},"audio":{"input":{"format":{"type":"audio/pcm","rate":24000}},"output":{"format":{"type":"audio/pcm","rate":24000}}},"tools":defs}}),
+            _=>{let mut backend=defs.clone();if p.web_search{backend.push(json!({"type":"web_search"}));}json!({"type":"session.start","session":{"model":model,"instructions":instructions,"audio":{"format":{"type":"audio/pcm","rate":16000},"output":{"voice":voice}},"delegation":{"type":"responses","responses":{"model":if p.backend_model.is_empty(){crate::settings::BACKEND_MODELS[0]}else{&p.backend_model},"instructions":format!("{}\n{context}",crate::rules::BACKEND_RULES),"tools":backend,"tool_choice":"auto","reasoning":{"effort":crate::chatgpt::effort(&p.backend_model,&p.effort)}}}}})},
+        };
+        send(&mut socket,start).await?;
+        let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(100));
+        let mut handles=std::collections::HashMap::<String,tokio::task::AbortHandle>::new();let mut seen=std::collections::HashSet::new();
+        let mut up=jarvis_dsp::audio::Upsampler::new(3);let mut phase=0;let mut speaking=false;
+        loop {
+            tokio::select!{
+                biased;
+                _=stop.changed()=>return Err("Голосовой модуль остановлен".into()),
+                result=tasks.join_next(),if !tasks.is_empty()=>{
+                    self.dialog.working(-1);
+                    let value=match result.ok_or("Вызов инструмента завершился")? {Ok(value)=>value,Err(e) if e.is_cancelled()=>continue,Err(e)=>return Err(e.to_string())};
+                    let id=value.pointer("/toolResponse/functionResponses/0/id").or_else(||value.pointer("/item/call_id")).and_then(Value::as_str).unwrap_or("");handles.remove(id);
+                    send(&mut socket,value).await?;if self.id!="gemini"{send(&mut socket,json!({"type":"response.create"})).await?;}
+                },
+                Some(text)=commands.recv(),if started=>{
+                    let value=match self.id.as_str(){"gemini"=>json!({"clientContent":{"turns":[{"role":"user","parts":[{"text":format!("Произнеси дословно: {text}")}]}],"turnComplete":true}}),"grok"=>json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Произнеси дословно: {text}")}]}}),_=>json!({"type":"session.commentary.append","delegation_id":null,"content":text})};send(&mut socket,value).await?;
+                    if self.id=="grok"{send(&mut socket,json!({"type":"response.create"})).await?;}
+                },
+                _=interval.tick(),if started=>{
+                    let mut pcm=take_mic(&mut self.pending.lock().unwrap(),4800);if pcm.is_empty(){pcm.resize(1600,0);}
+                    if self.id=="grok"{let input=up.run(&pcm);pcm=input.iter().skip(phase).step_by(2).copied().collect();phase=(phase+input.len())%2;}
+                    let data=B64.encode(pcm.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>());
+                    let value=match self.id.as_str(){"gemini"=>json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":data}}}),"grok"=>json!({"type":"input_audio_buffer.append","audio":data}),_=>json!({"type":"session.input_audio.append","audio":data})};send(&mut socket,value).await?;
+                },
+                message=socket.next()=>{
+                    let Some(message)=message else{return Ok(());};let message=message.map_err(|_|"Обрыв голосового соединения")?;
+                    if message.is_close(){return Ok(());}if !message.is_text() && !message.is_binary(){continue;}
+                    let event:Value=serde_json::from_slice(&message.into_data()).map_err(|_|"Неверное голосовое событие")?;
+                    for id in event.pointer("/toolCallCancellation/ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str){if let Some(handle)=handles.remove(id){handle.abort();}}
+                    let kind=event["type"].as_str().unwrap_or("");
+                    if event.get("setupComplete").is_some() || ["session.started","session.updated"].contains(&kind){if !started{started=true;let _=ready.try_send(Ok(()));}continue;}
+                    if kind=="error" || event.get("error").is_some(){return Err("Провайдер отклонил голосовую сессию".into());}
+                    if ["session.closed"].contains(&kind){return Ok(());}
+                    if kind=="input_audio_buffer.speech_started" || event.pointer("/serverContent/interrupted").and_then(Value::as_bool)==Some(true){self.interrupted.store(true,Ordering::SeqCst);speaking=false;}
+                    if kind=="session.input_transcript.delta" || kind=="conversation.item.input_audio_transcription.completed"{self.dialog.on_user(event[if kind.ends_with("completed"){"transcript"}else{"delta"}].as_str().unwrap_or(""));}
+                    if ["session.output_transcript.delta","response.audio_transcript.delta","response.output_audio_transcript.delta"].contains(&kind){self.dialog.on_bot(event["delta"].as_str().unwrap_or(""));}
+                    if ["session.output_audio.delta","response.audio.delta","response.output_audio.delta"].contains(&kind){self.audio(event["delta"].as_str().unwrap_or(""))?;speaking=true;}
+                    if let Some(content)=event.get("serverContent"){
+                        if let Some(text)=content.pointer("/inputTranscription/text").and_then(Value::as_str){self.dialog.on_user(text);}
+                        if let Some(text)=content.pointer("/outputTranscription/text").and_then(Value::as_str){self.dialog.on_bot(text);}
+                        for part in content.pointer("/modelTurn/parts").and_then(Value::as_array).into_iter().flatten(){if let Some(data)=part.pointer("/inlineData/data").and_then(Value::as_str){self.audio(data)?;speaking=true;}}
+                    }
+                    if kind=="session.delegation.created"{self.dialog.working(1);}
+                    if kind=="response.event"{let inner=event["event"]["type"].as_str().unwrap_or("");if ["response.completed","response.failed","response.cancelled","response.incomplete"].contains(&inner){self.dialog.working(-1);}}
+                    let mut calls=vec![];
+                    if kind=="response.event" && event["event"]["type"]=="response.output_item.done" && event["event"]["item"]["type"]=="function_call"{calls.push(event["event"]["item"].clone());}
+                    if kind=="response.function_call_arguments.done"{calls.push(event.clone());}
+                    calls.extend(event.pointer("/toolCall/functionCalls").and_then(Value::as_array).cloned().unwrap_or_default());
+                    for call in calls {
+                        if tasks.len()>=16{return Err("Слишком много вызовов инструментов".into());}
+                        let call_id=call[if self.id=="gemini"{"id"}else{"call_id"}].as_str().unwrap_or("").to_string();
+                        if call_id.is_empty() || call_id.len()>256{return Err("Нет ID голосового инструмента".into());}
+                        if !seen.insert(call_id.clone()){continue;}if seen.len()>1024{return Err("Слишком много инструментов в разговоре".into());}
+                        let tools=tools.clone();let id=self.id.clone();let declared=defs.iter().any(|d|d["name"]==call["name"]);self.dialog.working(1);
+                        let handle=tasks.spawn(async move{
+                            let name=call["name"].as_str().unwrap_or("");let arguments=call["arguments"].as_str().map(str::to_string).unwrap_or_else(||call["args"].to_string());
+                            let result=if declared{tokio::time::timeout(Duration::from_secs(15),tools.call(name,&arguments)).await.unwrap_or_else(|_|"Инструмент не ответил вовремя".into())}else{"Этот инструмент не был объявлен".into()};
+                            match id.as_str(){"gemini"=>json!({"toolResponse":{"functionResponses":[{"id":call["id"],"name":name,"response":{"result":result}}]}}),_=>json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":call["call_id"],"output":result}})}
+                        });
+                        handles.insert(call_id,handle);
+                    }
+                    if speaking && ["session.output_audio.done","response.done"].contains(&kind){speaking=false;}
+                }
+            }
+        }
+    }
+    fn audio(&self,data:&str)->Result<(),String>{
+        if self.cancelled.load(Ordering::SeqCst){return Ok(());}
+        if data.len()>128000{return Err("Слишком большой кусок PCM".into());}
+        let bytes=B64.decode(data).map_err(|_|"Неверный голосовой PCM")?;if bytes.len()%2!=0{return Err("Неверный голосовой PCM".into());}if bytes.is_empty(){return Ok(());}self.dialog.heard_voice();
+        if let Some(tx)=self.output.lock().unwrap().as_ref(){for bytes in bytes.chunks(2400){let pcm=bytes.chunks_exact(2).map(|b|i16::from_le_bytes([b[0],b[1]])).collect();tx.try_send(pcm).map_err(|_|"Переполнен буфер голоса")?;}}Ok(())
+    }
+}
+async fn send(socket:&mut jarvis_cloud::Socket,value:Value)->Result<(),String>{
+    tokio::time::timeout(Duration::from_secs(5),socket.send(value.to_string().into())).await.map_err(|_|"Голосовое соединение не принимает данные")?.map_err(|_|"Обрыв голосового соединения".into())
+}
+impl Session for Voice {
+    fn feed(&self,pcm:&[i16]){queue_mic(&mut self.pending.lock().unwrap(),pcm);}
+    fn take_audio(&self)->Option<Receiver<Vec<i16>>>{self.audio.lock().unwrap().take()}
+    fn rate(&self)->usize{if self.id=="openai"{16000}else{24000}}
+    fn ready(&self,timeout:Duration)->Result<(),String>{let Some(rx)=self.ready.lock().unwrap().take()else{return Ok(());};rx.recv_timeout(timeout).map_err(|_|"Голосовая сессия не открылась".to_string())?}
+    fn say(&self,text:&str)->Result<(),String>{self.commands.try_send(text.to_string()).map_err(|e|e.to_string())}
+    fn close(&self){self.cancelled.store(true,Ordering::SeqCst);self.close.notify_one();}
+    fn dialog(&self)->&Dialog{&self.dialog}
+    fn interrupted(&self)->bool{self.interrupted.swap(false,Ordering::SeqCst)}
+}

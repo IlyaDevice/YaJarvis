@@ -3,6 +3,11 @@
 use super::{App, ok, reply};
 use axum::{extract::State, http::StatusCode, response::Response};
 use serde_json::json;
+pub async fn say(State(app):State<App>,axum::Json(value):axum::Json<serde_json::Value>)->Response {
+    let Some(text)=value["text"].as_str().map(str::trim).filter(|t|!t.is_empty() && t.len()<=16000)else{return super::bad("Текст: от 1 до 16000 байт");};
+    let text=text.to_string();let speak=value["speak"].as_bool().unwrap_or(true);let engine=app.engine.clone();
+    tokio::spawn(async move{engine.text_turn(text,speak).await;});ok()
+}
 
 pub async fn talk(State(app): State<App>) -> Response {
     app.engine.trigger("кнопка в настройках", 1.0);

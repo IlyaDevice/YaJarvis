@@ -80,6 +80,34 @@ pub struct Native {
     pending: Mutex<HashMap<i64, oneshot::Sender<Msg>>>,
 }
 
+/// Внешний timeout/отмена future тоже должны отменять работу на стороне модуля.
+struct PendingRequest<'a> {
+    native: &'a Native,
+    id: i64,
+    proc: Arc<Proc>,
+    completed: bool,
+}
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        self.native.pending.lock().unwrap().remove(&self.id);
+        if self.completed { return; }
+        let (proc, id) = (self.proc.clone(), self.id);
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let msg = Msg { method: "cancel".into(), params: Some(json!({"id": id})), ..Default::default() };
+                if let Ok(mut b) = serde_json::to_vec(&msg) {
+                    b.push(b'\n');
+                    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+                        let mut stdin = proc.stdin.lock().await;
+                        stdin.write_all(&b).await?;
+                        stdin.flush().await
+                    }).await;
+                }
+            });
+        }
+    }
+}
+
 /// Дождаться завершения процесса (без удержания блокировки канала через await).
 async fn wait_done(mut rx: watch::Receiver<bool>) {
     let _ = rx.wait_for(|d| *d).await.map(|_| ());
@@ -320,13 +348,15 @@ impl Native {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        let done = match self.st.lock().unwrap().proc.as_ref() {
-            Some(p) => p.done.clone(),
+        let proc = match self.st.lock().unwrap().proc.as_ref() {
+            Some(p) => p.clone(),
             None => {
                 self.pending.lock().unwrap().remove(&id);
                 return Err("плагин не запущен".into());
             }
         };
+        let done = proc.done.clone();
+        let mut guard = PendingRequest { native: self, id, proc, completed: false };
         let msg = Msg { id, method: method.into(), params: Some(params), deadline: now_ms() + timeout.as_millis() as i64, ..Default::default() };
         if let Err(e) = self.send(msg).await {
             self.pending.lock().unwrap().remove(&id);
@@ -340,6 +370,7 @@ impl Native {
                 Err("плагин не ответил вовремя".to_string())
             }
         };
+        guard.completed = true;
         self.pending.lock().unwrap().remove(&id);
         let m = res?;
         if !m.error.is_empty() {

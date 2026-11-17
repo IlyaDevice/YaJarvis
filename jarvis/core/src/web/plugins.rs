@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 pub async fn list(State(app): State<App>) -> Json<Value> {
     Json(json!({
-        "installed": app.plugins.list(), "composition_pending": false, "modules": [], "arch": arch(), "api": PLUGIN_API,
+        "installed": app.plugins.list(), "composition_pending": false, "modules": crate::plugins::compiled_modules(), "arch": arch(), "api": PLUGIN_API,
         "free_mb": free_mb(&app.data_dir), "categories": categories_json(), "warned": app.store.with(|s| s.plugins_warned),
         "topic": TOPIC, "repo": crate::DEFAULT_REPO,
     }))
@@ -33,6 +33,9 @@ pub async fn install(State(app): State<App>, body: Bytes) -> Response {
     let Ok(req) = serde_json::from_slice::<Value>(&body) else { return bad("нет репозитория") };
     let repo = field(&req, "repo").and_then(Value::as_str).unwrap_or("");
     let id = field(&req, "id").and_then(Value::as_str).unwrap_or("");
+    if (repo.is_empty() || repo==crate::DEFAULT_REPO) && crate::plugins::compiled_modules().iter().any(|m|m==id) {
+        return match app.plugins.install_module(id).await {Ok(m)=>reply(StatusCode::OK,json!({"ok":true,"plugin":m})),Err(e)=>bad(e)};
+    }
     match app.plugins.install_repo(repo, id, "", false).await {
         Ok(m) => reply(StatusCode::OK, json!({"ok": true, "plugin": m})),
         Err(e) => bad(e),

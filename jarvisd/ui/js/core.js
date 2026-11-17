@@ -10,6 +10,8 @@ export const tip = (t) => `<span class="tip" tabindex="0" data-tip="${esc(t)}">?
 
 // Иконки (lucide, 16px, линия 1.5) и кольцо — знак Джарвиса: повторяет световое кольцо колонки.
 export const ICONS = {
+  edit: `<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>`,
+  trash: `<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/>`,
   play: `<polygon points="6 3 20 12 6 21 6 3"/>`,
   pause: `<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>`,
   skip: `<polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="5" width="2.5" height="14" rx="1"/>`,

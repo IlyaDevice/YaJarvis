@@ -49,6 +49,12 @@ impl Tools {
     pub fn new(host: Arc<Host>, store: Store) -> Tools {
         Tools { host, store, music: None, music_ctl: None, music_queue: None, memory: None }
     }
+    /// Каталог из контекста определяет доступность инструментов уже в первой реплике.
+    pub async fn prepare(&self)->(String,Vec<Value>) {
+        let context=self.context().await;
+        let definitions=self.definitions().await;
+        (context,definitions)
+    }
 
     /// Запрос к плагину, который даёт возможность cap.
     pub async fn service(&self, cap: &str, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
@@ -194,7 +200,7 @@ impl Tools {
                 }
             }
         }
-        if self.music.is_some() {
+        if self.music.is_some() && self.host.provider("youtube").is_ok() {
             let who = if self.use_ch("yandexmusic") {
                 "Обычную музыку по названию включает Алиса, но если просят включить что-то на колонке тебя («что-нибудь интересное», «чтобы болтало на фоне», «с ютуба») — вызывай сразу, запрос придумай сам."
             } else {
@@ -207,7 +213,7 @@ impl Tools {
                     "queue": {"type": "boolean", "description": "true — не включать сразу, а добавить в очередь после того, что играет («добавь в очередь», «потом включи»)"}},
                     "required": ["query"]}}));
         }
-        if self.music_ctl.is_some() {
+        if self.music_ctl.is_some() && self.host.provider("youtube").is_ok() {
             defs.push(json!({"type": "function", "name": "music_control",
                 "description": "Управлять тем, что сейчас играет с YouTube: пауза, продолжить, перемотка вперёд/назад, с начала, следующее видео, похожее (радио), выключить, что играет.",
                 "parameters": {"type": "object", "properties": {

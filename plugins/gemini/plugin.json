@@ -1,0 +1,1 @@
+{"id":"gemini","name":"Gemini","version":"0.1.0","kind":"module","main":"gemini","api":1,"category":"system","icon":"bolt","provides":["gemini"],"description":"Gemini API: текстовые запросы и модели. Rust.","author":"YaJarvis"}

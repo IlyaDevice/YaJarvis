@@ -1,0 +1,1 @@
+{"id":"openai","name":"OpenAI","version":"0.1.0","kind":"module","main":"openai","api":1,"category":"system","icon":"bolt","provides":["openai"],"description":"API OpenAI: текстовые запросы, распознавание и синтез речи. Rust.","author":"YaJarvis"}

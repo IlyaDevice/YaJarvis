@@ -73,7 +73,8 @@ impl CoreServices {
             }
         }
         let mut service = match id {
-            "homeassistant" | "xiaomi" | "smartlife" | "youtube" | "chatgpt" => id,
+            "yandexhome"=>"yandex",
+            "homeassistant" | "xiaomi" | "smartlife" | "youtube" | "chatgpt" | "openai" | "gemini" | "grok" | "elevenlabs" => id,
             _ => "",
         };
         if id == "home" {
@@ -208,5 +209,15 @@ mod tests {
     #[test]
     fn norm_drops_empty() {
         assert_eq!(norm(&json!({"a": "", "b": 0, "c": {"d": null}, "e": "x"})), json!({"e": "x"}));
+    }
+    #[test]
+    fn yandex_module_gets_only_its_own_network_policy() {
+        let dir=std::env::temp_dir().join(format!("jarvis-coresvc-{}",crate::settings::rand_hex(6)));std::fs::create_dir_all(&dir).unwrap();
+        let store=Store::open(dir.join("settings.json")).unwrap();
+        store.update(|s|->Result<(),std::io::Error>{s.vless="vless://pending".into();s.vpn.insert("yandex".into(),true);s.vpn.insert("chatgpt".into(),false);Ok(())}).unwrap();
+        let svc=CoreServices{store:store.clone(),proxy:Proxy::new(store),data_dir:dir.clone(),info:Box::new(||json!({})),official:Box::new(|_|true)};
+        assert!(svc.call("yandexhome","network",&json!({"service":"chatgpt"})).unwrap()["error"].is_string());
+        for method in ["config.get","auth.get","legacy"] {assert!(svc.call("yandexhome",method,&json!({"service":"chatgpt"})).is_err());}
+        assert_eq!(dir.parent(),Some(std::env::temp_dir().as_path()));assert!(dir.file_name().unwrap().to_string_lossy().starts_with("jarvis-coresvc-"));std::fs::remove_dir_all(dir).unwrap();
     }
 }

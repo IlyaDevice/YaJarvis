@@ -13,7 +13,19 @@ export JARVIS_UI="${JARVIS_UI:-$PWD/jarvisd/ui}"
 if [ -n "${ZCC:-}" ]; then
 	export CC_aarch64_unknown_linux_musl="$ZCC" AR_aarch64_unknown_linux_musl="${ZAR:-$ZCC}"
 fi
-(cd jarvis && cargo build --release --target aarch64-unknown-linux-musl)
+# Opus uses CMake. Explicitly select Linux when cross-compiling on Windows.
+if [ -n "${ZCC:-}" ]; then
+    export CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_musl="$PWD/scripts/aarch64-musl.cmake"
+    export CMAKE_GENERATOR_aarch64_unknown_linux_musl=Ninja
+fi
+set -- --release --target aarch64-unknown-linux-musl
+if [ "${JARVIS_NO_DEFAULT_FEATURES:-0}" = "1" ]; then
+    set -- "$@" --no-default-features
+fi
+if [ -n "${JARVIS_FEATURES:-}" ]; then
+    set -- "$@" --features "$JARVIS_FEATURES"
+fi
+(cd jarvis && cargo build "$@")
 mkdir -p build
 cp jarvis/target/aarch64-unknown-linux-musl/release/jarvis build/jarvis-arm64
 ls -l build/jarvis-arm64

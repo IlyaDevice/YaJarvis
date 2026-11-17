@@ -19,11 +19,9 @@ export function viewSecurity() {
   ${sec("Что открыто на колонке", "Служебные входы, через которые в колонку можно попасть из домашней сети",
     `<div class="checks">${S.security.map((c) => `<div class="check"><div class="body"><b>${esc(c.title)}</b><small>${esc(c.hint)}</small></div><span class="st ${c.open ? "warn" : "ok"}">${c.open ? "открыт" : "закрыт"}</span></div>`).join("") || `<p class="note">Проверять нечего</p>`}</div>`)}
   ${sec("Обновления", "", `<div id="upd"><p class="note">…</p></div>`)}
-  ${sec("Знакомство", "Что такое Джарвис, что он умеет, кто думает и какие плагины поставить", `<div><button class="btn" id="wiz-again">${icon("right")}Показать знакомство</button></div>`)}
-  ${sec("Для разработчика", "", `<label class="sw"><input type="checkbox" id="dev"${S.settings.dev_mode ? " checked" : ""}><span class="tr"></span><span>Режим разработчика <small class="muted">— вкладка «Обучение»: дообучение слова «Джарвис» и запись фона</small></span></label>`)}`;
+  ${sec("Знакомство", "Что такое Джарвис, что он умеет, кто думает и какие плагины поставить", `<div><button class="btn" id="wiz-again">${icon("right")}Показать знакомство</button></div>`)}`;
   drawUpdate();
   $("#wiz-again").addEventListener("click", () => wizOpen(0));
-  $("#dev").addEventListener("change", (e) => act(null, async () => { await api("PUT", "/api/settings", { dev_mode: e.target.checked }); await reload(); viewSecurity(); }, e.target.checked ? "Режим разработчика включён — вкладка «Обучение» рядом" : "Режим разработчика выключен"));
   $("#view").oninput = $("#view").onchange = $("#view").onclick = null;
   $("#pw-save").addEventListener("click", (e) => act(e.target, async () => { await api("PUT", "/api/password", { old: $("#pw-old").value, new: $("#pw-new").value }); $("#pw-old").value = $("#pw-new").value = ""; }, "Пароль сменён"));
   $("#lan").addEventListener("change", async (e) => {

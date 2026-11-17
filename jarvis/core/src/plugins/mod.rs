@@ -3,7 +3,7 @@
 //!
 //! Виды:
 //!   - native — отдельная программа: говорит с ядром строками JSON через stdin/stdout (native.rs, протокол pluginsdk);
-//!   - lua — скрипт в песочнице внутри ядра (будет);
+//!   - lua — скрипт с ограничениями памяти и выполнения внутри ядра (feature lua);
 //!   - js — старые лёгкие плагины: пока не запускаются (ждут перевода на Lua).
 //! Официальные модули Go-версии (chatgpt, home, vpn, youtube…) на переходный период запускает
 //! старый бинарник jarvisd (флаг -modules): он сам отдаёт нужный модуль по JARVIS_PLUGIN_ID.
@@ -12,6 +12,9 @@ pub mod catalog;
 pub mod coresvc;
 pub mod install;
 pub mod native;
+mod modules;
+#[cfg(feature = "lua")]
+mod lua;
 #[cfg(test)]
 mod protocol_tests;
 
@@ -27,6 +30,8 @@ use std::{
 };
 
 pub const PLUGIN_API: i64 = 1;
+
+pub fn compiled_modules() -> Vec<String> { modules::manifests().into_iter().map(|m|m.id).collect() }
 
 pub fn valid_id(id: &str) -> bool {
     let b = id.as_bytes();
@@ -143,21 +148,24 @@ impl Manifest {
         if self.name.trim().is_empty() {
             return Err("у плагина нет name".into());
         }
-        if !["js", "native", "lua"].contains(&self.kind.as_str()) {
-            return Err(r#"kind плагина — "lua", "js" или "native""#.into());
+        if !["js", "native", "lua", "module"].contains(&self.kind.as_str()) {
+            return Err(r#"kind плагина — "lua", "js", "native" или "module""#.into());
         }
         if !valid_category(&self.category) {
             let ids: Vec<_> = CATEGORIES.iter().map(|c| c.0).collect();
             return Err(format!("category плагина — одна из: {}", ids.join(", ")));
         }
-        if self.provides("vpn") && self.kind != "native" {
+        if self.provides("vpn") && !["native","module"].contains(&self.kind.as_str()) {
             return Err("провайдер VPN должен быть нативным плагином".into());
         }
-        if self.kind != "native" && integ.iter().any(|c| self.provides(c)) {
+        if !["native","module"].contains(&self.kind.as_str()) && integ.iter().any(|c| self.provides(c)) {
             return Err("провайдер интеграции должен быть нативным плагином".into());
         }
         if self.main.is_empty() || self.main.contains("..") || self.main.starts_with('/') || self.main.contains('\\') {
             return Err("main плагина — имя файла внутри архива".into());
+        }
+        if self.kind == "module" && (self.id != self.main || self.provides != [self.main.clone()]) {
+            return Err("Манифест встроенного модуля должен указывать его собственные id, main и provides".into());
         }
         if self.api > PLUGIN_API {
             return Err(format!("плагин написан под API {}, а этот Джарвис знает {PLUGIN_API} — обновите Джарвиса", self.api));
@@ -213,6 +221,7 @@ pub type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// Что ядро даёт плагинам.
 pub struct Hooks {
+    pub network: Box<dyn Fn() -> Value + Send + Sync>,
     /// Сервисы ядра для плагина: (id, method, params) → ответ.
     pub request: Box<dyn Fn(String, String, Value) -> BoxFut<Result<Value, String>> + Send + Sync>,
     /// Событие плагина; "exit" — процесс завершился.
@@ -225,6 +234,7 @@ pub struct Hooks {
 impl Default for Hooks {
     fn default() -> Self {
         Hooks {
+            network: Box::new(|| json!({})),
             request: Box::new(|_, _, _| Box::pin(async { Err("метод ядра недоступен".to_string()) })),
             event: Box::new(|_, _, _| {}),
             say: Box::new(|_| {}),
@@ -237,42 +247,80 @@ impl Default for Hooks {
 #[derive(Clone)]
 pub enum Runtime {
     Native(Arc<native::Native>),
+    Module(Arc<modules::Module>),
+    #[cfg(feature = "lua")]
+    Lua(Arc<lua::Script>),
 }
 
 impl Runtime {
     pub fn tools(&self) -> Vec<Value> {
         match self {
             Runtime::Native(n) => n.tools(),
+            Runtime::Module(_) => vec![],
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.tools(),
         }
     }
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         match self {
             Runtime::Native(n) => n.call_tool(name, args).await,
+            Runtime::Module(_) => None,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.call_tool(name, args).await,
         }
     }
     pub async fn command(&self, text: &str) -> Option<String> {
         match self {
             Runtime::Native(n) => n.command(text).await,
+            Runtime::Module(_) => None,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.command(text).await,
         }
     }
     pub fn configure(&self, settings: Map<String, Value>) {
         match self {
             Runtime::Native(n) => n.configure(settings),
+            Runtime::Module(_) => {},
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.configure(settings),
         }
     }
     pub fn status(&self) -> String {
         match self {
             Runtime::Native(n) => n.status(),
+            Runtime::Module(_) => "Встроенный модуль Rust".into(),
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.status(),
         }
     }
     pub async fn stop(&self) {
         match self {
             Runtime::Native(n) => n.stop().await,
+            Runtime::Module(n) => n.stop().await,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.stop().await,
         }
     }
     pub fn native(&self) -> Option<&Arc<native::Native>> {
         match self {
             Runtime::Native(n) => Some(n),
+            Runtime::Module(_) => None,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(_) => None,
+        }
+    }
+    pub async fn request(&self, method:&str, params:Value, timeout:Duration)->Result<Value,String> {
+        match self {
+            Self::Native(n)=>n.request(method,params,timeout).await,
+            Self::Module(n)=>n.request(method,params,timeout).await,
+            #[cfg(feature="lua")]
+            Self::Lua(_)=>Err("Lua-плагин не является провайдером подключения".into()),
+        }
+    }
+    pub async fn notify(&self, method:&str, params:Value)->Result<(),String> {
+        match self {
+            Self::Native(n)=>n.notify(method,params).await,
+            _=>self.request(method,params,Duration::from_secs(3)).await.map(|_|()),
         }
     }
 }
@@ -327,6 +375,10 @@ impl Inner {
 }
 
 impl Host {
+    pub async fn install_module(self:&Arc<Self>,id:&str)->Result<Manifest,String> {
+        let raw=modules::archive(id)?;
+        self.install(&raw,"core",true,false).await
+    }
     pub fn new(data_dir: PathBuf, hooks: Hooks, modules_bin: Option<PathBuf>) -> Arc<Host> {
         Arc::new(Host {
             data_dir,
@@ -433,8 +485,12 @@ impl Host {
         };
         let res: Result<Runtime, String> = match m.kind.as_str() {
             "native" => native::Native::start(self.clone(), m.clone(), dir, settings, official).await.map(Runtime::Native),
+            "module" => modules::Module::start(&m,Arc::downgrade(self)).map(|m|Runtime::Module(Arc::new(m))),
             "js" => Err("JS-плагины в новом ядре заменяются на Lua — плагин ждёт перевода".into()),
-            "lua" => Err("Lua-плагины появятся в следующей сборке".into()),
+            #[cfg(feature = "lua")]
+            "lua" => lua::Script::start(self.clone(), m.clone(), dir, settings).await.map(Runtime::Lua),
+            #[cfg(not(feature = "lua"))]
+            "lua" => Err("Эта сборка не включает Lua: включите модуль lua при сборке".into()),
             k => Err(format!("неизвестный вид плагина {k}")),
         };
         let mut g = self.inner.lock().unwrap();
@@ -505,21 +561,42 @@ impl Host {
         None
     }
 
-    /// Плагин, который даёт возможность cap (provides), запущенный и нативный.
-    pub fn provider(&self, cap: &str) -> Result<Arc<native::Native>, String> {
+    /// Запущенный провайдер cap: отдельный процесс или выбранный встроенный Rust-модуль.
+    pub fn provider(&self, cap: &str) -> Result<Runtime, String> {
+        self.provider_named(cap).map(|(_,runtime)|runtime)
+    }
+    fn provider_named(&self,cap:&str)->Result<(String,Runtime),String> {
         let g = self.inner.lock().unwrap();
+        // Выбранный отдельный модуль владеет подключением и после выключения:
+        // старый объединённый плагин не должен незаметно включать его обратно.
+        let dedicated = g.plugins.contains_key(cap) || g.state.get(cap).is_some_and(|s|s.removed);
         let mut found = None;
+        let mut rank = None;
         for p in g.plugins.values() {
+            if dedicated && p.manifest.id != cap {continue;}
             if !p.manifest.provides(cap) {
                 continue;
             }
-            if let Some(n) = p.rt.as_ref().and_then(Runtime::native) {
-                if found.is_none() || g.state.get(&p.manifest.id).is_some_and(|s| s.official) {
-                    found = Some(n.clone());
+            if let Some(rt) = p.rt.as_ref().filter(|r|matches!(r,Runtime::Native(_) | Runtime::Module(_))) {
+                let current=(p.manifest.id==cap,p.manifest.kind=="module",g.state.get(&p.manifest.id).is_some_and(|s|s.official));
+                if rank.is_none_or(|r|current>r) {
+                    rank=Some(current);
+                    found = Some((p.manifest.id.clone(),rt.clone()));
                 }
             }
         }
         found.ok_or_else(|| format!("нет запущенного плагина «{cap}»"))
+    }
+    /// Панели нужен выбранный провайдер, включая намеренно выключенный отдельный модуль.
+    pub fn service_providers(&self)->Value {
+        let mut out=Map::new();
+        for (service,cap) in [("yandex","yandexhome"),("homeassistant","homeassistant"),("xiaomi","xiaomi"),("smartlife","smartlife")] {
+            let selected=self.provider_named(cap).ok().map(|(id,_)|id);
+            let available=selected.is_some();
+            let plugin=selected.unwrap_or_else(||{let g=self.inner.lock().unwrap();if g.plugins.contains_key(cap) || g.state.get(cap).is_some_and(|s|s.removed) {cap.into()}else{"home".into()}});
+            out.insert(service.into(),json!({"plugin":plugin,"available":available}));
+        }
+        Value::Object(out)
     }
 
     pub async fn set_enabled(self: &Arc<Self>, id: &str, on: bool) -> Result<(), String> {

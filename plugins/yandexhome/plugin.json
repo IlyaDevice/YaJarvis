@@ -1,0 +1,13 @@
+{
+  "id": "yandexhome",
+  "name": "Яндекс Умный дом",
+  "version": "1.0.0",
+  "description": "Устройства, группы и сценарии Яндекс Умного дома. Модуль на Rust.",
+  "kind": "module",
+  "main": "yandexhome",
+  "api": 1,
+  "category": "home",
+  "icon": "home",
+  "provides": ["yandexhome"],
+  "author": "YaJarvis"
+}

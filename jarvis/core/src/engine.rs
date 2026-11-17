@@ -19,13 +19,16 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::RecvTimeoutError,
     },
     time::{Duration, Instant},
 };
 
 const RATE: usize = 16000;
+const INTERRUPTED: &str = "озвучку прервали";
+#[path="text.rs"]
+mod text;
 
 #[derive(Default)]
 struct St {
@@ -48,11 +51,14 @@ pub struct Engine {
     pub leds: Arc<Leds>,
     pub journal: Arc<Journal>,
     pub tools: Arc<Tools>,
+    pub music: Arc<crate::music::Music>,
     pub listener: Arc<Listener>,
     pub data: PathBuf,
     rt: tokio::runtime::Handle,
     st: Mutex<St>,
     reset_wake: AtomicBool,
+    speech_epoch: AtomicU64,
+    saying: AtomicBool,
     cmds: std::sync::OnceLock<crate::cmdspot::CmdSpotter>,
 }
 
@@ -95,7 +101,10 @@ pub fn key_missing(s: &Settings, engine: &str) -> String {
     match engine {
         "chatgpt" if !chatgpt::signed_in(&s.chatgpt) => "не выполнен вход в ChatGPT — войдите в «Подключениях»".into(),
         "chatgpt" => String::new(),
-        "" | "live" | "openai" => "голос OpenAI ещё не перенесён в новое ядро — выберите ассистента на ChatGPT".into(),
+        "" | "live" | "openai" => if !cfg!(feature="openai"){"Модуль OpenAI не включён в сборку".into()}else if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
+        "gemini" => if !cfg!(feature="gemini"){"Модуль Gemini не включён в сборку".into()}else if s.gemini_key.is_empty(){"Добавьте ключ Gemini в «Подключениях»".into()}else{String::new()},
+        "grok" => if !cfg!(feature="grok"){"Модуль Grok не включён в сборку".into()}else if s.grok_key.is_empty(){"Добавьте ключ Grok в «Подключениях»".into()}else{String::new()},
+        "elevenlabs"=>if !cfg!(feature="elevenlabs"){"Модуль ElevenLabs не включён в сборку".into()}else if s.elevenlabs_key.is_empty(){"Добавьте ключ ElevenLabs в «Подключениях»".into()}else{String::new()},
         other => format!("движок «{other}» ещё не перенесён в новое ядро — выберите ассистента на ChatGPT"),
     }
 }
@@ -113,8 +122,9 @@ impl Engine {
         tools: Arc<Tools>,
         listener: Arc<Listener>,
         data: PathBuf,
+        music: Arc<crate::music::Music>,
     ) -> Arc<Engine> {
-        Arc::new(Engine { store, host, mic, player, leds, journal, tools, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false), cmds: Default::default() })
+        Arc::new(Engine { store, host, mic, player, leds, journal, tools, music, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false), speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), cmds: Default::default() })
     }
 
     /// Слушать микрофон в своём потоке: слово, звук в разговор, перебивание.
@@ -208,9 +218,9 @@ impl Engine {
         }
     }
 
-    /// Играет ли музыка с YouTube (мост к плагину ещё не перенесён).
+    /// Состояние из событий музыкального модуля: без запросов на каждом кадре микрофона.
     fn music_playing(&self) -> bool {
-        false
+        self.music.state().playing
     }
 
     /// Встроенный распознаватель услышал команду, пока Джарвис занят.
@@ -218,10 +228,17 @@ impl Engine {
         let w = phrase.to_lowercase();
         let has = |s: &str| w.contains(s);
         if !self.talking() {
-            // Джарвис молчит, а играет музыка — команды относятся к ней (появится вместе с мостом YouTube)
-            if !self.music_playing() || !(has("громче") || has("тише")) {
+            if !self.music_playing() { return; }
+            if has("стоп") || has("пауза") {
+                let op = if has("пауза") { "pause" } else { "stop" };
+                let _ = self.rt.block_on(self.music.call(&self.host, op, serde_json::Value::Null));
                 return;
             }
+            if has("громче") || has("тише") {
+                let level = crate::speakervol::speaker_volume().unwrap_or(5) + if has("тише") { -1 } else { 1 };
+                let _ = crate::speakervol::set_alice_volume(level.clamp(0,10));
+            }
+            return;
         }
         if has("хватит") {
             log::info!("Джарвис: «{phrase}» — разговор закрыт, музыка не тронута (встроенный распознаватель)");
@@ -252,7 +269,7 @@ impl Engine {
     /// Идёт ли разговор (или он открывается).
     pub fn talking(&self) -> bool {
         let st = self.st.lock().unwrap();
-        st.busy || st.live.is_some()
+        st.busy || st.live.is_some() || self.saying.load(Ordering::Relaxed)
     }
 
     /// Начать разговор (по слову, по кнопке в настройках).
@@ -363,9 +380,9 @@ impl Engine {
         Arc::new(move |task: String| {
             let (host, tools, p) = (host.clone(), tools.clone(), p.clone());
             Box::pin(async move {
-                // контекст дома, список инструментов и вход — разом: каждый из них ходит в плагины
+                // вход и подготовка дома параллельно; инструменты зависят от загруженного каталога
                 let t0 = Instant::now();
-                let (ctx, defs, auth) = tokio::join!(tools.context(), tools.definitions(), async {
+                let ((ctx, defs), auth) = tokio::join!(tools.prepare(), async {
                     host.provider("chatgpt")?.request("auth.token", serde_json::Value::Null, Duration::from_secs(20)).await
                 });
                 log::info!("бэкенд: контекст и инструменты за {:.2} с", t0.elapsed().as_secs_f64());
@@ -388,6 +405,12 @@ impl Engine {
 
     /// Открыть разговор с моделью тем движком, который выбран у ассистента.
     fn new_session(&self, s: &Settings, p: &Profile) -> Arc<dyn Session> {
+        #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
+        if p.is_classic(){return crate::classic_voice::Classic::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));}
+        #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
+        if ["","live","openai","gemini","grok"].contains(&p.engine.as_str()) {
+            return crate::cloud_voice::Voice::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));
+        }
         chatgpt::ChatGptSession::open(
             &self.rt,
             chatgpt::Open {
@@ -559,7 +582,7 @@ impl Engine {
             let (id, text, since) = x.dialog().utterance();
             if id != 0 && id != checked && since >= Duration::from_millis(350) {
                 checked = id;
-                if self.handle(&x, &text, "модель") {
+                if !x.handles_commands() && self.handle(&x, &text, "модель") {
                     return close(&sess);
                 }
             }
@@ -590,6 +613,7 @@ impl Engine {
         if fastcmd::is_stop(&cmd) {
             quiet();
             if fastcmd::is_stop_all(&cmd) {
+                let _ = self.rt.block_on(self.music.call(&self.host, "stop", serde_json::Value::Null));
                 log::info!("Джарвис: «{text}» — стоп ({from})");
             } else {
                 log::info!("Джарвис: «{text}» — разговор закрыт, музыка не тронута ({from})");
@@ -598,6 +622,12 @@ impl Engine {
             return true;
         }
         let rt = &self.rt;
+        if let Some(answer) = rt.block_on(self.music.control(&self.host, &cmd)) {
+            quiet();
+            note("музыка", &answer);
+            (self.say_hook())(answer);
+            return true;
+        }
         if let Some(answer) = rt.block_on(async { tokio::time::timeout(Duration::from_secs(20), self.host.command(&cmd)).await.ok().flatten() }) {
             quiet();
             log::info!("Джарвис: «{text}» → плагин ({from})");
@@ -652,12 +682,112 @@ impl Engine {
         false
     }
 
-    /// Озвучка короткого ответа (плагины, команды). Пока голосом нет — звуком «готово».
+    /// Сказать вслух просьбу плагина. Пока идёт разговор — не перебиваем его.
+    pub fn say_text(&self, text: &str) {
+        if self.talking() {
+            log::info!("плагин просит сказать «{}» — идёт разговор, пропускаю", crate::plugins::clip(text, 120));
+            return;
+        }
+        (self.say_hook())(text.to_string());
+    }
+
+    /// Озвучка короткого ответа (плагины, команды, музыка); не вышло — звуком «готово».
     fn say_hook(&self) -> impl Fn(String) + '_ {
         move |answer: String| {
             log::info!("Джарвис: ответ «{}»", crate::plugins::clip(&answer, 200));
-            self.earcon(true);
+            if let Err(e) = self.say_aloud(&answer, Duration::from_secs(25)) {
+                log::info!("озвучка: {e}");
+                if e != INTERRUPTED {
+                    self.earcon(true);
+                }
+            }
         }
+    }
+
+    /// Произнести готовый текст голосом активного ассистента: отдельный короткий звонок, где модель
+    /// только читает текст. Блокирует до конца фразы (не дольше limit). Вызывать не из потоков tokio.
+    pub fn say_aloud(&self, text: &str, limit: Duration) -> Result<(), String> {
+        if self.saying.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_err() {
+            return Err(INTERRUPTED.into());
+        }
+        struct Speaking<'a>(&'a AtomicBool);
+        impl Drop for Speaking<'_> { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
+        let _speaking = Speaking(&self.saying);
+        let epoch = self.speech_epoch.load(Ordering::SeqCst);
+        let s = self.store.get();
+        let p = s.active_profile();
+        let missing = key_missing(&s, &p.engine);
+        if !missing.is_empty() {
+            return Err(missing);
+        }
+        let t0 = Instant::now();
+        let sess: Arc<dyn Session> = chatgpt::ChatGptSession::open(
+            &self.rt,
+            chatgpt::Open {
+                host: self.host.clone(),
+                voice: p.voice.clone(),
+                thread: self.chat_thread().into(),
+                instructions: "Ты озвучиваешь готовый текст. Произнеси ровно то, что тебе дали, ничего не добавляя, и замолчи.".into(),
+                brain: None,
+                journal: Arc::new(Journal::default()),
+                memory: None,
+            },
+        );
+        let res = self.play_said(&*sess, text, limit, t0, epoch);
+        sess.close();
+        res
+    }
+
+    fn play_said(&self, sess: &dyn Session, text: &str, limit: Duration, t0: Instant, epoch: u64) -> Result<(), String> {
+        sess.ready(Duration::from_secs(10).min(limit))?;
+        if self.speech_epoch.load(Ordering::SeqCst) != epoch { return Err(INTERRUPTED.into()); }
+        sess.say(text)?;
+        let out = sess.take_audio().ok_or("нет звука")?;
+        let (mut started, mut heard) = (false, false);
+        let mut quiet_since = Instant::now();
+        while quiet_since.elapsed() < Duration::from_millis(1200) || !heard {
+            if self.speech_epoch.load(Ordering::SeqCst) != epoch {
+                // «Стоп» из настроек или позвали Алису
+                if started {
+                    self.player.stop(true);
+                }
+                return Err(INTERRUPTED.into());
+            }
+            if t0.elapsed() > limit {
+                if started {
+                    self.player.stop(true);
+                }
+                return Err("голос не успел прозвучать".into());
+            }
+            match out.recv_timeout(Duration::from_millis(100)) {
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    if started {
+                        self.player.finish(Duration::from_secs(3));
+                    }
+                    return if heard { Ok(()) } else { Err("голос не прозвучал".into()) };
+                }
+                Ok(pcm) => {
+                    if !started {
+                        // плеер — только с первым звуком, а не пока модель думает
+                        self.start_voice(sess)?;
+                        self.leds.set(Mode::Speaking);
+                        let _ = self.player.write(&vec![0; sess.rate() / 4]);
+                        started = true;
+                    }
+                    if self.player.write(&pcm).is_err() && !self.player.playing() {
+                        return Err(INTERRUPTED.into()); // плеер забрали — нас перебили
+                    }
+                    self.leds.level(peak(&pcm) / 9000.0);
+                    if loud(&pcm) {
+                        heard = true;
+                        quiet_since = Instant::now();
+                    }
+                }
+            }
+        }
+        self.player.finish(Duration::from_secs(3));
+        Ok(())
     }
 
     /// «Джарвис» посреди ответа: замолчать сразу, слушать новую фразу.
@@ -671,10 +801,12 @@ impl Engine {
     /// Прервать разговор и музыку (Алиса, кнопка «Стоп» в настройках).
     pub fn stop(&self, reason: &str) {
         self.end_chat(reason);
+        let _ = self.rt.block_on(self.music.call(&self.host, "stop", serde_json::Value::Null));
     }
 
     /// Закончить только разговор: музыка, если играет, играет дальше. Блокирует до 3 с.
     pub fn end_chat(&self, reason: &str) {
+        self.speech_epoch.fetch_add(1, Ordering::SeqCst);
         let sess = {
             let mut st = self.st.lock().unwrap();
             let sess = st.live.take();

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["core", "dsp"]
+members = ["core", "dsp", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt"]
+default-members = ["core", "dsp"]
 
 [workspace.package]
 version = "0.9.71"
