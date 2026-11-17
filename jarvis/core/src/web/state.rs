@@ -183,7 +183,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "update_available": false,
         "plugin_pages": app.plugins.pages(),
         "speaker": {"model": model.name, "model_id": model.id, "mic": app.engine.mic.online(), "mic_why": "", "leds": app.engine.leds.available(),
-                    "wake_model": app.engine.listener.ready.load(std::sync::atomic::Ordering::Relaxed), "talking": app.engine.talking(), "uptime_s": app.started.elapsed().as_secs(), "volume": 0},
+                    "wake_model": app.engine.listener.ready.load(std::sync::atomic::Ordering::Relaxed), "talking": app.engine.talking(), "uptime_s": app.started.elapsed().as_secs(), "volume": tokio::task::spawn_blocking(super::vol).await.unwrap_or(-1)},
         "settings": {"wake_enabled": s.wake_enabled, "wake_sensitivity": s.wake_sensitivity, "mic_boost_db": s.mic_boost_db,
                      "mic_gain_db": s.mic_gain_db, "wake_check": s.wake_check, "follow_up_s": s.follow_up_s, "city": s.city,
                      "timezone": s.timezone, "volume": s.volume, "lan_only": s.lan_only, "home_via": s.home_via,

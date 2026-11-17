@@ -5,6 +5,9 @@
 mod alice;
 mod audio;
 mod chatgpt;
+mod buttons;
+mod speakervol;
+mod cmdspot;
 mod memory;
 mod engine;
 mod fastcmd;
@@ -209,7 +212,7 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
     let (listener, det) = wake::Listener::new(&f.data, &store);
     let player = {
         let st = store.clone();
-        audio::Player::new(Box::new(move || st.with(|s| s.voice_volume())), Box::new(|| 1.0))
+        audio::Player::new(Box::new(move || st.with(|s| s.voice_volume())), Box::new(|| speakervol::voice_trim(speakervol::speaker_level())))
     };
     let leds = {
         let st = store.clone();
@@ -246,9 +249,16 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         listener,
         f.data.clone(),
     );
+    #[cfg(unix)]
+    speakervol::watch_night(store.clone(), engine.leds.clone());
     memory.set_summarizer(Some(engine.summarizer()));
     engine.run(det);
     let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone(), engine);
+    #[cfg(unix)]
+    {
+        let app = app.clone();
+        buttons::watch(move || web::buttons_reset(&app));
+    }
     if let Err(e) = web::serve(app, &f.listen).await {
         log::info!("веб-настройки: {e}");
         host.stop_all().await;

@@ -53,6 +53,7 @@ pub struct Engine {
     rt: tokio::runtime::Handle,
     st: Mutex<St>,
     reset_wake: AtomicBool,
+    cmds: std::sync::OnceLock<crate::cmdspot::CmdSpotter>,
 }
 
 fn same(a: &Arc<dyn Session>, b: &Arc<dyn Session>) -> bool {
@@ -113,11 +114,22 @@ impl Engine {
         listener: Arc<Listener>,
         data: PathBuf,
     ) -> Arc<Engine> {
-        Arc::new(Engine { store, host, mic, player, leds, journal, tools, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false) })
+        Arc::new(Engine { store, host, mic, player, leds, journal, tools, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false), cmds: Default::default() })
     }
 
     /// Слушать микрофон в своём потоке: слово, звук в разговор, перебивание.
     pub fn run(self: &Arc<Self>, mut det: Box<dyn Wake>) {
+        let w = Arc::downgrade(self);
+        if let Some(c) = crate::cmdspot::CmdSpotter::new(
+            &self.data,
+            Arc::new(move |p: String| {
+                if let Some(e) = w.upgrade() {
+                    e.on_command(&p);
+                }
+            }),
+        ) {
+            let _ = self.cmds.set(c);
+        }
         let e = self.clone();
         std::thread::Builder::new()
             .name("engine".into())
@@ -142,6 +154,13 @@ impl Engine {
                     };
                     if busy || live.is_some() {
                         e.leds.hear(peak(&raw) / 9000.0);
+                    }
+                    if let Some(c) = e.cmds.get() {
+                        if busy || live.is_some() || e.music_playing() {
+                            c.feed(&raw);
+                        } else {
+                            c.idle();
+                        }
                     }
                     if e.reset_wake.swap(false, Ordering::Relaxed) {
                         det.reset();
@@ -171,6 +190,63 @@ impl Engine {
             })
             .expect("поток движка");
         self.watch_alice();
+    }
+
+    /// Системное сообщение колонки: сразу локальный сигнал (без сети и ключей — подтверждение есть всегда),
+    /// затем голосом. Озвучка голосом ассистента ещё не перенесена — пока говорит штатная Алиса.
+    pub fn system_notice(&self, chime: &[i16], text: &str, alice_text: &str) {
+        if self.player.start(RATE).is_ok() {
+            let _ = self.player.write(&vec![0; RATE / 4]); // тракт просыпается
+            let _ = self.player.write(chime);
+            self.player.finish(Duration::from_secs(4));
+        }
+        log::info!("системное сообщение: {text}");
+        if !alice_text.is_empty()
+            && let Err(e) = alice::text(alice_text, false)
+        {
+            log::info!("системное сообщение: Алиса недоступна: {e}");
+        }
+    }
+
+    /// Играет ли музыка с YouTube (мост к плагину ещё не перенесён).
+    fn music_playing(&self) -> bool {
+        false
+    }
+
+    /// Встроенный распознаватель услышал команду, пока Джарвис занят.
+    fn on_command(&self, phrase: &str) {
+        let w = phrase.to_lowercase();
+        let has = |s: &str| w.contains(s);
+        if !self.talking() {
+            // Джарвис молчит, а играет музыка — команды относятся к ней (появится вместе с мостом YouTube)
+            if !self.music_playing() || !(has("громче") || has("тише")) {
+                return;
+            }
+        }
+        if has("хватит") {
+            log::info!("Джарвис: «{phrase}» — разговор закрыт, музыка не тронута (встроенный распознаватель)");
+            self.end_chat(&format!("сказали «{phrase}»"));
+            self.journal.note("стоп", phrase, "");
+        } else if has("стоп") || has("пауза") {
+            log::info!("Джарвис: «{phrase}» — стоп (встроенный распознаватель)");
+            self.stop(&format!("сказали «{phrase}»"));
+            self.journal.note("стоп", phrase, "");
+        } else if has("громче") || has("тише") {
+            let step = if has("тише") { -10 } else { 10 };
+            let mut v = 0;
+            // громкость голоса активного ассистента
+            let _ = self.store.update(|s| -> Result<(), std::io::Error> {
+                let id = s.active_profile().id.clone();
+                if let Some(p) = s.profiles.iter_mut().find(|p| p.id == id) {
+                    p.volume = (p.volume + step).clamp(10, 100);
+                    v = p.volume;
+                }
+                Ok(())
+            });
+            log::info!("Джарвис: «{phrase}» — громкость {v}% (встроенный распознаватель)");
+        } else {
+            log::info!("Джарвис: распознаватель услышал «{phrase}» — не моя команда");
+        }
     }
 
     /// Идёт ли разговор (или он открывается).

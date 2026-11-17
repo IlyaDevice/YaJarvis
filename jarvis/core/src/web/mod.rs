@@ -52,6 +52,26 @@ impl Web {
     }
 }
 
+/// Пароль снят кнопками колонки: все входы недействительны, новый можно задать в течение 30 минут.
+pub fn buttons_reset(app: &App) {
+    auth::reset_password(app);
+    log::info!("веб-настройки: пароль сброшен кнопками колонки");
+    let e = app.engine.clone();
+    std::thread::spawn(move || {
+        e.leds.show(crate::led::Mode::Thinking, "#00b4ff", 70, std::time::Duration::from_secs(3));
+        e.system_notice(
+            &crate::buttons::reset_chime(),
+            "Пароль веб-настроек сброшен. Откройте настройки и задайте новый в течение получаса.",
+            "Повтори за мной: пароль Джарвиса сброшен, задайте новый в настройках",
+        );
+    });
+}
+
+/// Громкость колонки для панели (-1 — неизвестна).
+pub fn vol() -> i64 {
+    crate::speakervol::speaker_volume().unwrap_or(-1)
+}
+
 /// Ответ JSON с кодом.
 pub fn reply(code: StatusCode, v: Value) -> Response {
     (code, Json(v)).into_response()
@@ -81,6 +101,7 @@ pub fn router(app: App) -> Router {
         .route("/api/talk", post(talk::talk))
         .route("/api/stop", post(talk::stop))
         .route("/api/journal", get(talk::journal))
+        .route("/api/speaker/volume", post(talk::volume))
         .route("/api/memory", get(memory::get).put(memory::put))
         .route("/api/memory/month", put(memory::month))
         .route("/api/memory/archive", get(memory::archive))
