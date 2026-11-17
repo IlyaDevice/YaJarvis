@@ -1,12 +1,14 @@
 //! Optional in-process VLESS client. No subprocesses, system proxy, TUN or changes to host routing.
 //! TCP/WebSocket, TLS, and authenticated REALITY with optional XTLS Vision on TCP.
 mod config;
+mod chrome;
 mod protocol;
 mod reality;
 #[cfg(test)]
 mod tests;
 mod tls_io;
 mod transport;
+mod udp;
 mod vision;
 mod websocket;
 
@@ -115,7 +117,7 @@ impl Vpn {
         };
         let user = secret()?;
         let pass = secret()?;
-        let state = json!({"socks":addr.to_string(),"user":user,"pass":pass,"info":config.info()});
+        let state = json!({"socks":addr.to_string(),"user":user,"pass":pass,"udp":!config.vision,"info":config.info()});
         let mut active = self.active.lock().unwrap();
         if self.stopped.load(Ordering::SeqCst) {
             return Err("модуль VPN остановлен".into());
@@ -156,6 +158,7 @@ async fn serve(
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) {
     let credentials = Arc::new((user, pass));
+    let udp_limit = Arc::new(tokio::sync::Semaphore::new(32));
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -165,7 +168,7 @@ async fn serve(
             accepted = listener.accept() => {
                 let Ok((socket, _)) = accepted else { break };
                 if connections.len() >= 64 { drop(socket); continue; }
-                connections.spawn(connection(socket, config.clone(), tls.clone(), credentials.clone()));
+                connections.spawn(connection(socket, config.clone(), tls.clone(), credentials.clone(), udp_limit.clone()));
             }
         }
     }
@@ -178,9 +181,18 @@ async fn connection(
     config: Arc<Config>,
     tls: Arc<rustls::ClientConfig>,
     credentials: Arc<(Vec<u8>, Vec<u8>)>,
+    udp_limit: Arc<tokio::sync::Semaphore>,
 ) {
+    let Ok(Ok(request)) = tokio::time::timeout(Duration::from_secs(15),
+        protocol::socks_handshake(&mut socket, &credentials.0, &credentials.1)).await else { return; };
+    let target = match request {
+        protocol::Request::Associate(target) => {
+            let _ = udp::associate(socket, target, config, tls, udp_limit).await;
+            return;
+        }
+        protocol::Request::Connect(target) => target,
+    };
     let setup = async {
-        let target = protocol::socks_handshake(&mut socket, &credentials.0, &credentials.1).await?;
         let upstream = match transport::dial(&config, tls, &target).await {
             Ok(io) => io,
             Err(e) => {

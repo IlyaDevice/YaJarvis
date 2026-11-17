@@ -14,3 +14,6 @@ rtc = { version = "0.21", default-features = false, features = ["crypto-ring"] }
 libopus_sys = { version = "0.4", features = ["bundled", "static"] }
 async-trait = "0.1"
 bytes = "1"
+
+[dev-dependencies]
+jarvis-vpn = { path = "../vpn" }

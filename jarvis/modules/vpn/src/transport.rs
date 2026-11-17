@@ -39,6 +39,19 @@ pub(crate) async fn dial(
     tls: Arc<ClientConfig>,
     target: &Target,
 ) -> io::Result<BoxIo> {
+    dial_command(config, tls, target, false).await
+}
+
+pub(crate) async fn dial_command(
+    config: &Config,
+    tls: Arc<ClientConfig>,
+    target: &Target,
+    udp: bool,
+) -> io::Result<BoxIo> {
+    // Vision UDP requires XUDP multiplexing, not Vision's TCP padding stream.
+    if udp && config.vision {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "Vision UDP requires XUDP"));
+    }
     // Resolve only the VPN server locally. The target's domain is encoded into VLESS unchanged.
     let socket = TcpStream::connect((config.host.as_str(), config.port)).await?;
     socket.set_nodelay(true)?;
@@ -46,7 +59,7 @@ pub(crate) async fn dial(
         let session = crate::reality::client(config).map_err(io::Error::other)?;
         let mut stream = crate::tls_io::TlsIo::new(Box::new(socket), session);
         stream.handshake().await?;
-        let mut header = target.vless_header(&config.uuid)?;
+        let mut header = if udp { target.vless_header_for(&config.uuid, true)? } else { target.vless_header(&config.uuid)? };
         if config.vision {
             // Addons protobuf: field 1 (flow), using the canonical wire flow for both TCP aliases.
             let flow = b"xtls-rprx-vision";
@@ -76,7 +89,8 @@ pub(crate) async fn dial(
     if config.websocket {
         io = Box::new(crate::websocket::connect(io, config).await?);
     }
-    io.write_all(&target.vless_header(&config.uuid)?).await?;
+    let header = if udp { target.vless_header_for(&config.uuid, true)? } else { target.vless_header(&config.uuid)? };
+    io.write_all(&header).await?;
     io.flush().await?;
     // Do not await the VLESS response here: some servers send it only after the first payload.
     Ok(Box::new(VlessIo::new(io)))

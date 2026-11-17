@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["core", "dsp", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt"]
 default-members = ["core", "dsp"]
+exclude = ["vendor/reality-tls"]
 
 [workspace.package]
 version = "0.9.71"

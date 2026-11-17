@@ -4,7 +4,12 @@ The module uses rustls from crates.io for ordinary TLS and a separate connection
 REALITY fork for REALITY/Vision. No workspace-wide TLS patch is installed.
 
 - https://github.com/cfal/rustls at `f1a23c187330386e9e7f14a21dbae368034dc430`
-  (`Apache-2.0 OR ISC OR MIT`), pinned in Cargo.toml and Cargo.lock.
+  (`Apache-2.0 OR ISC OR MIT`), vendored in `jarvis/vendor/reality-tls` with its licenses.
+  Jarvis adds a connection-scoped ClientHello shaping hook before authentication/transcript hashing.
+- Chrome 133 profile reference: https://github.com/refraction-networking/utls (`HelloChrome_133`
+  in `u_parrots.go`); BSD notice retained as `UTLS-LICENSE.txt`.
+- Pure Rust ML-KEM-768: RustCrypto `ml-kem` (`Apache-2.0 OR MIT`), pinned in Cargo.lock.
+  Hybrid shares follow https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/.
 - Protocol reference: https://github.com/XTLS/REALITY and the VLESS Addons schema in
   https://github.com/XTLS/Xray-core/blob/main/proxy/vless/encoding/addons.proto.
 - REALITY authentication and directional Vision handoff were implemented with reference

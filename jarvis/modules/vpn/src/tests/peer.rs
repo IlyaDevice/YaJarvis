@@ -11,7 +11,7 @@ impl Drop for Peer {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if !self.dir.as_os_str().is_empty() { let _ = std::fs::remove_dir_all(&self.dir); }
     }
 }
 async fn start_peer(cover: std::net::SocketAddr, vision: bool) -> Option<(Peer, u16, String)> {
@@ -81,6 +81,42 @@ impl Drop for AbortTask {
 }
 
 #[tokio::test]
+async fn chrome_reality_uses_real_mlkem_with_independent_xray_and_go_tls_cover() {
+    let (Some(cover_binary),Some(_))=(std::env::var_os("JARVIS_TLS_COVER"),std::env::var_os("JARVIS_XRAY")) else {return;};
+    tokio::time::timeout(Duration::from_secs(15),async {
+        use std::io::BufRead;
+        let child=Command::new(cover_binary).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        // Peer owns cleanup even if the test fails.
+        let mut cover=Peer{child,dir:std::path::PathBuf::new()};
+        let mut address=String::new();std::io::BufReader::new(cover.child.stdout.take().unwrap()).read_line(&mut address).unwrap();
+        let (_peer,port,key)=start_peer(address.trim().parse().unwrap(),false).await.unwrap();
+        let echo=TcpListener::bind("127.0.0.1:0").await.unwrap();let echo_port=echo.local_addr().unwrap().port();
+        let task=tokio::spawn(async move{let (mut io,_)=echo.accept().await.unwrap();let mut payload=[0;4];io.read_exact(&mut payload).await.unwrap();assert_eq!(&payload,b"ping");io.write_all(b"pong").await.unwrap();});
+        let vpn=Vpn::new();let state=vpn.request(json!({"link":format!("vless://{UUID}@127.0.0.1:{port}?security=reality&pbk={key}&sid=0123456789abcdef&sni=vpn.example.org&fp=chrome")})).await.unwrap();
+        let mut socket=socks(&state,"127.0.0.1",echo_port).await;socket.write_all(b"ping").await.unwrap();assert_eq!(socket.read_u32().await.unwrap(),u32::from_be_bytes(*b"pong"));
+        task.await.unwrap();vpn.stop().await;
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn reality_udp_interoperates_with_independent_xray() {
+    if std::env::var_os("JARVIS_XRAY").is_none() { return; }
+    tokio::time::timeout(Duration::from_secs(15),async {
+        let (address,cover_task)=cover().await;let _cover=AbortTask(cover_task);
+        let (_peer,port,key)=start_peer(address,false).await.unwrap();
+        let echo=tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();let echo_port=echo.local_addr().unwrap().port();
+        let _echo=AbortTask(tokio::spawn(async move {let mut buffer=[0;65535];loop{let (n,from)=echo.recv_from(&mut buffer).await.unwrap();echo.send_to(&buffer[..n],from).await.unwrap();}}));
+        let vpn=Vpn::new();let state=vpn.request(json!({"link":format!("vless://{UUID}@127.0.0.1:{port}?security=reality&pbk={key}&sid=0123456789abcdef&sni=vpn.example.org&fp=chrome")})).await.unwrap();
+        let (mut control,udp,relay)=super::udp::association(&state).await;
+        for size in [1,1200,4096,8190] {
+            let payload:Vec<u8>=(0..size).map(|i|(i%251) as u8).collect();let packet=super::udp::packet("127.0.0.1",echo_port,&payload);
+            udp.send_to(&packet,relay).await.unwrap();let mut response=vec![0;65535];let n=udp.recv(&mut response).await.unwrap();assert_eq!(n,packet.len(),"UDP payload size {size}");assert!(&response[..n]==packet.as_slice(),"UDP payload corrupted at size {size}");
+        }
+        vpn.stop().await;assert!(control.read_u8().await.is_err());
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn reality_interoperates_with_independent_xray_with_and_without_vision() {
     if std::env::var_os("JARVIS_XRAY").is_none() {
         eprintln!("JARVIS_XRAY unset: skipping independent REALITY peer");
@@ -90,13 +126,14 @@ async fn reality_interoperates_with_independent_xray_with_and_without_vision() {
     let sent = std::sync::atomic::AtomicBool::new(false);
     let received = std::sync::atomic::AtomicUsize::new(0);
     let result=tokio::time::timeout(Duration::from_secs(20),async {
-        for vision in [false,true] {
+        for (vision,chrome) in [(false,false),(true,false),(false,true),(true,true)] {
             phase.store(if vision {100}else{0},std::sync::atomic::Ordering::SeqCst);
             let (address,cover_task)=cover().await;let _cover=AbortTask(cover_task);
             let (_peer,port,key)=start_peer(address,vision).await.unwrap();
             let echo=TcpListener::bind("127.0.0.1:0").await.unwrap();let echo_port=echo.local_addr().unwrap().port();
             let echo_task=tokio::spawn(async move {let (mut socket,_)=echo.accept().await.unwrap();let (mut r,mut w)=socket.split();let _=tokio::io::copy(&mut r,&mut w).await;});
             let vpn=Vpn::new();let link=format!("vless://{UUID}@127.0.0.1:{port}?security=reality&pbk={key}&sid=0123456789abcdef&sni=vpn.example.org{}",if vision{"&flow=xtls-rprx-vision"}else{""});
+            let link=if chrome {format!("{link}&fp=chrome")}else{link};
             let state=vpn.request(json!({"link":link})).await.unwrap();
             let mut socket=socks(&state,"127.0.0.1",echo_port).await;
             phase.fetch_add(1,std::sync::atomic::Ordering::SeqCst);

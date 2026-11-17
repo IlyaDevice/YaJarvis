@@ -10,25 +10,28 @@ pub(crate) trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 pub(crate) type BoxIo = Box<dyn Io>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Address {
     Ip(IpAddr),
     Domain(Vec<u8>),
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Target {
     pub address: Address,
     pub port: u16,
 }
 impl Target {
     pub fn vless_header(&self, uuid: &[u8; 16]) -> io::Result<Vec<u8>> {
+        self.vless_header_for(uuid, false)
+    }
+    pub fn vless_header_for(&self, uuid: &[u8; 16], udp: bool) -> io::Result<Vec<u8>> {
         if self.port == 0 {
             return Err(io::Error::other("zero target port"));
         }
         let mut out = Vec::with_capacity(280);
         out.push(0);
         out.extend(uuid);
-        out.extend([0, 1]); // no addons, TCP CONNECT
+        out.extend([0, if udp { 2 } else { 1 }]); // no addons, UDP or TCP
         out.extend(self.port.to_be_bytes());
         match &self.address {
             Address::Ip(IpAddr::V4(ip)) => {
@@ -49,11 +52,16 @@ impl Target {
     }
 }
 
+pub(crate) enum Request {
+    Connect(Target),
+    Associate(Target),
+}
+
 pub(crate) async fn socks_handshake(
     io: &mut (impl AsyncRead + AsyncWrite + Unpin),
     user: &[u8],
     pass: &[u8],
-) -> io::Result<Target> {
+) -> io::Result<Request> {
     let mut head = [0; 2];
     io.read_exact(&mut head).await?;
     if head[0] != 5 {
@@ -84,9 +92,9 @@ pub(crate) async fn socks_handshake(
     if request[0] != 5 || request[2] != 0 {
         return Err(io::Error::other("invalid SOCKS request"));
     }
-    if request[1] != 1 {
+    if !matches!(request[1], 1 | 3) {
         socks_reply(io, 7).await?;
-        return Err(io::Error::other("SOCKS supports CONNECT only"));
+        return Err(io::Error::other("SOCKS command unsupported"));
     }
     let address = match request[3] {
         1 => {
@@ -114,11 +122,12 @@ pub(crate) async fn socks_handshake(
         }
     };
     let port = io.read_u16().await?;
-    if port == 0 {
+    if port == 0 && request[1] == 1 {
         socks_reply(io, 8).await?;
         return Err(io::Error::other("zero target port"));
     }
-    Ok(Target { address, port })
+    let target = Target { address, port };
+    Ok(if request[1] == 3 { Request::Associate(target) } else { Request::Connect(target) })
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {

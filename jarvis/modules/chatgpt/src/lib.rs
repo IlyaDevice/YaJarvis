@@ -7,6 +7,7 @@ const ISSUER:&str="https://auth.openai.com";
 const CLIENT:&str="app_EMoamEEZ73f0CkXaXp7hrann";
 mod opus;
 mod rtc_runtime;
+mod rtc_udp;
 mod rtc_voice;
 fn now()->i64{SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64}
 pub struct ChatGpt {
@@ -124,7 +125,13 @@ async fn sse(mut response:reqwest::Response)->Result<Value,String>{
             let line:Vec<_>=pending.drain(..=end).collect();let text=std::str::from_utf8(&line).map_err(|_|"Неверная кодировка ChatGPT")?.trim_end();
             let Some(data)=text.strip_prefix("data:").map(str::trim_start)else{continue;};if data=="[DONE]"{continue;}
             let event:Value=serde_json::from_str(data).map_err(|_|"Неверное SSE-событие ChatGPT")?;
-            match event["type"].as_str(){Some("response.output_item.done")=>output.push(event["item"].clone()),Some("response.completed")=>{complete=true;if let Some(items)=event["response"]["output"].as_array(){output=items.clone();}},Some("response.failed"|"response.incomplete"|"error")=>return Err("ChatGPT не завершил запрос".into()),_=>{}}
+            match event["type"].as_str(){Some("response.output_item.done")=>output.push(event["item"].clone()),Some("response.completed")=>{
+                complete=true;
+                // Codex can send a compact terminal event with output:[] after complete
+                // output_item.done events, notably when web_search is enabled.
+                // An empty summary must not erase the answer or pending tool calls.
+                if let Some(items)=event["response"]["output"].as_array().filter(|items|!items.is_empty()){output=items.clone();}
+            },Some("response.failed"|"response.incomplete"|"error")=>return Err("ChatGPT не завершил запрос".into()),_=>{}}
             if output.len()>512{return Err("Слишком много элементов ответа ChatGPT".into());}if complete{break 'stream;}
         }
     }
@@ -145,6 +152,14 @@ async fn sse(mut response:reqwest::Response)->Result<Value,String>{
         let access=jwt(json!({"exp":now()+3600,"email":"test@example.org","https://api.openai.com/auth":{"chatgpt_account_id":"account","chatgpt_plan_type":"plus"}}));let expected=access.clone();
         let server=tokio::spawn(async move{let (mut socket,_)=listener.accept().await.unwrap();let mut request=[0;8192];let n=socket.read(&mut request).await.unwrap();let request=String::from_utf8_lossy(&request[..n]);assert!(request.starts_with("POST /oauth/token "));let data=json!({"access_token":access,"refresh_token":"rotated-refresh"}).to_string();socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",data.len(),data).as_bytes()).await.unwrap();});
         let (first,second)=tokio::join!(provider.token(),provider.token());assert_eq!(first.unwrap()["access"],expected);assert_eq!(second.unwrap()["refresh"],"rotated-refresh");assert_eq!(auth.lock().unwrap()["plan"],"plus");server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn compact_completed_event_preserves_streamed_text_and_function_calls(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/",listener.local_addr().unwrap());
+        let events=[json!({"type":"response.output_item.done","item":{"type":"function_call","name":"weather","call_id":"call-1","arguments":"{}"}}),json!({"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"Ответ"}]}}),json!({"type":"response.completed","response":{"status":"completed","output":[]}})].iter().map(|v|format!("data: {v}\r\n\r\n")).collect::<String>();
+        let server=tokio::spawn(async move{let (mut io,_)=listener.accept().await.unwrap();io.read(&mut [0;1024]).await.unwrap();io.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{events}",events.len()).as_bytes()).await.unwrap();});
+        let result=sse(client(&json!({})).unwrap().get(url).send().await.unwrap()).await.unwrap();
+        assert_eq!(result["answer"],"Ответ");assert_eq!(result["calls"][0]["call_id"],"call-1");assert_eq!(result["output"].as_array().unwrap().len(),2);server.await.unwrap();
     }
     #[tokio::test]
     async fn sse_preserves_tool_calls_and_rejects_an_incomplete_response(){

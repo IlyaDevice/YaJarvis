@@ -18,6 +18,7 @@ pub struct Tunnel {
     pub socks: String,
     pub user: String,
     pub pass: String,
+    pub udp: bool,
     pub info: Option<Value>,
 }
 
@@ -88,7 +89,7 @@ impl Proxy {
     pub fn network_reply(&self, svc: &str) -> Value {
         match self.route(svc) {
             Route::Direct => json!({}),
-            Route::Tunnel(t) => json!({"socks": t.socks, "user": t.user, "pass": t.pass}),
+            Route::Tunnel(t) => json!({"socks": t.socks, "user": t.user, "pass": t.pass, "udp":t.udp}),
             Route::Blocked(why) => json!({"error": why}),
         }
     }
@@ -290,6 +291,7 @@ mod tests {
                 socks: "127.0.0.1:1080".into(),
                 user: "u".into(),
                 pass: "p".into(),
+                udp: true,
                 info: None,
             });
         }

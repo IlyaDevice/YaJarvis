@@ -26,6 +26,7 @@ struct Context {
     public: Option<[u8; 32]>,
 }
 struct Hooks {
+    chrome: bool,
     server: [u8; 32],
     short_id: [u8; 8],
     shared: Option<Zeroizing<[u8; 32]>>,
@@ -63,10 +64,18 @@ impl ActiveKeyExchange for Exchange {
     }
 }
 impl tls::reality::ClientHooks for Hooks {
+    fn client_hello(&mut self, hello: &[u8]) -> Result<Vec<u8>, Error> {
+        if self.chrome { crate::chrome::hello(hello) } else { Ok(hello.to_vec()) }
+    }
     fn start_key_exchange(
         &mut self,
         group: &'static dyn SupportedKxGroup,
     ) -> Result<Box<dyn ActiveKeyExchange>, Error> {
+        if self.chrome && group.name() == NamedGroup::X25519MLKEM768 {
+            let exchange = crate::chrome::Exchange::new()?;
+            self.shared = Some(exchange.reality_secret(self.server)?);
+            return Ok(Box::new(exchange));
+        }
         if group.name() != NamedGroup::X25519 {
             return Err(failure());
         }
@@ -202,7 +211,10 @@ pub(crate) fn client(config: &Config) -> Result<tls::ClientConnection, String> {
         public: None,
     }));
     let mut provider = tls::crypto::ring::default_provider();
-    provider.kx_groups = vec![tls::crypto::ring::kx_group::X25519];
+    provider.kx_groups = if config.chrome {
+        vec![&crate::chrome::HYBRID, tls::crypto::ring::kx_group::X25519,
+            tls::crypto::ring::kx_group::SECP256R1, tls::crypto::ring::kx_group::SECP384R1]
+    } else { vec![tls::crypto::ring::kx_group::X25519] };
     let mut settings = tls::ClientConfig::builder_with_provider(Arc::new(provider))
         .with_protocol_versions(&[&tls::version::TLS13])
         .map_err(|_| "Не настроить REALITY")?
@@ -211,8 +223,9 @@ pub(crate) fn client(config: &Config) -> Result<tls::ClientConnection, String> {
         .with_no_client_auth();
     settings.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     settings.resumption = tls::client::Resumption::disabled();
-    settings.cert_decompressors.clear();
+    if !config.chrome { settings.cert_decompressors.clear(); }
     let hooks = Hooks {
+        chrome: config.chrome,
         server: reality.public_key,
         short_id: reality.short_id,
         shared: None,

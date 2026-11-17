@@ -9,10 +9,41 @@ impl PeerConnectionEventHandler for PeerHandler{
 }
 #[tokio::test]
 async fn loopback_call_keeps_thread_and_carries_opus_and_delegations(){
+    call(json!({})).await;
+}
+#[tokio::test]
+async fn vpn_call_carries_signaling_ice_dtls_opus_and_delegations(){
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let vpn=jarvis_vpn::Vpn::new();
+    let network=vpn.request(json!({"link":format!("vless://00112233-4455-6677-8899-aabbccddeeff@{}",listener.local_addr().unwrap())})).await.unwrap();
+    let packets=Arc::new(std::sync::atomic::AtomicUsize::new(0));let count=packets.clone();
+    let proxy=tokio::spawn(async move{
+        let mut tasks=tokio::task::JoinSet::new();
+        loop{tokio::select!{
+            accepted=listener.accept()=>{let (mut io,_)=accepted.unwrap();let count=count.clone();tasks.spawn(async move{
+                let mut prefix=[0;22];io.read_exact(&mut prefix).await.unwrap();assert_eq!(prefix[0],0);assert_eq!(prefix[17],0);
+                let port=u16::from_be_bytes([prefix[19],prefix[20]]);
+                let ip:std::net::IpAddr=match prefix[21]{1=>{let mut ip=[0;4];io.read_exact(&mut ip).await.unwrap();std::net::Ipv4Addr::from(ip).into()},3=>{let mut ip=[0;16];io.read_exact(&mut ip).await.unwrap();std::net::Ipv6Addr::from(ip).into()},2=>{let len=io.read_u8().await.unwrap() as usize;let mut host=vec![0;len];io.read_exact(&mut host).await.unwrap();String::from_utf8(host).unwrap().parse().unwrap()},_=>panic!("address type")};
+                io.write_all(&[0,0]).await.unwrap();
+                if prefix[18]==1 {let mut target=tokio::net::TcpStream::connect((ip,port)).await.unwrap();let _=tokio::io::copy_bidirectional(&mut io,&mut target).await;}
+                else {assert_eq!(prefix[18],2);let socket=tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();socket.connect((ip,port)).await.unwrap();let (mut read,mut write)=tokio::io::split(io);
+                    let send=async{loop{let size=read.read_u16().await? as usize;let mut payload=vec![0;size];read.read_exact(&mut payload).await?;socket.send(&payload).await?;count.fetch_add(1,Ordering::SeqCst);}};
+                    let receive=async{let mut payload=[0;65535];loop{let size=socket.recv(&mut payload).await?;write.write_u16(size as u16).await?;write.write_all(&payload[..size]).await?;}};
+                    let _:std::io::Result<()>=tokio::select!{result=send=>result,result=receive=>result};
+                }
+            });},
+            _=tasks.join_next(),if !tasks.is_empty()=>{},
+        }}
+    });
+    call(network).await;
+    assert!(packets.load(Ordering::SeqCst)>5,"ICE, DTLS and RTP must traverse VLESS UDP");
+    vpn.stop().await;proxy.abort();let _=proxy.await;
+}
+async fn call(network:Value){
     tokio::time::timeout(Duration::from_secs(25),async{
         let (events,event_rx)=tokio::sync::mpsc::channel(128);let mut event_rx=event_rx;
-        let services:Callback=Arc::new(move|method,params|{let events=events.clone();Box::pin(async move{match method.as_str(){
-            "network"=>Ok(json!({})),"auth.get"=>Ok(json!({"access":"test-access","account":"test-account","refresh":"test-refresh","expires":super::super::now()+3600})),
+        let services:Callback=Arc::new(move|method,params|{let events=events.clone();let network=network.clone();Box::pin(async move{match method.as_str(){
+            "network"=>Ok(network),"auth.get"=>Ok(json!({"access":"test-access","account":"test-account","refresh":"test-refresh","expires":super::super::now()+3600})),
             "voice.event"=>{events.send(params).await.map_err(|e|e.to_string())?;Ok(json!(true))},"voice.brain"=>{assert_eq!(params["task"],"test task");Ok(json!("done"))},_=>Err("unexpected service".into()),
         }})});
         let mut provider=ChatGpt::new(services);let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();provider.call_url=format!("http://{}/call",listener.local_addr().unwrap());
@@ -20,6 +51,10 @@ async fn loopback_call_keeps_thread_and_carries_opus_and_delegations(){
         let gathered=Arc::new(tokio::sync::Notify::new());let handler=Arc::new(PeerHandler{gathered:gathered.clone(),channel:channels,audio});
         let mut media=MediaEngine::default();media.register_codec(RTCRtpCodecParameters{rtp_codec:RTCRtpCodec{mime_type:"audio/opus".into(),clock_rate:48000,channels:2,sdp_fmtp_line:"minptime=10;useinbandfec=1".into(),rtcp_feedback:vec![]},payload_type:111,..Default::default()},RtpCodecKind::Audio).unwrap();
         let remote:Arc<dyn PeerConnection>=Arc::new(PeerConnectionBuilder::new().with_media_engine(media).with_handler(handler).with_runtime(Arc::new(webrtc::runtime::TokioRuntime)).with_udp_addrs(vec!["0.0.0.0:0".into()]).with_tcp_addrs(Vec::<String>::new()).build().await.unwrap());
+        let remote_ssrc=0x54455354;
+        let remote_codec=RTCRtpCodec{mime_type:"audio/opus".into(),clock_rate:48000,channels:2,sdp_fmtp_line:"minptime=10;useinbandfec=1".into(),rtcp_feedback:vec![]};
+        let remote_track=Arc::new(TrackLocalStaticSample::new(Instant::now(),MediaStreamTrack::new("peer".into(),"audio".into(),"peer".into(),RtpCodecKind::Audio,vec![RTCRtpEncodingParameters{rtp_coding_parameters:RTCRtpCodingParameters{ssrc:Some(remote_ssrc),..Default::default()},codec:remote_codec,..Default::default()}])).unwrap());
+        remote.add_track(remote_track.clone() as Arc<dyn TrackLocal>).await.unwrap();
         let _guard=Guard(Some(remote.clone()));let pc=remote.clone();
         let server=tokio::spawn(async move{
             let (mut socket,_)=listener.accept().await.unwrap();let mut request=Vec::new();let mut chunk=[0;4096];
@@ -37,6 +72,18 @@ async fn loopback_call_keeps_thread_and_carries_opus_and_delegations(){
         loop{if let Some(DataChannelEvent::OnMessage(message))=channel.poll().await{let result:Value=serde_json::from_slice(&message.data).unwrap();if result["type"]=="delegation.context.append"{assert_eq!(result["content"][0]["text"],"done");break;}}}
         let mut heard=false;while let Some(event)=event_rx.recv().await{if event["kind"]=="user" && event["value"]=="hello"{heard=true;break;}}assert!(heard);
         provider.request("voice.feed",json!({"id":"local-call","pcm":B64.encode(vec![0;6400])})).await.unwrap();let packet=audio_rx.recv().await.unwrap();assert_eq!(opus::Decoder::new().unwrap().decode(Some(&packet),false,5760).unwrap().len(),960);
+        let text="Проверка голоса. ".repeat(40);provider.request("voice.say",json!({"id":"local-call","text":text})).await.unwrap();
+        let mut spoken=String::new();while spoken.len()<text.len(){if let Some(DataChannelEvent::OnMessage(message))=channel.poll().await{let event:Value=serde_json::from_slice(&message.data).unwrap();assert_eq!(event["type"],"session.context.append");assert_eq!(event["channel"],"speakable");let part=event["content"][0]["text"].as_str().unwrap();assert!(part.len()<=500);spoken.push_str(part);}}assert_eq!(spoken,text);
+        // Incoming RTP must stay close to its source clock, including timer jitter.
+        // The old `next = now + duration` accumulated ~1 second of lag in this stream.
+        let started=Instant::now();let frames=90;
+        let send=async{
+            let mut encoder=opus::Encoder::new().unwrap();let mut tick=tokio::time::interval(Duration::from_millis(20));
+            for index in 0..frames{tick.tick().await;let pcm:Vec<i16>=(0..320).map(|sample|(((index*320+sample) as f64*std::f64::consts::TAU*220.0/16000.0).sin()*5000.0) as i16).collect();let packet=encoder.encode(&pcm).unwrap();remote_track.write_sample(remote_ssrc,111,&rtc::media::Sample{data:packet.into(),duration:Duration::from_millis(20),..rtc::media::Sample::new(Instant::now())},&[]).await.unwrap();}
+        };
+        let receive=async{let mut received=0;let mut voiced=false;while received<frames{let event=event_rx.recv().await.unwrap();if event["kind"]=="audio"{received+=1;}if event["kind"]=="heard"{voiced=true;}}assert!(voiced);};
+        tokio::join!(send,receive);
+        assert!(started.elapsed()<Duration::from_millis(frames*20+400),"RTP playout drifted: {:?}",started.elapsed());
         provider.request("voice.close",json!({"id":"local-call"})).await.unwrap();assert!(provider.request("voice.feed",json!({"id":"local-call","pcm":""})).await.is_err());remote.close().await.unwrap();
     }).await.unwrap();
 }

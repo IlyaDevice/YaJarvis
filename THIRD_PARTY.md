@@ -24,5 +24,8 @@ full notice in `LICENSES/Opus-COPYING`) and uses webrtc-rs (MIT OR Apache-2.0).
 The optional Lua runtime uses Lua 5.4 through mlua (MIT).
 The Rust VPN module includes separate REALITY attribution and TLS notices in
 `jarvis/modules/vpn/THIRD-PARTY.md` and `RUSTLS-LICENSE-MIT.txt`.
+Its REALITY TLS fork is vendored with upstream licenses in `jarvis/vendor/reality-tls`;
+the Chrome 133 profile follows uTLS (BSD notice in `jarvis/modules/vpn/UTLS-LICENSE.txt`)
+and uses RustCrypto ML-KEM (MIT OR Apache-2.0).
 
 License texts for bundled fonts, model components and Go dependencies are collected under `LICENSES/`. Release archives include these notices alongside the binaries.

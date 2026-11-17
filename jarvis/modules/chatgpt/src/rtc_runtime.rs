@@ -1,26 +1,28 @@
-//! ICE TCP sockets follow the same authenticated SOCKS route as signaling.
-//! A proxied session cannot create direct UDP or accept incoming TCP media.
+//! ICE sockets follow the same authenticated SOCKS route as signaling.
+//! UDP is enabled only when the VPN explicitly advertises a UDP relay.
 use std::{io,fmt,future::Future,pin::Pin,sync::Arc,net::{SocketAddr,TcpListener,UdpSocket},time::Duration};
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use webrtc::runtime::{Runtime,TokioRuntime,AsyncTcpStream,AsyncTcpListener,AsyncUdpSocket,AsyncInterval,JoinHandle};
 type IoFuture<'a,T>=Pin<Box<dyn Future<Output=io::Result<T>>+Send+'a>>;
 pub struct RoutedRuntime{route:Option<Route>}
-struct Route{address:SocketAddr,user:Vec<u8>,pass:Vec<u8>}
+#[derive(Clone)]
+pub(super) struct Route{pub address:SocketAddr,pub user:Vec<u8>,pub pass:Vec<u8>,pub udp:bool}
 impl fmt::Debug for RoutedRuntime{fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result{f.debug_struct("RoutedRuntime").field("proxied",&self.route.is_some()).finish()}}
 impl RoutedRuntime{
     pub fn new(network:&serde_json::Value)->Result<Self,String>{
         if let Some(error)=network["error"].as_str(){return Err(error.into());}
         let route=if let Some(address)=network["socks"].as_str(){
             let address:SocketAddr=address.parse().map_err(|_|"Неверный SOCKS VPN")?;let user=network["user"].as_str().unwrap_or("").as_bytes().to_vec();let pass=network["pass"].as_str().unwrap_or("").as_bytes().to_vec();
-            if !address.ip().is_loopback() || address.port()==0 || !(1..=255).contains(&user.len()) || !(1..=255).contains(&pass.len()){return Err("Неверный SOCKS VPN".into());}Some(Route{address,user,pass})
+            if !address.ip().is_loopback() || address.port()==0 || !(1..=255).contains(&user.len()) || !(1..=255).contains(&pass.len()){return Err("Неверный SOCKS VPN".into());}Some(Route{address,user,pass,udp:network["udp"].as_bool().unwrap_or(false)})
         }else{None};Ok(Self{route})
     }
     pub fn proxied(&self)->bool{self.route.is_some()}
+    pub fn udp(&self)->bool{self.route.as_ref().is_none_or(|route|route.udp)}
 }
 impl Runtime for RoutedRuntime {
     fn spawn(&self,f:Pin<Box<dyn Future<Output=()>+Send>>)->Box<dyn JoinHandle>{TokioRuntime.spawn(f)}
     fn spawn_reactor(&self,n:usize,f:Pin<Box<dyn Future<Output=()>+Send>>)->Box<dyn JoinHandle>{TokioRuntime.spawn_reactor(n,f)}
-    fn wrap_udp_socket(&self,s:UdpSocket)->io::Result<Arc<dyn AsyncUdpSocket>>{if self.proxied(){Err(io::Error::new(io::ErrorKind::PermissionDenied,"direct UDP disabled for VPN"))}else{TokioRuntime.wrap_udp_socket(s)}}
+    fn wrap_udp_socket(&self,s:UdpSocket)->io::Result<Arc<dyn AsyncUdpSocket>>{match &self.route{Some(route) if route.udp=>Ok(Arc::new(super::rtc_udp::Socket::new(s,route.clone())?)),Some(_)=>Err(io::Error::new(io::ErrorKind::PermissionDenied,"VPN has no UDP relay")),None=>TokioRuntime.wrap_udp_socket(s)}}
     fn wrap_tcp_listener(&self,l:TcpListener)->io::Result<Arc<dyn AsyncTcpListener>>{if self.proxied(){Ok(Arc::new(NoAccept(l)))}else{TokioRuntime.wrap_tcp_listener(l)}}
     fn connect_tcp<'a>(&'a self,remote:SocketAddr)->IoFuture<'a,Arc<dyn AsyncTcpStream>>{
         Box::pin(async move{

@@ -3,6 +3,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const UUID: &str = "00112233-4455-6677-8899-aabbccddeeff";
 mod peer;
 mod vision;
+mod udp;
 
 #[test]
 fn parses_vless_and_rejects_unsupported_or_ambiguous_settings() {
@@ -272,8 +273,8 @@ async fn websocket_and_secure_websocket_keep_target_remote_and_check_host_path()
 }
 
 #[tokio::test]
-async fn socks_rejects_bind_udp_and_unknown_address_types() {
-    for request in [[5, 2, 0, 1], [5, 3, 0, 1], [5, 1, 0, 9]] {
+async fn socks_rejects_bind_and_unknown_address_types() {
+    for request in [[5, 2, 0, 1], [5, 1, 0, 9]] {
         let (mut client, mut server) = tokio::io::duplex(128);
         let task =
             tokio::spawn(async move { protocol::socks_handshake(&mut server, b"u", b"p").await });

@@ -17,7 +17,8 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1"
 x509-parser = { version = "0.18", default-features = false }
 # Connection-scoped REALITY hooks; no global patch to the TLS used by other modules.
-reality-tls = { package = "rustls", git = "https://github.com/cfal/rustls", rev = "f1a23c187330386e9e7f14a21dbae368034dc430", default-features = false, features = ["ring", "std"] }
+reality-tls = { package = "rustls", path = "../../vendor/reality-tls", default-features = false, features = ["ring", "std", "brotli"] }
+ml-kem = { version = "0.2.3", features = ["zeroize", "deterministic"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
@@ -26,3 +27,4 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

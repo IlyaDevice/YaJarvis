@@ -17,6 +17,7 @@ pub(crate) struct Config {
     pub reality: Option<Reality>,
     pub vision: bool,
     pub flow: String,
+    pub chrome: bool,
 }
 pub(crate) struct Reality {
     pub public_key: [u8; 32],
@@ -125,8 +126,12 @@ impl Config {
         } else {
             None
         };
-        if tls && !matches!(get("fp"), "" | "rustls") {
-            return Err("Rust VPN пока не поддерживает маскировку TLS fingerprint".into());
+        let chrome = matches!(get("fp"), "chrome" | "chrome133");
+        if tls && !matches!(get("fp"), "" | "rustls" | "chrome" | "chrome133") {
+            return Err("Этот TLS fingerprint ещё не перенесён в Rust VPN".into());
+        }
+        if chrome && reality.is_none() {
+            return Err("Chrome fingerprint пока поддерживается только с REALITY".into());
         }
         if !matches!(get("headerType"), "" | "none")
             || (!tls && (!get("pbk").is_empty() || !get("sid").is_empty()))
@@ -137,7 +142,10 @@ impl Config {
             return Err("Этот транспорт VLESS ещё не перенесён в Rust VPN".into());
         }
         // WebSocket needs HTTP/1.1; a raw byte tunnel must not negotiate an outer HTTP/2 session.
-        if !matches!(get("alpn"), "" | "http/1.1") {
+        if chrome && !matches!(get("alpn"), "" | "h2,http/1.1") {
+            return Err("Chrome 133 REALITY использует ALPN h2,http/1.1".into());
+        }
+        if !chrome && !matches!(get("alpn"), "" | "http/1.1") {
             return Err("Rust VPN пока поддерживает только ALPN http/1.1".into());
         }
         let server_name = [get("sni"), get("peer"), host.as_str()]
@@ -207,11 +215,12 @@ impl Config {
             reality,
             vision,
             flow: get("flow").to_string(),
+            chrome,
         })
     }
 
     pub fn info(&self) -> Value {
         json!({"host":self.host,"port":self.port,"name":self.name,
-            "network":if self.websocket {"ws"} else {"tcp"},"security":if self.reality.is_some() {"reality"} else if self.tls {"tls"} else {"none"},"flow":self.flow,"fingerprint":if self.tls {"rustls"} else {""}})
+            "network":if self.websocket {"ws"} else {"tcp"},"security":if self.reality.is_some() {"reality"} else if self.tls {"tls"} else {"none"},"flow":self.flow,"fingerprint":if self.chrome {"chrome133"} else if self.tls {"rustls"} else {""}})
     }
 }
