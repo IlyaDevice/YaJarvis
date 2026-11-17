@@ -35,6 +35,8 @@ pub struct Web {
     pub store: Store,
     pub plugins: Arc<Host>,
     pub proxy: Arc<Proxy>,
+    pub mic: Arc<crate::audio::Mic>,
+    pub wake: Arc<crate::wake::Listener>,
     pub data_dir: PathBuf,
     pub started: Instant,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
@@ -44,8 +46,8 @@ pub struct Web {
 pub type App = Arc<Web>;
 
 impl Web {
-    pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf) -> App {
-        Arc::new(Web { store, plugins, proxy, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+    pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, mic: Arc<crate::audio::Mic>, wake: Arc<crate::wake::Listener>) -> App {
+        Arc::new(Web { store, plugins, proxy, mic, wake, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 

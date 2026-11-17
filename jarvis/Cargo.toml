@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core"]
+members = ["core", "dsp"]
 
 [workspace.package]
 version = "0.9.71"
@@ -21,3 +21,7 @@ codegen-units = 1
 strip = true
 debug = false
 incremental = false
+
+# Звук и нейросети слова считаются 100 раз в секунду: тут скорость важнее размера (векторизация NEON).
+[profile.release.package.jarvis-dsp]
+opt-level = 3

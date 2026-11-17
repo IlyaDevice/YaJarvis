@@ -2,12 +2,14 @@
 //! Ядро на Rust; модули (голосовые движки, YouTube, дом…) вшиваются при сборке, лёгкие плагины — на Lua.
 #![recursion_limit = "256"]
 
+mod audio;
 mod hardware;
 mod jlog;
 mod net;
 mod plugins;
 mod settings;
 mod vpn;
+mod wake;
 mod web;
 
 use serde_json::{Value, json};
@@ -62,6 +64,17 @@ fn main() {
     }
     jlog::init();
     let f = flags();
+    // проверка слова на колонке без микрофона: jarvis wake-check -data /data/opt/jarvisd файл.wav…
+    if std::env::args().nth(1).as_deref() == Some("wake-check") {
+        let store = settings::Store::open(f.data.join("settings.json")).expect("настройки");
+        for a in std::env::args().skip(2).filter(|a| a.ends_with(".wav") || a.ends_with(".raw")) {
+            print!("{a}: ");
+            if let Err(e) = wake::check_file(&f.data, std::path::Path::new(&a), &store) {
+                println!("{e}");
+            }
+        }
+        return;
+    }
     log::info!("jarvis {} (ядро на Rust)", version());
     let upgrade_from = plugins::catalog::detect_upgrade(&f.data); // до Store::open: он создаёт settings.json
     let store = match settings::Store::open(f.data.join("settings.json")) {
@@ -72,7 +85,6 @@ fn main() {
         }
     };
     jlog::set_timezone(&store.with(|s| s.timezone.clone()));
-    let _ = &f.mic;
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio");
     rt.block_on(run(f, store, upgrade_from));
 }
@@ -155,7 +167,22 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
             }
         });
     }
-    let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone());
+    // микрофон и слово «Джарвис»
+    let mic = {
+        let st = store.clone();
+        audio::Mic::new(f.mic.clone(), Box::new(move || st.with(|s| s.mic_gain_db)))
+    };
+    if cfg!(unix) {
+        mic.clone().run();
+    }
+    let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<f32>(1);
+    let listener = wake::Listener::start(&f.data, &store, mic.clone(), wake_tx);
+    tokio::spawn(async move {
+        while let Some(_p) = wake_rx.recv().await {
+            // движок разговора переносится следующим шагом: пока оклик только в журнале
+        }
+    });
+    let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone(), mic, listener);
     if let Err(e) = web::serve(app, &f.listen).await {
         log::info!("веб-настройки: {e}");
         host.stop_all().await;

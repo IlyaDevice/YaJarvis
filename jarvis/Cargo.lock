@@ -713,6 +713,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hmac",
+ "jarvis-dsp",
  "jiff",
  "libc",
  "log",
@@ -722,6 +723,14 @@ dependencies = [
  "sha2",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "jarvis-dsp"
+version = "0.9.71"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
