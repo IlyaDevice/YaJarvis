@@ -49,9 +49,9 @@ impl Classic {
             if crate::fastcmd::is_stop_all(text){if let Some(control)=&context.tools.music_ctl{control("стоп".into()).await;}}
             self.dialog.annotate("стоп","");self.dialog.finish_turn("");self.close();return Ok(());
         }
-        if let Some(control)=&context.tools.music_ctl {
+        if let Some(control)=&context.tools.music_fast {
             let answer=control(text.to_string()).await;
-            if !answer.is_empty(){self.dialog.on_bot(&answer);self.speak(context,&answer,generation).await?;self.dialog.finish_turn("");return Ok(());}
+            if let Some(answer)=answer{self.dialog.on_bot(&answer);self.speak(context,&answer,generation).await?;self.dialog.finish_turn("");return Ok(());}
         }
         if let Some(command)=crate::fastcmd::alice_skill_for(text,context.settings.use_home("yandexmusic")) {
             tokio::task::spawn_blocking(move||crate::alice::text(&command,false)).await.map_err(|e|e.to_string())??;

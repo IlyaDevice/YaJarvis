@@ -290,6 +290,7 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
             Box::pin(async move { music.control(&host, &text).await.unwrap_or_else(|| "Сейчас музыка не играет или команда не распознана.".into()) })
         })
     });
+    tools.music_fast=Some({let (music,host)=(music.clone(),host.clone());Arc::new(move|text|{let (music,host)=(music.clone(),host.clone());Box::pin(async move{music.control(&host,&text).await})})});
     let tools = Arc::new(tools);
     let engine = engine::Engine::new(
         tokio::runtime::Handle::current(),

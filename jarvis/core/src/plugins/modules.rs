@@ -237,6 +237,10 @@ mod tests {
 impl Module {
     #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
     pub async fn cloud_socket(&self,key:&str)->Result<(jarvis_cloud::Socket,tokio::sync::watch::Receiver<bool>),String>{
+        self.cloud_socket_config(key,None).await
+    }
+    #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
+    pub async fn cloud_socket_config(&self,key:&str,session:Option<Value>)->Result<(jarvis_cloud::Socket,tokio::sync::watch::Receiver<bool>),String>{
         if self.stopped.load(Ordering::SeqCst){return Err("модуль остановлен".into());}
         let mut cancel=self.cancel.subscribe();
         let Implementation::Cloud(provider)=&self.implementation else{return Err("Модуль не является голосовым провайдером".into());};
@@ -244,7 +248,7 @@ impl Module {
         let network=(host.hooks.request)(provider.id().into(),"network".into(),serde_json::json!({})).await?;
         let socket=tokio::select!{
             _=cancel.changed()=>return Err("модуль остановлен".into()),
-            result=tokio::time::timeout(Duration::from_secs(12),provider.socket(key,&network))=>result.map_err(|_|"Голосовое подключение не ответило".to_string())??,
+            result=tokio::time::timeout(Duration::from_secs(20),provider.socket_for(key,&network,session.as_ref()))=>result.map_err(|_|"Голосовое подключение не ответило".to_string())??,
         };
         Ok((socket,cancel))
     }

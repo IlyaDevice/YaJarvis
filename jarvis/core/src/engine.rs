@@ -104,7 +104,7 @@ pub fn key_missing(s: &Settings, engine: &str) -> String {
         "" | "live" | "openai" => if !cfg!(feature="openai"){"Модуль OpenAI не включён в сборку".into()}else if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
         "gemini" => if !cfg!(feature="gemini"){"Модуль Gemini не включён в сборку".into()}else if s.gemini_key.is_empty(){"Добавьте ключ Gemini в «Подключениях»".into()}else{String::new()},
         "grok" => if !cfg!(feature="grok"){"Модуль Grok не включён в сборку".into()}else if s.grok_key.is_empty(){"Добавьте ключ Grok в «Подключениях»".into()}else{String::new()},
-        "elevenlabs"=>if !cfg!(feature="elevenlabs"){"Модуль ElevenLabs не включён в сборку".into()}else if s.elevenlabs_key.is_empty(){"Добавьте ключ ElevenLabs в «Подключениях»".into()}else{String::new()},
+        "elevenlabs"|"eleven_realtime"=>if !cfg!(feature="elevenlabs"){"Модуль ElevenLabs не включён в сборку".into()}else if s.elevenlabs_key.is_empty(){"Добавьте ключ ElevenLabs в «Подключениях»".into()}else{String::new()},
         other => format!("движок «{other}» ещё не перенесён в новое ядро — выберите ассистента на ChatGPT"),
     }
 }
@@ -409,7 +409,7 @@ impl Engine {
         #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
         if p.is_classic(){return crate::classic_voice::Classic::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));}
         #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
-        if ["","live","openai","gemini","grok"].contains(&p.engine.as_str()) {
+        if ["","live","openai","gemini","grok","eleven_realtime"].contains(&p.engine.as_str()) {
             return crate::cloud_voice::Voice::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));
         }
         chatgpt::ChatGptSession::open(
@@ -555,6 +555,7 @@ impl Engine {
                 }
             }
             if x.interrupted() {
+                while out.try_recv().is_ok(){}
                 self.player.stop(true);
                 speaking = false;
                 self.leds.set(Mode::Listening);

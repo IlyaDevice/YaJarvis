@@ -15,6 +15,7 @@ fn def(name: &str) -> Value {
 }
 
 pub type MusicFn = Arc<dyn Fn(String) -> crate::plugins::BoxFut<String> + Send + Sync>;
+pub type MusicFastFn=Arc<dyn Fn(String)->crate::plugins::BoxFut<Option<String>>+Send+Sync>;
 
 pub struct Tools {
     pub host: Arc<Host>,
@@ -23,6 +24,7 @@ pub struct Tools {
     pub music: Option<MusicFn>,
     /// Управлять тем, что играет с YouTube.
     pub music_ctl: Option<MusicFn>,
+    pub music_fast:Option<MusicFastFn>,
     /// Добавить в очередь YouTube.
     pub music_queue: Option<MusicFn>,
     /// Общая память: «вспомни», «забудь/запомни».
@@ -47,7 +49,7 @@ fn as_str(v: &Value) -> String {
 
 impl Tools {
     pub fn new(host: Arc<Host>, store: Store) -> Tools {
-        Tools { host, store, music: None, music_ctl: None, music_queue: None, memory: None }
+        Tools { host, store, music: None, music_ctl: None, music_fast:None, music_queue: None, memory: None }
     }
     /// Каталог из контекста определяет доступность инструментов уже в первой реплике.
     pub async fn prepare(&self)->(String,Vec<Value>) {

@@ -18,19 +18,29 @@ impl Provider {
     }
     pub fn id(&self)->&'static str{self.id}
     pub async fn socket(&self,key:&str,network:&Value)->Result<Socket,String>{
+        self.socket_for(key,network,None).await
+    }
+    pub async fn socket_for(&self,key:&str,network:&Value,session:Option<&Value>)->Result<Socket,String>{
         use tokio_tungstenite::tungstenite::{handshake::{client::generate_key,derive_accept_key},protocol::{Role,WebSocketConfig}};
         if key.is_empty() || key.len()>4096 || key.bytes().any(|b|b<33 || b>126){return Err("Неверный API-ключ".into());}
+        let secret=if self.id=="elevenlabs"{
+            let session=session.filter(|s|s.is_object()).ok_or("Нужны настройки ElevenLabs Realtime")?;
+            let value=self.request(json!({"key":key,"op":"realtime.session","body":{"session":session,"expires_after":{"seconds":600}}}),network.clone()).await?;
+            Some(value["value"].as_str().filter(|s|!s.is_empty()&&s.len()<=4096&&s.bytes().all(|b|(33..=126).contains(&b))).ok_or("ElevenLabs не выдал вход для сессии")?.to_string())
+        }else{None};
         let path=match self.id{
             #[cfg(feature="openai")] "openai"=>"v1/live/sessions",
             #[cfg(feature="grok")] "grok"=>"v1/realtime",
             #[cfg(feature="gemini")] "gemini"=>"ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+            #[cfg(feature="elevenlabs")] "elevenlabs"=>"v1/convai/realtime",
             _=>return Err("Нет голосового WebSocket у этого провайдера".into()),
         };
         let mut url=self.base.join(path).map_err(|_|"Неверный адрес провайдера")?;
         if self.id=="gemini"{url.query_pairs_mut().append_pair("key",key);}
         let nonce=generate_key();let expected=derive_accept_key(nonce.as_bytes());
         let request=self.client(network)?.get(url).version(reqwest::Version::HTTP_11).header("Connection","Upgrade").header("Upgrade","websocket").header("Sec-WebSocket-Version","13").header("Sec-WebSocket-Key",nonce);
-        let response=self.authenticate(request,key).send().await.map_err(|_|"Не подключиться к голосовому провайдеру")?;
+        let request=if let Some(secret)=secret{request.bearer_auth(secret)}else{self.authenticate(request,key)};
+        let response=request.send().await.map_err(|_|"Не подключиться к голосовому провайдеру")?;
         if response.status()!=101 || response.headers().get("Sec-WebSocket-Accept").and_then(|h|h.to_str().ok())!=Some(expected.as_str()) || response.headers().contains_key("Sec-WebSocket-Extensions") || response.headers().contains_key("Sec-WebSocket-Protocol"){
             return Err(format!("Голосовой провайдер не подтвердил WebSocket ({})",response.status().as_u16()));
         }
@@ -62,11 +72,14 @@ impl Provider {
         if key.is_empty() || key.len()>4096 || key.bytes().any(|b|b<33 || b>126){return Err("Неверный API-ключ".into());}
         let client=self.client(&network)?;
         let op=params["op"].as_str().unwrap_or("");
-        if matches!(op,"text"|"tts") && !params["body"].is_object(){return Err("Нужен объект body".into());}
+        if matches!(op,"text"|"tts"|"realtime.session") && !params["body"].is_object(){return Err("Нужен объект body".into());}
+        if op=="realtime.session" && params["body"].to_string().len()>128*1024{return Err("Слишком большие настройки сессии".into());}
         let model=params["model"].as_str().unwrap_or("");
         let segment=|value:&str| !value.is_empty() && value.len()<=180 && value.bytes().all(|b|b.is_ascii_alphanumeric()||b"-_.".contains(&b)) && !matches!(value,"."|"..");
         let mut binary=false;
         let request=match (self.id,op) {
+            #[cfg(feature="elevenlabs")]
+            ("elevenlabs","realtime.session")=>client.post(self.base.join("v1/convai/realtime/client_secrets").unwrap()).json(&params["body"]),
             (_,"settings.validate"|"models")=>{
                 let path=match self.id {"gemini"=>"v1beta/models","elevenlabs"=>"v1/user/subscription",_=>"v1/models"};
                 client.get(self.base.join(path).map_err(|e|e.to_string())?)
@@ -129,6 +142,26 @@ impl Provider {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    #[cfg(feature="elevenlabs")]
+    #[tokio::test]
+    async fn eleven_mints_session_then_uses_only_ephemeral_bearer_for_websocket(){
+        use futures_util::{SinkExt,StreamExt};
+        tokio::time::timeout(Duration::from_secs(5),async{
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let mut provider=Provider::new("elevenlabs").unwrap();provider.base=format!("http://{}/",listener.local_addr().unwrap()).parse().unwrap();
+            let config=json!({"type":"realtime","instructions":"test","tools":[],"audio":{"input":{"format":{"rate":24000}}}});
+            assert!(provider.socket_for("private-api-key",&json!({"error":"VPN blocked"}),Some(&config)).await.unwrap_err().contains("VPN blocked"));
+            let server=tokio::spawn(async move{
+                let (mut socket,_)=listener.accept().await.unwrap();let mut bytes=vec![];while !bytes.ends_with(b"\r\n\r\n"){bytes.push(socket.read_u8().await.unwrap());assert!(bytes.len()<8192);}
+                let header=String::from_utf8_lossy(&bytes).to_lowercase();assert!(header.starts_with("post /v1/convai/realtime/client_secrets "));assert!(header.contains("xi-api-key: private-api-key"));
+                let length:usize=header.lines().find_map(|l|l.strip_prefix("content-length:").map(str::trim)).unwrap().parse().unwrap();let mut body=vec![0;length];socket.read_exact(&mut body).await.unwrap();let body:Value=serde_json::from_slice(&body).unwrap();assert_eq!(body["session"]["instructions"],"test");assert_eq!(body["expires_after"]["seconds"],600);
+                let body=json!({"value":"one-use-secret"}).to_string();socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();drop(socket);
+                let (socket,_)=listener.accept().await.unwrap();let mut socket=tokio_tungstenite::accept_hdr_async(socket,|request:&tokio_tungstenite::tungstenite::handshake::server::Request,response|{assert_eq!(request.uri().path(),"/v1/convai/realtime");assert_eq!(request.headers()["authorization"],"Bearer one-use-secret");assert!(!request.headers().contains_key("xi-api-key"));Ok(response)}).await.unwrap();
+                socket.send(json!({"type":"session.created"}).to_string().into()).await.unwrap();let packet=socket.next().await.unwrap().unwrap();let packet:Value=serde_json::from_slice(&packet.into_data()).unwrap();assert_eq!(packet["type"],"input_audio_buffer.append");socket.send(json!({"type":"response.audio.delta","delta":"AAA="}).to_string().into()).await.unwrap();
+            });
+            let mut socket=provider.socket_for("private-api-key",&json!({}),Some(&config)).await.unwrap();assert_eq!(serde_json::from_slice::<Value>(&socket.next().await.unwrap().unwrap().into_data()).unwrap()["type"],"session.created");
+            socket.send(json!({"type":"input_audio_buffer.append","audio":"AAA="}).to_string().into()).await.unwrap();let reply:Value=serde_json::from_slice(&socket.next().await.unwrap().unwrap().into_data()).unwrap();assert_eq!(reply["delta"],"AAA=");server.await.unwrap();
+        }).await.unwrap();
+    }
     #[tokio::test]
     async fn reuses_http_connection_without_reusing_request_credentials(){
         tokio::time::timeout(Duration::from_secs(5),async{

@@ -179,6 +179,7 @@ impl Dialog {
     pub fn muted(&self) -> bool {
         self.st.lock().unwrap().muted
     }
+    pub fn unmute(&self){self.st.lock().unwrap().muted=false;}
 
     /// Пометить текущую реплику в журнале (быстрая команда, стоп).
     pub fn annotate(&self, route: &str, answer: &str) {

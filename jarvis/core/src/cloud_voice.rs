@@ -12,7 +12,7 @@ pub struct Voice {
 }
 impl Voice {
     pub fn open(rt:&tokio::runtime::Handle,host:Arc<Host>,tools:Arc<Tools>,journal:Arc<Journal>,settings:Settings,profile:Profile,instructions:String)->Arc<Self>{
-        let id=match profile.engine.as_str(){""|"live"=>"openai",id=>id}.to_string();
+        let id=match profile.engine.as_str(){""|"live"=>"openai","eleven_realtime"=>"elevenlabs",id=>id}.to_string();
         let (tx,rx)=sync_channel(128);let (ready,ready_rx)=sync_channel(1);let (commands,command_rx)=tokio::sync::mpsc::channel(16);
         let me=Arc::new(Self{id:id.clone(),dialog:Dialog::new(journal,&id,&profile.live_model),rt:rt.clone(),pending:Mutex::default(),output:Mutex::new(Some(tx)),audio:Mutex::new(Some(rx)),ready:Mutex::new(Some(ready_rx)),commands,cancelled:AtomicBool::new(false),close:tokio::sync::Notify::new(),interrupted:AtomicBool::new(false)});
         let run=me.clone();rt.spawn(async move{
@@ -23,8 +23,11 @@ impl Voice {
     }
     async fn run(&self,host:Arc<Host>,tools:Arc<Tools>,settings:Settings,p:Profile,instructions:String,ready:SyncSender<Result<(),String>>,mut commands:tokio::sync::mpsc::Receiver<String>)->Result<(),String>{
         let Runtime::Module(module)=host.provider(&self.id)?else{return Err("Выбранный голосовой провайдер должен быть Rust-модулем".into());};
-        let key=match self.id.as_str(){"openai"=>&settings.openai_key,"gemini"=>&settings.gemini_key,"grok"=>&settings.grok_key,_=>return Err("Этот движок требует классический режим".into())};
-        let ((context,defs),(mut socket,mut stop))=tokio::try_join!(async{Ok::<_,String>(tools.prepare().await)},module.cloud_socket(key))?;
+        let key=match self.id.as_str(){"openai"=>&settings.openai_key,"gemini"=>&settings.gemini_key,"grok"=>&settings.grok_key,"elevenlabs"=>&settings.elevenlabs_key,_=>return Err("Этот движок требует классический режим".into())};
+        let ((context,defs),(mut socket,mut stop))=if self.id=="elevenlabs"{
+            let (context,defs)=tools.prepare().await;let session=eleven_session(&p,&format!("{instructions}\n{context}"),&defs);
+            let socket=module.cloud_socket_config(key,Some(session)).await?;((context,defs),socket)
+        }else{tokio::try_join!(async{Ok::<_,String>(tools.prepare().await)},module.cloud_socket(key))?};
         let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
         let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
         let start=match self.id.as_str(){
@@ -32,9 +35,10 @@ impl Voice {
             "grok"=>json!({"type":"session.update","session":{"instructions":format!("{instructions}\n{context}"),"voice":voice,"turn_detection":{"type":"server_vad"},"audio":{"input":{"format":{"type":"audio/pcm","rate":24000}},"output":{"format":{"type":"audio/pcm","rate":24000}}},"tools":defs}}),
             _=>{let mut backend=defs.clone();if p.web_search{backend.push(json!({"type":"web_search"}));}json!({"type":"session.start","session":{"model":model,"instructions":instructions,"audio":{"format":{"type":"audio/pcm","rate":16000},"output":{"voice":voice}},"delegation":{"type":"responses","responses":{"model":if p.backend_model.is_empty(){crate::settings::BACKEND_MODELS[0]}else{&p.backend_model},"instructions":format!("{}\n{context}",crate::rules::BACKEND_RULES),"tools":backend,"tool_choice":"auto","reasoning":{"effort":crate::chatgpt::effort(&p.backend_model,&p.effort)}}}}})},
         };
-        send(&mut socket,start).await?;
+        if self.id!="elevenlabs"{send(&mut socket,start).await?;}
         let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(100));
         let mut handles=std::collections::HashMap::<String,tokio::task::AbortHandle>::new();let mut seen=std::collections::HashSet::new();
+        let mut pending_calls=Vec::<Value>::new();
         let mut up=jarvis_dsp::audio::Upsampler::new(3);let mut phase=0;let mut speaking=false;
         loop {
             tokio::select!{
@@ -44,17 +48,17 @@ impl Voice {
                     self.dialog.working(-1);
                     let value=match result.ok_or("Вызов инструмента завершился")? {Ok(value)=>value,Err(e) if e.is_cancelled()=>continue,Err(e)=>return Err(e.to_string())};
                     let id=value.pointer("/toolResponse/functionResponses/0/id").or_else(||value.pointer("/item/call_id")).and_then(Value::as_str).unwrap_or("");handles.remove(id);
-                    send(&mut socket,value).await?;if self.id!="gemini"{send(&mut socket,json!({"type":"response.create"})).await?;}
+                    send(&mut socket,value).await?;if self.id!="gemini" && (self.id!="elevenlabs" || tasks.is_empty()){send(&mut socket,json!({"type":"response.create"})).await?;}
                 },
                 Some(text)=commands.recv(),if started=>{
-                    let value=match self.id.as_str(){"gemini"=>json!({"clientContent":{"turns":[{"role":"user","parts":[{"text":format!("Произнеси дословно: {text}")}]}],"turnComplete":true}}),"grok"=>json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Произнеси дословно: {text}")}]}}),_=>json!({"type":"session.commentary.append","delegation_id":null,"content":text})};send(&mut socket,value).await?;
-                    if self.id=="grok"{send(&mut socket,json!({"type":"response.create"})).await?;}
+                    let value=match self.id.as_str(){"gemini"=>json!({"clientContent":{"turns":[{"role":"user","parts":[{"text":format!("Произнеси дословно: {text}")}]}],"turnComplete":true}}),"grok"|"elevenlabs"=>json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Произнеси дословно: {text}")}]}}),_=>json!({"type":"session.commentary.append","delegation_id":null,"content":text})};send(&mut socket,value).await?;
+                    if matches!(self.id.as_str(),"grok"|"elevenlabs"){send(&mut socket,json!({"type":"response.create"})).await?;}
                 },
                 _=interval.tick(),if started=>{
                     let mut pcm=take_mic(&mut self.pending.lock().unwrap(),4800);if pcm.is_empty(){pcm.resize(1600,0);}
-                    if self.id=="grok"{let input=up.run(&pcm);pcm=input.iter().skip(phase).step_by(2).copied().collect();phase=(phase+input.len())%2;}
+                    if matches!(self.id.as_str(),"grok"|"elevenlabs"){let input=up.run(&pcm);pcm=input.iter().skip(phase).step_by(2).copied().collect();phase=(phase+input.len())%2;}
                     let data=B64.encode(pcm.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>());
-                    let value=match self.id.as_str(){"gemini"=>json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":data}}}),"grok"=>json!({"type":"input_audio_buffer.append","audio":data}),_=>json!({"type":"session.input_audio.append","audio":data})};send(&mut socket,value).await?;
+                    let value=match self.id.as_str(){"gemini"=>json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":data}}}),"grok"|"elevenlabs"=>json!({"type":"input_audio_buffer.append","audio":data}),_=>json!({"type":"session.input_audio.append","audio":data})};send(&mut socket,value).await?;
                 },
                 message=socket.next()=>{
                     let Some(message)=message else{return Ok(());};let message=message.map_err(|_|"Обрыв голосового соединения")?;
@@ -62,11 +66,11 @@ impl Voice {
                     let event:Value=serde_json::from_slice(&message.into_data()).map_err(|_|"Неверное голосовое событие")?;
                     for id in event.pointer("/toolCallCancellation/ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str){if let Some(handle)=handles.remove(id){handle.abort();}}
                     let kind=event["type"].as_str().unwrap_or("");
-                    if event.get("setupComplete").is_some() || ["session.started","session.updated"].contains(&kind){if !started{started=true;let _=ready.try_send(Ok(()));}continue;}
-                    if kind=="error" || event.get("error").is_some(){return Err("Провайдер отклонил голосовую сессию".into());}
+                    if event.get("setupComplete").is_some() || ["session.started","session.updated","session.created"].contains(&kind){if !started{started=true;let _=ready.try_send(Ok(()));}continue;}
+                    if kind=="error" || event.get("error").is_some(){let message=event.pointer("/error/message").and_then(Value::as_str).unwrap_or("Провайдер отклонил голосовую сессию");return Err(message.replace(key,"***").chars().take(240).collect());}
                     if ["session.closed"].contains(&kind){return Ok(());}
-                    if kind=="input_audio_buffer.speech_started" || event.pointer("/serverContent/interrupted").and_then(Value::as_bool)==Some(true){self.interrupted.store(true,Ordering::SeqCst);speaking=false;}
-                    if kind=="session.input_transcript.delta" || kind=="conversation.item.input_audio_transcription.completed"{self.dialog.on_user(event[if kind.ends_with("completed"){"transcript"}else{"delta"}].as_str().unwrap_or(""));}
+                    if kind=="input_audio_buffer.speech_started" || event.pointer("/serverContent/interrupted").and_then(Value::as_bool)==Some(true){self.dialog.mute();self.interrupted.store(true,Ordering::SeqCst);speaking=false;}
+                    if kind=="session.input_transcript.delta" || kind=="conversation.item.input_audio_transcription.completed"{self.dialog.on_user(event[if kind.ends_with("completed"){"transcript"}else{"delta"}].as_str().unwrap_or(""));if kind.ends_with("completed"){self.dialog.unmute();}}
                     if ["session.output_transcript.delta","response.audio_transcript.delta","response.output_audio_transcript.delta"].contains(&kind){self.dialog.on_bot(event["delta"].as_str().unwrap_or(""));}
                     if ["session.output_audio.delta","response.audio.delta","response.output_audio.delta"].contains(&kind){self.audio(event["delta"].as_str().unwrap_or(""))?;speaking=true;}
                     if let Some(content)=event.get("serverContent"){
@@ -78,7 +82,11 @@ impl Voice {
                     if kind=="response.event"{let inner=event["event"]["type"].as_str().unwrap_or("");if ["response.completed","response.failed","response.cancelled","response.incomplete"].contains(&inner){self.dialog.working(-1);}}
                     let mut calls=vec![];
                     if kind=="response.event" && event["event"]["type"]=="response.output_item.done" && event["event"]["item"]["type"]=="function_call"{calls.push(event["event"]["item"].clone());}
-                    if kind=="response.function_call_arguments.done"{calls.push(event.clone());}
+                    if kind=="response.function_call_arguments.done"{
+                        if self.id=="elevenlabs"{if pending_calls.len()>=32{return Err("Слишком много вызовов инструментов".into());}if !pending_calls.iter().any(|c|c["call_id"]==event["call_id"]){pending_calls.push(event.clone());}}
+                        else{calls.push(event.clone());}
+                    }
+                    if self.id=="elevenlabs" && kind=="response.done"{calls=std::mem::take(&mut pending_calls);}
                     calls.extend(event.pointer("/toolCall/functionCalls").and_then(Value::as_array).cloned().unwrap_or_default());
                     for call in calls {
                         if tasks.len()>=16{return Err("Слишком много вызовов инструментов".into());}
@@ -105,10 +113,21 @@ impl Voice {
         if let Some(tx)=self.output.lock().unwrap().as_ref(){for bytes in bytes.chunks(2400){let pcm=bytes.chunks_exact(2).map(|b|i16::from_le_bytes([b[0],b[1]])).collect();tx.try_send(pcm).map_err(|_|"Переполнен буфер голоса")?;}}Ok(())
     }
 }
+fn eleven_session(profile:&Profile,instructions:&str,tools:&[Value])->Value{
+    let model=match profile.live_model.as_str(){"eleven_realtime_v1_max"=>"eleven_realtime_v1_max",_=>"eleven_realtime_v1_mini"};
+    let voice=if profile.tts_voice.is_empty(){"brian"}else{&profile.tts_voice};
+    json!({"type":"realtime","model":model,"instructions":instructions,"output_modalities":["audio"],"tools":tools,"max_duration_seconds":600,
+        "audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"language":"ru"},"turn_detection":{"type":"semantic_vad","eagerness":"medium","create_response":true,"interrupt_response":true}},"output":{"format":{"type":"audio/pcm"},"voice":voice}}})
+}
+#[cfg(test)]mod tests{
+    use super::*;
+    #[test]fn eleven_config_preserves_voice_instructions_and_tools(){let p=Profile{live_model:"eleven_realtime_v1_max".into(),tts_voice:"custom-voice".into(),..Default::default()};let config=eleven_session(&p,"Jarvis",&[json!({"type":"function","name":"test"})]);assert_eq!(config["model"],p.live_model);assert_eq!(config["audio"]["output"]["voice"],p.tts_voice);assert_eq!(config["audio"]["input"]["format"]["rate"],24000);assert_eq!(config["tools"][0]["name"],"test");assert_eq!(config["instructions"],"Jarvis");}
+}
 async fn send(socket:&mut jarvis_cloud::Socket,value:Value)->Result<(),String>{
     tokio::time::timeout(Duration::from_secs(5),socket.send(value.to_string().into())).await.map_err(|_|"Голосовое соединение не принимает данные")?.map_err(|_|"Обрыв голосового соединения".into())
 }
 impl Session for Voice {
+    fn out_boost(&self)->f64{if self.id=="elevenlabs"{0.35}else{1.0}}
     fn feed(&self,pcm:&[i16]){queue_mic(&mut self.pending.lock().unwrap(),pcm);}
     fn take_audio(&self)->Option<Receiver<Vec<i16>>>{self.audio.lock().unwrap().take()}
     fn rate(&self)->usize{if self.id=="openai"{16000}else{24000}}
