@@ -24,8 +24,7 @@ impl Voice {
     async fn run(&self,host:Arc<Host>,tools:Arc<Tools>,settings:Settings,p:Profile,instructions:String,ready:SyncSender<Result<(),String>>,mut commands:tokio::sync::mpsc::Receiver<String>)->Result<(),String>{
         let Runtime::Module(module)=host.provider(&self.id)?else{return Err("Выбранный голосовой провайдер должен быть Rust-модулем".into());};
         let key=match self.id.as_str(){"openai"=>&settings.openai_key,"gemini"=>&settings.gemini_key,"grok"=>&settings.grok_key,_=>return Err("Этот движок требует классический режим".into())};
-        let (context,defs)=tools.prepare().await;
-        let (mut socket,mut stop)=module.cloud_socket(key).await?;
+        let ((context,defs),(mut socket,mut stop))=tokio::try_join!(async{Ok::<_,String>(tools.prepare().await)},module.cloud_socket(key))?;
         let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
         let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
         let start=match self.id.as_str(){

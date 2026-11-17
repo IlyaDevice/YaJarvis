@@ -240,9 +240,26 @@ pub fn take_mic(pending: &mut Vec<i16>, limit: usize) -> Vec<i16> {
     pending.drain(..n).collect()
 }
 
+/// Catch up only across sustained background silence, keeping at least 300 ms.
+/// Quiet speech on the station can peak at 150..700; never discard those frames.
+pub fn take_mic_caught_up(pending:&mut Vec<i16>,limit:usize)->Vec<i16>{
+    const FRAME:usize=320;const QUIET:usize=15;
+    let mut skipped=0;
+    while pending.len().saturating_sub(skipped)>=(QUIET+1)*FRAME
+        && pending[skipped..skipped+QUIET*FRAME].iter().all(|v|v.unsigned_abs()<=140){skipped+=FRAME;}
+    if skipped>0{pending.drain(..skipped);}
+    take_mic(pending,limit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]fn mic_catchup_keeps_soft_speech_and_the_end_of_a_pause(){
+        let mut pcm=vec![0;16000*3];pcm.extend(vec![300;640]);let frame=take_mic_caught_up(&mut pcm,4800);
+        assert_eq!(frame.len(),4800);assert_eq!(frame.iter().filter(|v|**v==300).count(),320);assert_eq!(pcm,vec![300;320]);
+        let speech=vec![150;16000];let mut queue=speech.clone();assert_eq!(take_mic_caught_up(&mut queue,960),speech[..960]);assert_eq!(queue,speech[960..]);
+    }
 
     #[test]
     fn dialog_turns() {

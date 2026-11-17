@@ -18,6 +18,24 @@ import (
 
 func main() {
 	p := pluginsdk.New()
+	var contextStarted atomic.Int64
+	contextBarrier := make(chan struct{})
+	for _, service := range []string{"xiaomi", "smartlife"} {
+		service := service
+		p.HandleContext(service, func(ctx context.Context, raw json.RawMessage) (any, error) {
+			var req struct { Op string `json:"op"` }
+			_ = json.Unmarshal(raw, &req)
+			if req.Op == "devices" { return []any{map[string]any{"id":"test-device"}}, nil }
+			if req.Op == "context" {
+				if contextStarted.Add(1) == 2 { close(contextBarrier) }
+				select {
+				case <-contextBarrier: return service+" parallel", nil
+				case <-ctx.Done(): return nil, ctx.Err()
+				}
+			}
+			return nil, nil
+		})
+	}
 	var homeReady atomic.Bool
 	p.Handle("yandexhome", func(raw json.RawMessage) (any, error) {
 		var req struct { Op string `json:"op"` }
@@ -90,7 +108,7 @@ async fn native_plugin_protocol() {
     };
     std::fs::write(
         dir.join("plugins/demo/plugin.json"),
-        format!(r#"{{"id":"demo","name":"Демо","version":"1.0.0","kind":"native","category":"fun","provides":["youtube","homeassistant","yandexhome"],"main":"{main}"}}"#),
+        format!(r#"{{"id":"demo","name":"Демо","version":"1.0.0","kind":"native","category":"fun","provides":["youtube","homeassistant","yandexhome","xiaomi","smartlife"],"main":"{main}"}}"#),
     )
     .unwrap();
     let hooks = Hooks {
@@ -100,10 +118,12 @@ async fn native_plugin_protocol() {
     let host = Host::new(dir.clone(), hooks, None);
     host.load().await;
     let settings=crate::settings::Store::open(dir.join("settings.json")).unwrap();
-    settings.update(|s|->Result<(),std::io::Error>{s.yandex_token="test-token".into();s.home_use.insert("alice".into(),false);Ok(())}).unwrap();
+    settings.update(|s|->Result<(),std::io::Error>{s.yandex_token="test-token".into();s.xiaomi=json!({"user_id":"test","ssecurity":"test","service_token":"test"});s.tuya=json!({"endpoint":"test","refresh_token":"test"});s.home_use.insert("alice".into(),false);Ok(())}).unwrap();
     let tools=crate::tools::Tools::new(host.clone(),settings);
     let (context,defs)=tools.prepare().await;
     assert!(context.contains("дом"));
+    assert!(context.contains("xiaomi parallel") && context.contains("smartlife parallel"),"провайдеры должны готовиться параллельно");
+    assert!(defs.iter().any(|d|d["name"]=="xiaomi_home") && defs.iter().any(|d|d["name"]=="smart_life"));
     assert!(defs.iter().any(|d|d["name"]=="smart_home"),"в первой реплике инструмент должен видеть уже загруженный каталог");
     for module in compiled_modules().into_iter().filter(|m| matches!(m.as_str(), "homeassistant" | "yandexhome")) {
         let service=if module=="yandexhome" {"yandex"}else{module.as_str()};

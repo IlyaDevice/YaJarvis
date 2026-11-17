@@ -40,6 +40,6 @@ pub async fn journal(State(app): State<App>) -> Response {
     reply(
         StatusCode::OK,
         json!({"items": e.journal.items(50), "mic": e.mic.online(), "mic_why": "", "talking": talking, "phase": phase,
-               "sys": {}, "volume": vol, "version": crate::version()}),
+               "sys": app.telemetry.system(), "volume": vol, "version": crate::version()}),
     )
 }

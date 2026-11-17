@@ -10,6 +10,7 @@
 mod auth;
 mod chatgpt;
 mod config;
+mod diagnostics;
 mod homeassistant;
 mod keys;
 mod memory;
@@ -46,6 +47,7 @@ pub struct Web {
     pub engine: Arc<crate::engine::Engine>,
     pub data_dir: PathBuf,
     pub started: Instant,
+    pub telemetry: Arc<crate::telemetry::Telemetry>,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
     reset_at: Mutex<Option<Instant>>,
 }
@@ -54,7 +56,8 @@ pub type App = Arc<Web>;
 
 impl Web {
     pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, engine: Arc<crate::engine::Engine>) -> App {
-        Arc::new(Web { store, plugins, proxy, engine, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+        let telemetry=crate::telemetry::Telemetry::start(data_dir.clone());
+        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 
@@ -94,6 +97,8 @@ pub fn ok() -> Response {
 pub fn router(app: App) -> Router {
     let api = Router::new()
         .route("/api/state", get(state::state))
+        .route("/api/stats", get(diagnostics::stats))
+        .route("/api/logs", get(diagnostics::logs))
         .route("/api/password", put(auth::change_password))
         .route("/api/settings", put(config::settings))
         .route("/api/keys", put(keys::put))

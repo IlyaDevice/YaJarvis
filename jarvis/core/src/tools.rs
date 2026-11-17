@@ -166,14 +166,13 @@ impl Tools {
     pub async fn context(&self) -> String {
         let now = self.store.with(|s| s.now());
         let mut b = format!("\n\nСейчас {}, {}.", now.strftime("%d.%m.%Y %H:%M"), DAYS[now.weekday().to_sunday_zero_offset() as usize]);
-        if self.use_ch("homeassistant") && self.ha_alive().await {
-            b += &as_str(&self.vendor("homeassistant", "context", Value::Null, Duration::from_secs(4)).await.unwrap_or_default());
-        }
-        for ch in ["xiaomi", "smartlife"] {
-            if self.use_ch(ch) && self.ready(ch) {
-                b += &as_str(&self.vendor(ch, "context", Value::Null, Duration::from_secs(5)).await.unwrap_or_default());
-            }
-        }
+        // Independent providers must not add their cold-start delays together.
+        // Definitions are still prepared after context, so their first catalog is ready.
+        let ha=async{if self.use_ch("homeassistant") && self.ha_alive().await{as_str(&self.vendor("homeassistant","context",Value::Null,Duration::from_secs(4)).await.unwrap_or_default())}else{String::new()}};
+        let vendor=|ch|async move{if self.use_ch(ch) && self.ready(ch){as_str(&self.vendor(ch,"context",Value::Null,Duration::from_secs(5)).await.unwrap_or_default())}else{String::new()}};
+        let yandex=async{if self.use_ch("yandex"){self.yandex("context",Value::Null,Duration::from_secs(5)).await.map(|v|as_str(&v)).unwrap_or_default()}else{String::new()}};
+        let (ha,xiaomi,smartlife,yandex)=tokio::join!(ha,vendor("xiaomi"),vendor("smartlife"),yandex);
+        b+=&ha;b+=&xiaomi;b+=&smartlife;
         if !self.use_ch("yandex") {
             let room = self.room();
             if !room.is_empty() {
@@ -181,24 +180,19 @@ impl Tools {
             }
             return b;
         }
-        if let Ok(v) = self.yandex("context", Value::Null, Duration::from_secs(5)).await {
-            b += &as_str(&v);
-        }
+        b+=&yandex;
         b
     }
 
     pub async fn definitions(&self) -> Vec<Value> {
         let mut defs = vec![];
-        if self.use_ch("homeassistant") && self.ha_alive().await {
+        let available=|ch|async move {self.ready(ch) && self.use_ch(ch) && self.vendor(ch,"devices",Value::Null,Duration::from_secs(5)).await.ok().and_then(|v|v.as_array().map(Vec::len)).unwrap_or(0)>0};
+        let (ha,xiaomi,smartlife)=tokio::join!(async{self.use_ch("homeassistant") && self.ha_alive().await},available("xiaomi"),available("smartlife"));
+        if ha {
             defs.push(def("home_assistant"));
         }
-        for (ch, name) in [("xiaomi", "xiaomi_home"), ("smartlife", "smart_life")] {
-            if self.ready(ch) && self.use_ch(ch) {
-                let n = self.vendor(ch, "devices", Value::Null, Duration::from_secs(5)).await.ok().and_then(|v| v.as_array().map(Vec::len)).unwrap_or(0);
-                if n > 0 {
-                    defs.push(def(name));
-                }
-            }
+        for (available,name) in [(xiaomi,"xiaomi_home"),(smartlife,"smart_life")] {
+            if available{defs.push(def(name));}
         }
         if self.music.is_some() && self.host.provider("youtube").is_ok() {
             let who = if self.use_ch("yandexmusic") {

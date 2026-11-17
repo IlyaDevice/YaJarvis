@@ -28,6 +28,7 @@ mod rules;
 mod session;
 mod settings;
 mod tools;
+mod telemetry;
 mod vpn;
 mod wake;
 mod web;

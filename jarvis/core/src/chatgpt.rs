@@ -4,7 +4,7 @@
 use crate::{
     journal::Journal,
     plugins::{BoxFut, Host, Runtime, native::Native},
-    session::{Dialog, Session, queue_mic, take_mic},
+    session::{Dialog, Session, queue_mic, take_mic_caught_up},
     settings::{BACKEND_MODELS, Profile},
     tools::Tools,
 };
@@ -26,8 +26,8 @@ pub const LIVE_MODEL: &str = "gpt-live-1-codex";
 /// Лимит подписки кончился — до этого времени (unix, с) отвечаем другим движком.
 pub static LIMITED_UNTIL: AtomicI64 = AtomicI64::new(0);
 const LIMIT_REST: i64 = 3600;
-/// Сколько звука микрофона (16 кГц) уходит плагину за такт 100 мс.
-const FEED_MAX: usize = 4800;
+/// Сколько звука микрофона (16 кГц) уходит плагину за такт 20 мс.
+const FEED_MAX: usize = 960;
 
 fn unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -73,6 +73,8 @@ pub struct ChatGptSession {
     cancelled: AtomicBool,
     wake: tokio::sync::Notify,
     done: (Mutex<bool>, Condvar),
+    created:Instant,
+    first_audio:AtomicBool,
 }
 
 pub struct Open {
@@ -104,6 +106,7 @@ impl ChatGptSession {
             cancelled: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
             done: (Mutex::new(false), Condvar::new()),
+            created:Instant::now(),first_audio:AtomicBool::new(false),
         });
         let me = s.clone();
         rt.spawn(async move { me.run(o.host, o.voice, o.thread, o.instructions, stx).await });
@@ -138,19 +141,20 @@ impl ChatGptSession {
             _ = self.wake.notified() => Err("разговор отменён".into()),
         };
         let ok = res.is_ok();
+        if ok{log::info!("ChatGPT: разговор готов за {:.2} с, в очереди микрофона {:.2} с",self.created.elapsed().as_secs_f64(),self.pending.lock().unwrap().len() as f64/16000.0);}
         let _ = started.send(res);
         while ok && !self.cancelled.load(Ordering::SeqCst) {
             tokio::select! {
                 _ = self.wake.notified() => continue,
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
             }
             if pid.is_some_and(|pid|n.native().is_none_or(|n|n.pid()!=pid)) {
                 break; // плагин перезапустился — разговора на той стороне больше нет
             }
-            // до 0,3 с за такт — втрое быстрее реального времени: звук, накопленный с момента слова и пока
+            // до 0,06 с за такт — втрое быстрее реального времени: звук, накопленный с момента слова и пока
             // открывался звонок, быстро уходит плагину, а тот догоняет, выкидывая паузы. По 0,1 с за такт
-            // очередь не убывала никогда, и модель весь разговор слышала человека на 3–4 с позже.
-            let pcm = take_mic(&mut self.pending.lock().unwrap(), FEED_MAX);
+            // очередь не убывала никогда. Длинные паузы сокращаем до отправки, речь сохраняем.
+            let pcm = take_mic_caught_up(&mut self.pending.lock().unwrap(), FEED_MAX);
             if pcm.is_empty() {
                 continue;
             }
@@ -257,7 +261,7 @@ fn event(native:Option<&Arc<Native>>,p:Value){
     match kind {
         "user" => s.dialog.on_user(text),
         "bot" => s.dialog.on_bot(text),
-        "heard" => s.dialog.heard_voice(),
+        "heard" => {s.dialog.heard_voice();if !s.first_audio.swap(true,Ordering::Relaxed){log::info!("ChatGPT: первый голос через {:.2} с от открытия сессии",s.created.elapsed().as_secs_f64());}},
         "working" => s.dialog.working(value.as_i64().unwrap_or(0) as i32),
         "limit" => {
             LIMITED_UNTIL.store(unix() + LIMIT_REST, Ordering::Relaxed);
