@@ -2,12 +2,21 @@
 //! Ядро на Rust; модули (голосовые движки, YouTube, дом…) вшиваются при сборке, лёгкие плагины — на Lua.
 #![recursion_limit = "256"]
 
+mod alice;
 mod audio;
+mod chatgpt;
+mod engine;
+mod fastcmd;
 mod hardware;
 mod jlog;
+mod journal;
+mod led;
 mod net;
 mod plugins;
+mod rules;
+mod session;
 mod settings;
+mod tools;
 mod vpn;
 mod wake;
 mod web;
@@ -75,6 +84,15 @@ fn main() {
         }
         return;
     }
+    // проверка разговора без живого микрофона: jarvis mic-send сокет файл.wav — звук в сокет в реальном времени
+    #[cfg(unix)]
+    if std::env::args().nth(1).as_deref() == Some("mic-send") {
+        let a: Vec<String> = std::env::args().skip(2).collect();
+        if let Err(e) = audio::send_wav(std::path::Path::new(&a[0]), std::path::Path::new(&a[1])) {
+            println!("{e}");
+        }
+        return;
+    }
     log::info!("jarvis {} (ядро на Rust)", version());
     let upgrade_from = plugins::catalog::detect_upgrade(&f.data); // до Store::open: он создаёт settings.json
     let store = match settings::Store::open(f.data.join("settings.json")) {
@@ -118,8 +136,18 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         plugins::Hooks {
             request: Box::new(move |id, method, params| {
                 let svc = svc.clone();
-                Box::pin(async move { tokio::task::spawn_blocking(move || svc.call(&id, &method, &params)).await.unwrap_or_else(|e| Err(e.to_string())) })
+                Box::pin(async move {
+                    if id == "chatgpt" && method == "voice.brain" {
+                        if !(svc.official)(&id) {
+                            return Err("official plugin required".into());
+                        }
+                        return chatgpt::brain_request(params).await;
+                    }
+                    tokio::task::spawn_blocking(move || svc.call(&id, &method, &params)).await.unwrap_or_else(|e| Err(e.to_string()))
+                })
             }),
+            alice: Box::new(|text, silent| Box::pin(async move { tokio::task::spawn_blocking(move || alice::text(&text, silent).is_ok()).await.unwrap_or(false) })),
+            say: Box::new(|text| log::info!("плагин просит сказать: «{}» (озвучка ещё не перенесена)", plugins::clip(&text, 200))),
             info: Box::new(move || info(&st)),
             ..Default::default()
         }
@@ -133,7 +161,7 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
             tokio::spawn(proxy.run(host.clone()));
             // нужные этой версии официальные плагины; нет интернета — пробуем снова
             let mut wait = 60;
-            loop {
+            while std::env::var_os("JARVIS_NO_AUTOINSTALL").is_none() {
                 let settings = serde_json::to_value(host_settings(&host)).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
                 match host.ensure_for(&format!("v{}", version()), false, &settings, &upgrade_from).await {
                     Ok(_) => {
@@ -175,14 +203,32 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
     if cfg!(unix) {
         mic.clone().run();
     }
-    let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<f32>(1);
-    let listener = wake::Listener::start(&f.data, &store, mic.clone(), wake_tx);
-    tokio::spawn(async move {
-        while let Some(_p) = wake_rx.recv().await {
-            // движок разговора переносится следующим шагом: пока оклик только в журнале
-        }
-    });
-    let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone(), mic, listener);
+    #[cfg(unix)]
+    alice::watch_mic(mic.clone());
+    let (listener, det) = wake::Listener::new(&f.data, &store);
+    let player = {
+        let st = store.clone();
+        audio::Player::new(Box::new(move || st.with(|s| s.voice_volume())), Box::new(|| 1.0))
+    };
+    let leds = {
+        let st = store.clone();
+        led::Leds::new(Box::new(move || st.with(|s| s.led_for())))
+    };
+    let tools = Arc::new(tools::Tools::new(host.clone(), store.clone()));
+    let engine = engine::Engine::new(
+        tokio::runtime::Handle::current(),
+        store.clone(),
+        host.clone(),
+        mic,
+        player,
+        leds,
+        Arc::new(journal::Journal::default()),
+        tools,
+        listener,
+        f.data.clone(),
+    );
+    engine.run(det);
+    let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone(), engine);
     if let Err(e) = web::serve(app, &f.listen).await {
         log::info!("веб-настройки: {e}");
         host.stop_all().await;

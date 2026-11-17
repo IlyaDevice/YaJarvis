@@ -88,49 +88,16 @@ pub fn check_file(data: &Path, wav: &Path, store: &Store) -> Result<(), String> 
     Ok(())
 }
 
-/// Слушать микрофон в своём потоке: каждое «Джарвис» — событие в канал (его разбирает движок разговора).
+/// Состояние слова для панели; сам детектор крутится в цикле движка разговора.
 pub struct Listener {
     pub ready: std::sync::atomic::AtomicBool,
     pub last_prob: std::sync::atomic::AtomicU32,
 }
 
 impl Listener {
-    pub fn start(
-        data: &Path,
-        store: &Store,
-        mic: std::sync::Arc<crate::audio::Mic>,
-        events: tokio::sync::mpsc::Sender<f32>,
-    ) -> std::sync::Arc<Listener> {
-        use std::sync::atomic::Ordering;
-        let mut w = load(data, store);
-        let me = std::sync::Arc::new(Listener {
-            ready: std::sync::atomic::AtomicBool::new(w.ready),
-            last_prob: std::sync::atomic::AtomicU32::new(0),
-        });
-        if !w.ready {
-            return me;
-        }
-        let (store, l) = (store.clone(), me.clone());
-        std::thread::Builder::new()
-            .name("wake".into())
-            .spawn(move || {
-                let (_, rx) = mic.subscribe(200);
-                for frame in rx {
-                    if !store.with(|s| s.wake_enabled) {
-                        continue;
-                    }
-                    let hit = w.det.feed(&frame);
-                    l.last_prob.store(w.det.last_prob().to_bits(), Ordering::Relaxed);
-                    if hit {
-                        let p = w.det.wake_prob();
-                        log::info!("слово: «Джарвис» ({p:.2})");
-                        if events.try_send(p).is_err() {
-                            log::info!("слово: разговор занят — оклик пропущен");
-                        }
-                    }
-                }
-            })
-            .expect("поток слова");
-        me
+    pub fn new(data: &Path, store: &Store) -> (std::sync::Arc<Listener>, Box<dyn Wake>) {
+        let w = load(data, store);
+        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into() });
+        (me, w.det)
     }
 }

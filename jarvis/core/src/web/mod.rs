@@ -10,6 +10,7 @@
 mod auth;
 mod plugins;
 pub mod state;
+mod talk;
 mod ui;
 
 use crate::{plugins::Host, settings::Store, vpn::Proxy};
@@ -35,8 +36,7 @@ pub struct Web {
     pub store: Store,
     pub plugins: Arc<Host>,
     pub proxy: Arc<Proxy>,
-    pub mic: Arc<crate::audio::Mic>,
-    pub wake: Arc<crate::wake::Listener>,
+    pub engine: Arc<crate::engine::Engine>,
     pub data_dir: PathBuf,
     pub started: Instant,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
@@ -46,8 +46,8 @@ pub struct Web {
 pub type App = Arc<Web>;
 
 impl Web {
-    pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, mic: Arc<crate::audio::Mic>, wake: Arc<crate::wake::Listener>) -> App {
-        Arc::new(Web { store, plugins, proxy, mic, wake, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+    pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, engine: Arc<crate::engine::Engine>) -> App {
+        Arc::new(Web { store, plugins, proxy, engine, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 
@@ -77,6 +77,9 @@ pub fn router(app: App) -> Router {
         .route("/api/plugins/{id}/settings", post(plugins::settings))
         .route("/api/plugins/{id}", delete(plugins::remove))
         .route("/api/onboarded", post(plugins::onboarded))
+        .route("/api/talk", post(talk::talk))
+        .route("/api/stop", post(talk::stop))
+        .route("/api/journal", get(talk::journal))
         .route("/p/{id}/{*file}", get(plugins::page_file))
         .route("/api/p/{id}/{*path}", any(plugins::page_proxy).layer(DefaultBodyLimit::max(16 << 20)))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));

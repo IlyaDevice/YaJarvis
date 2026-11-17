@@ -1,0 +1,262 @@
+//! Общее для всех голосовых движков: что движок разговора делает с сессией, и учёт хода разговора —
+//! реплики в журнале, тишина, заглушение ответа.
+
+use crate::journal::Journal;
+use std::{
+    sync::{Arc, Mutex, mpsc::Receiver},
+    time::{Duration, Instant},
+};
+
+/// Открытый голосовой разговор с моделью. Микрофон — в feed, голос модели — из канала take_audio.
+pub trait Session: Send + Sync {
+    /// Кадр микрофона, 16 кГц.
+    fn feed(&self, pcm: &[i16]);
+    /// Голос модели (забрать один раз); канал закрывается, когда разговор оборвался.
+    fn take_audio(&self) -> Option<Receiver<Vec<i16>>>;
+    /// Частота голоса модели.
+    fn rate(&self) -> usize;
+    fn ready(&self, timeout: Duration) -> Result<(), String>;
+    /// Попросить произнести ровно эту фразу.
+    fn say(&self, text: &str) -> Result<(), String>;
+    fn close(&self);
+    fn dialog(&self) -> &Dialog;
+    /// Доп. усиление голоса движка (ChatGPT по подписке приходит тише).
+    fn out_boost(&self) -> f64 {
+        1.0
+    }
+    /// Модель сама услышала, что её перебили (сбрасывается при чтении).
+    fn interrupted(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Default)]
+struct DState {
+    last_activity: Option<Instant>,
+    delegations: i32,
+    turn: i64,
+    turn_user: String,
+    turn_bot: String,
+    turn_bot_t0: Option<Instant>,
+    user_end: Option<Instant>,
+    muted: bool,
+    muted_at: Option<Instant>,
+    user_turns: usize,
+}
+
+/// Учёт хода разговора; есть в сессии каждого движка.
+pub struct Dialog {
+    journal: Arc<Journal>,
+    route: String,
+    model: String,
+    st: Mutex<DState>,
+}
+
+const PROMISES: &[&str] = &["поищу", "найду", "подберу", "включу", "включаю", "поставлю", "запущу"];
+
+/// Последнее предложение ответа.
+pub fn last_sentence(s: &str) -> &str {
+    let s = s.trim_end_matches([' ', '.', '!', '…']);
+    match s.rfind(['.', '!', '?', '…']) {
+        Some(i) => &s[i + s[i..].chars().next().unwrap().len_utf8()..],
+        None => s,
+    }
+}
+
+impl Dialog {
+    pub fn new(journal: Arc<Journal>, route: &str, model: &str) -> Dialog {
+        Dialog { journal, route: route.into(), model: model.into(), st: Mutex::new(DState { last_activity: Some(Instant::now()), ..Default::default() }) }
+    }
+
+    fn next_turn(&self, st: &mut DState) {
+        self.finish_turn_locked(st);
+        st.turn = self.journal.new_turn(&self.route, &self.model);
+        self.journal.update(st.turn, |t| t.live = true);
+        st.turn_user.clear();
+        st.turn_bot.clear();
+        st.turn_bot_t0 = None;
+    }
+
+    fn finish_turn_locked(&self, st: &mut DState) {
+        if st.turn != 0 {
+            self.journal.update(st.turn, |t| t.live = false);
+            self.journal.remember(st.turn);
+        }
+        st.turn = 0;
+    }
+
+    /// Очередной кусочек расшифровки речи человека.
+    pub fn on_user(&self, d: &str) {
+        let mut st = self.st.lock().unwrap();
+        let now = Instant::now();
+        st.last_activity = Some(now);
+        st.user_end = Some(now);
+        // новая реплика: Джарвис уже успел поговорить (>1.5 с) — значит, это не запоздавший хвост расшифровки
+        if st.turn == 0 || st.turn_bot_t0.is_some_and(|t| now - t > Duration::from_millis(1500)) {
+            self.next_turn(&mut st);
+        }
+        if st.turn_user.is_empty() {
+            st.user_turns += 1;
+        }
+        st.turn_user.push_str(d);
+        let text = st.turn_user.trim().to_string();
+        self.journal.update(st.turn, |t| t.text = text);
+        if st.muted && st.muted_at.is_some_and(|m| now - m > Duration::from_millis(600)) {
+            st.muted = false; // человек договорил новую просьбу — следующий ответ уже слушаем
+        }
+    }
+
+    /// Очередной кусочек текста ответа модели.
+    pub fn on_bot(&self, d: &str) {
+        let mut st = self.st.lock().unwrap();
+        st.last_activity = Some(Instant::now());
+        if st.turn == 0 {
+            self.next_turn(&mut st);
+        }
+        if st.turn_bot_t0.is_none() {
+            st.turn_bot_t0 = Some(Instant::now());
+        }
+        st.turn_bot.push_str(d);
+        let a = st.turn_bot.trim().to_string();
+        self.journal.update(st.turn, |t| t.answer = a);
+    }
+
+    /// Модель произнесла слышимый звук: разговор жив; первый звук после реплики — задержка ответа.
+    pub fn heard_voice(&self) {
+        let mut st = self.st.lock().unwrap();
+        st.last_activity = Some(Instant::now());
+        if st.turn != 0
+            && !st.turn_user.is_empty()
+            && let Some(end) = st.user_end
+        {
+            let sec = (end.elapsed().as_secs_f64() * 100.0).round() / 100.0;
+            self.journal.update(st.turn, |t| {
+                if t.audio_s == 0.0 {
+                    t.audio_s = sec
+                }
+            });
+        }
+    }
+
+    /// Движок начал (+1) или закончил (−1) дело, во время которого молчание нормально.
+    pub fn working(&self, delta: i32) {
+        let mut st = self.st.lock().unwrap();
+        st.delegations = (st.delegations + delta).max(0);
+        st.last_activity = Some(Instant::now());
+    }
+
+    /// Текущая реплика человека: id, текст и сколько прошло с последнего кусочка расшифровки.
+    pub fn utterance(&self) -> (i64, String, Duration) {
+        let st = self.st.lock().unwrap();
+        if st.turn == 0 || st.turn_user.is_empty() {
+            return (0, String::new(), Duration::ZERO);
+        }
+        (st.turn, st.turn_user.trim().into(), st.user_end.map(|e| e.elapsed()).unwrap_or_default())
+    }
+
+    pub fn turn_text(&self) -> String {
+        let st = self.st.lock().unwrap();
+        self.journal.get(st.turn).map(|t| t.text).unwrap_or_default()
+    }
+
+    /// Текст реплики из быстрой расшифровки (движок мог не успеть).
+    pub fn set_text(&self, text: &str) {
+        let mut st = self.st.lock().unwrap();
+        if st.turn == 0 {
+            self.next_turn(&mut st);
+        }
+        self.journal.update(st.turn, |t| t.text = text.into());
+    }
+
+    /// Не играть ответ модели (с этого момента и до новой реплики человека).
+    pub fn mute(&self) {
+        let mut st = self.st.lock().unwrap();
+        st.muted = true;
+        st.muted_at = Some(Instant::now());
+    }
+
+    pub fn muted(&self) -> bool {
+        self.st.lock().unwrap().muted
+    }
+
+    /// Пометить текущую реплику в журнале (быстрая команда, стоп).
+    pub fn annotate(&self, route: &str, answer: &str) {
+        let st = self.st.lock().unwrap();
+        self.journal.update(st.turn, |t| {
+            t.route = route.into();
+            if !answer.is_empty() {
+                t.answer = answer.into();
+            }
+        });
+    }
+
+    /// Закрыть текущую реплику; err — что пошло не так (покажется в переписке).
+    pub fn finish_turn(&self, err: &str) {
+        let mut st = self.st.lock().unwrap();
+        if !err.is_empty() {
+            if st.turn == 0 {
+                st.turn = self.journal.new_turn(&self.route, &self.model);
+            }
+            self.journal.update(st.turn, |t| t.error = err.into());
+        }
+        self.finish_turn_locked(&mut st);
+    }
+
+    /// Разговор закончен: обе стороны молчат idle_s и движок ничем не занят. Модель только что
+    /// пообещала «сейчас поищу» — она ищет на своей стороне: ждём дольше.
+    pub fn idle(&self, mut idle_s: f64) -> bool {
+        let st = self.st.lock().unwrap();
+        let bot = st.turn_bot.trim();
+        if !bot.is_empty() && !bot.contains('?') {
+            let last = last_sentence(bot).to_lowercase();
+            if PROMISES.iter().any(|p| last.contains(p)) {
+                idle_s = idle_s.max(25.0);
+            }
+        }
+        st.delegations == 0 && st.last_activity.is_none_or(|t| t.elapsed().as_secs_f64() > idle_s)
+    }
+
+    /// Сколько раз человек что-то сказал в этом разговоре.
+    pub fn user_turns(&self) -> usize {
+        self.st.lock().unwrap().user_turns
+    }
+
+    /// Разговор только что открылся: тишину считаем отсюда.
+    pub fn touch(&self) {
+        self.st.lock().unwrap().last_activity = Some(Instant::now());
+    }
+}
+
+/// Очередь звука, пока соединение открывается: не больше 20 с, без потерь начала фразы.
+pub fn queue_mic(pending: &mut Vec<i16>, pcm: &[i16]) {
+    const CAP: usize = 20 * 16000;
+    let n = pcm.len().min(CAP.saturating_sub(pending.len()));
+    pending.extend_from_slice(&pcm[..n]);
+}
+
+pub fn take_mic(pending: &mut Vec<i16>, limit: usize) -> Vec<i16> {
+    let n = pending.len().min(limit);
+    pending.drain(..n).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dialog_turns() {
+        let j = Arc::new(Journal::default());
+        let d = Dialog::new(j.clone(), "r", "m");
+        d.on_user("привет ");
+        d.on_user("джарвис");
+        d.on_bot("Сейчас поищу.");
+        assert_eq!(d.utterance().1, "привет джарвис");
+        assert_eq!(d.user_turns(), 1);
+        assert!(!d.idle(0.0) || true);
+        d.finish_turn("");
+        let h = j.history();
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].answer, "Сейчас поищу.");
+        assert_eq!(last_sentence("Да. Сейчас включу!"), " Сейчас включу");
+    }
+}

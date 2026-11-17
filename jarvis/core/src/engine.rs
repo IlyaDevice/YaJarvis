@@ -1,0 +1,601 @@
+//! Главный цикл: микрофон → слово «Джарвис» → разговор с моделью → динамик. Алиса имеет приоритет:
+//! позвали её — Джарвис сразу замолкает и закрывает разговор.
+
+use crate::{
+    alice,
+    audio::{Mic, Player},
+    chatgpt, fastcmd,
+    journal::Journal,
+    led::{Leds, Mode},
+    plugins::Host,
+    rules,
+    session::Session,
+    settings::{Profile, Settings, Store},
+    tools::Tools,
+    wake::Listener,
+};
+use jarvis_dsp::Wake;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::RecvTimeoutError,
+    },
+    time::{Duration, Instant},
+};
+
+const RATE: usize = 16000;
+
+#[derive(Default)]
+struct St {
+    live: Option<Arc<dyn Session>>,
+    busy: bool,
+    holding: bool,   // разговора с моделью ещё нет — звук с момента слова копится в hold
+    hold: Vec<i16>,  // уйдёт модели целиком, когда разговор откроется
+    aborted: bool,   // «Стоп» или «Алиса», пока разговор ещё не открыт
+    ring: Vec<i16>,  // последние ~3 с микрофона: само слово и начало фразы
+    last_wake: Option<Instant>,
+    last_loud: Option<Instant>,
+    pending_wake: bool,
+}
+
+pub struct Engine {
+    pub store: Store,
+    pub host: Arc<Host>,
+    pub mic: Arc<Mic>,
+    pub player: Arc<Player>,
+    pub leds: Arc<Leds>,
+    pub journal: Arc<Journal>,
+    pub tools: Arc<Tools>,
+    pub listener: Arc<Listener>,
+    pub data: PathBuf,
+    rt: tokio::runtime::Handle,
+    st: Mutex<St>,
+    reset_wake: AtomicBool,
+}
+
+fn same(a: &Arc<dyn Session>, b: &Arc<dyn Session>) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+}
+
+pub fn peak(pcm: &[i16]) -> f64 {
+    pcm.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0) as f64
+}
+
+pub fn loud(pcm: &[i16]) -> bool {
+    pcm.iter().any(|&v| !(-600..=600).contains(&v))
+}
+
+/// Копия звука с усилением db (с ограничением по краям шкалы).
+pub fn boost(pcm: &[i16], db: i64) -> Vec<i16> {
+    if db <= 0 {
+        return pcm.to_vec();
+    }
+    let k = 10f64.powf(db as f64 / 20.0);
+    pcm.iter().map(|&v| (v as f64 * k).clamp(-32767.0, 32767.0) as i16).collect()
+}
+
+fn short(e: &str) -> String {
+    if e.chars().count() > 160 { format!("{}…", e.chars().take(160).collect::<String>()) } else { e.into() }
+}
+
+fn lang_name(l: &str) -> &'static str {
+    match l {
+        "ru" => "русском",
+        "en" => "английском",
+        "uk" => "украинском",
+        _ => "",
+    }
+}
+
+/// Чего не хватает, чтобы говорить выбранным движком ("" — всё на месте).
+pub fn key_missing(s: &Settings, engine: &str) -> String {
+    match engine {
+        "chatgpt" if !chatgpt::signed_in(&s.chatgpt) => "не выполнен вход в ChatGPT — войдите в «Подключениях»".into(),
+        "chatgpt" => String::new(),
+        "" | "live" | "openai" => "голос OpenAI ещё не перенесён в новое ядро — выберите ассистента на ChatGPT".into(),
+        other => format!("движок «{other}» ещё не перенесён в новое ядро — выберите ассистента на ChatGPT"),
+    }
+}
+
+impl Engine {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        rt: tokio::runtime::Handle,
+        store: Store,
+        host: Arc<Host>,
+        mic: Arc<Mic>,
+        player: Arc<Player>,
+        leds: Arc<Leds>,
+        journal: Arc<Journal>,
+        tools: Arc<Tools>,
+        listener: Arc<Listener>,
+        data: PathBuf,
+    ) -> Arc<Engine> {
+        Arc::new(Engine { store, host, mic, player, leds, journal, tools, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false) })
+    }
+
+    /// Слушать микрофон в своём потоке: слово, звук в разговор, перебивание.
+    pub fn run(self: &Arc<Self>, mut det: Box<dyn Wake>) {
+        let e = self.clone();
+        std::thread::Builder::new()
+            .name("engine".into())
+            .spawn(move || {
+                let (_, rx) = e.mic.subscribe(256);
+                for raw in rx {
+                    let (live, busy) = {
+                        let mut st = e.st.lock().unwrap();
+                        // последние 3 с; буфер растёт до 6 с и сдвигается на месте — без лишних копий
+                        if st.ring.len() + raw.len() > 6 * RATE {
+                            let from = st.ring.len().saturating_sub(3 * RATE);
+                            st.ring.drain(..from);
+                        }
+                        st.ring.extend_from_slice(&raw);
+                        if loud(&raw) {
+                            st.last_loud = Some(Instant::now());
+                        }
+                        if st.holding && st.live.is_none() && st.hold.len() < 20 * RATE {
+                            st.hold.extend_from_slice(&raw);
+                        }
+                        (st.live.clone(), st.busy)
+                    };
+                    if busy || live.is_some() {
+                        e.leds.hear(peak(&raw) / 9000.0);
+                    }
+                    if e.reset_wake.swap(false, Ordering::Relaxed) {
+                        det.reset();
+                    }
+                    let (enabled, boost_db) = e.store.with(|s| (s.wake_enabled, s.mic_boost_db));
+                    let ready = e.listener.ready.load(Ordering::Relaxed);
+                    let hit = ready && enabled && det.feed(&raw); // поток признаков непрерывный, и во время разговора
+                    e.listener.last_prob.store(det.last_prob().to_bits(), Ordering::Relaxed);
+                    if let Some(live) = live {
+                        live.feed(&if boost_db > 0 { boost(&raw, boost_db) } else { raw.to_vec() });
+                        // «Джарвис» во время разговора — как у Алисы: сразу замолкает и слушает
+                        let recent = e.st.lock().unwrap().last_wake.is_some_and(|t| t.elapsed() < Duration::from_millis(2500));
+                        if hit && !recent {
+                            e.interrupt(&live);
+                        }
+                        continue;
+                    }
+                    if busy {
+                        continue;
+                    }
+                    if hit {
+                        let p = det.wake_prob();
+                        det.reset(); // хвост этого же слова не должен сработать ещё раз
+                        e.trigger("слово", p);
+                    }
+                }
+            })
+            .expect("поток движка");
+        self.watch_alice();
+    }
+
+    /// Идёт ли разговор (или он открывается).
+    pub fn talking(&self) -> bool {
+        let st = self.st.lock().unwrap();
+        st.busy || st.live.is_some()
+    }
+
+    /// Начать разговор (по слову, по кнопке в настройках).
+    pub fn trigger(self: &Arc<Self>, source: &str, prob: f32) {
+        let clip = {
+            let mut st = self.st.lock().unwrap();
+            if st.busy || st.last_wake.is_some_and(|t| t.elapsed() < Duration::from_millis(1500)) {
+                return;
+            }
+            st.busy = true;
+            st.last_wake = Some(Instant::now());
+            st.aborted = false;
+            st.hold.clear();
+            st.holding = true;
+            st.ring[st.ring.len().saturating_sub(3 * RATE)..].to_vec()
+        };
+        let by_word = source == "слово";
+        // как у Алисы: услышал слово — сразу кольцо и разговор; проверка имени расшифровкой — по галочке
+        let sure = !by_word || prob >= 0.9 || !self.store.with(|s| s.wake_check);
+        if sure {
+            self.leds.set(Mode::Listening);
+        }
+        self.reset_wake.store(true, Ordering::Relaxed);
+        if by_word {
+            log::info!("Джарвис: активация ({source}, уверенность {prob:.2})");
+        } else {
+            log::info!("Джарвис: активация ({source})");
+        }
+        let e = self.clone();
+        std::thread::Builder::new()
+            .name("converse".into())
+            .spawn(move || {
+                let preroll = if by_word { clip.clone() } else { vec![] };
+                // сбой внутри разговора не должен оставить Джарвиса «занятым» навсегда
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| e.converse(by_word, sure, preroll, clip))).is_err() {
+                    log::info!("Джарвис: разговор оборвался из-за ошибки ядра");
+                    e.player.stop(true);
+                    if let Some(l) = e.st.lock().unwrap_or_else(|p| p.into_inner()).live.take() {
+                        l.close();
+                    }
+                }
+                let queued = {
+                    let mut st = e.st.lock().unwrap();
+                    let q = st.pending_wake;
+                    st.pending_wake = false;
+                    st.busy = false;
+                    st.live = None;
+                    st.aborted = false;
+                    st.hold.clear();
+                    st.holding = false;
+                    q
+                };
+                e.reset_wake.store(true, Ordering::Relaxed);
+                e.leds.set(Mode::Off);
+                if queued {
+                    e.trigger("слово", 1.0);
+                }
+            })
+            .expect("поток разговора");
+    }
+
+    fn instructions(&self, s: &Settings, p: &Profile) -> String {
+        let mut text = s.prompt_text(&p.prompt);
+        let n = lang_name(&s.language);
+        if !n.is_empty() {
+            text += &format!(
+                "\n\nХозяин всегда говорит на {n} языке. Понимай его речь как {n}, даже если она звучит неразборчиво или похоже на другой язык, и отвечай только на {n}."
+            );
+        }
+        if !s.city.is_empty() {
+            text += &format!("\n\nХозяин живёт в городе {} — погода, время и новости по умолчанию для него.", s.city);
+        }
+        text += "\n\nКогда для ответа нужен инструмент (поиск в интернете, погода, умный дом, музыка, сложная задача), \
+можно ОДИН раз за ответ коротко сказать вслух живую фразу — «Секунду, гляну», «Сейчас поищу» — и сразу вызывать инструмент. \
+Если вызываешь несколько инструментов подряд или повторяешь вызов — больше никаких таких фраз: молча дождись результата и скажи итог. \
+На простые вопросы и быстрые команды (включить свет, громкость) отвечай сразу, без таких фраз.";
+        if s.is_night() {
+            text += "\n\nСейчас ночь, в доме могут спать: отвечай коротко и спокойно, без длинных списков.";
+        }
+        // общая память разговора ещё не перенесена — пока контекст из журнала последних 30 минут
+        let h = self.journal.history();
+        if !h.is_empty() {
+            let ctx: Vec<_> = h.iter().map(|t| serde_json::json!({"user": t.text, "jarvis": t.answer})).collect();
+            text += &format!("\n\nПредыдущие реплики разговора: {}", serde_json::Value::Array(ctx));
+        }
+        if p.engine == "chatgpt" {
+            // напоминание после истории: в длинном чате модель иначе сползает в обычный стиль ChatGPT
+            let persona = s.prompt_text(&p.prompt).trim().to_string();
+            let persona = if persona.chars().count() > 2500 { format!("{}…", persona.chars().take(2500).collect::<String>()) } else { persona };
+            text += &format!(
+                "\n\nГлавное, не забывай: ты — голосовой ассистент Джарвис внутри умной колонки Яндекс Станция у хозяина дома, \
+а не ChatGPT в приложении. Говоришь вслух, коротко, своим характером. Что делать на колонке (музыка, YouTube, свет, \
+поиск, погода, таймеры, будильники, напоминания) — передаёшь бэкенду, он делает: таймеры и будильники ставит Алиса \
+на этой же колонке, так что не говори, что не умеешь. Твой характер:\n{persona}"
+            );
+        }
+        text + rules::SPEAKER_CONTENT_RULES + rules::SPEAKER_WAIT_RULES + rules::IDENTITY_RULES
+    }
+
+    /// Кто думает и управляет домом, когда голосовая модель передаёт задачу: модель подписки ChatGPT.
+    fn brain(&self, p: &Profile) -> chatgpt::Brain {
+        let (host, tools, p) = (self.host.clone(), self.tools.clone(), p.clone());
+        Arc::new(move |task: String| {
+            let (host, tools, p) = (host.clone(), tools.clone(), p.clone());
+            Box::pin(async move {
+                let instr = format!("{}{}", rules::BACKEND_RULES, tools.context().await);
+                let auth = host.provider("chatgpt")?.request("auth.token", serde_json::Value::Null, Duration::from_secs(20)).await?;
+                chatgpt::ask_codex(&host, auth, &p, &instr, &task, Some(&tools)).await
+            })
+        })
+    }
+
+    fn chat_thread(&self) -> String {
+        std::fs::read(self.data.join("chatgpt-chat.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(String::from))
+            .unwrap_or_default()
+    }
+
+    /// Открыть разговор с моделью тем движком, который выбран у ассистента.
+    fn new_session(&self, s: &Settings, p: &Profile) -> Arc<dyn Session> {
+        chatgpt::ChatGptSession::open(
+            &self.rt,
+            chatgpt::Open {
+                host: self.host.clone(),
+                voice: p.voice.clone(),
+                thread: self.chat_thread().into(),
+                instructions: self.instructions(s, p),
+                brain: Some(self.brain(p)),
+                journal: self.journal.clone(),
+            },
+        )
+    }
+
+    fn start_voice(&self, sess: &dyn Session) -> Result<(), String> {
+        self.player.start(sess.rate()).map_err(|e| e.to_string())?;
+        self.player.set_boost(sess.out_boost());
+        Ok(())
+    }
+
+    fn earcon(&self, ok: bool) {
+        if self.player.start(RATE).is_ok() {
+            let _ = self.player.write(&fastcmd::earcon(ok));
+            self.player.finish(Duration::from_secs(2));
+        }
+    }
+
+    /// Один разговор от слова (или кнопки) до тишины.
+    fn converse(self: &Arc<Self>, by_word: bool, sure: bool, preroll: Vec<i16>, clip: Vec<i16>) {
+        let s = self.store.get();
+        let p = s.active_profile();
+        let missing = key_missing(&s, &p.engine);
+        if !missing.is_empty() {
+            self.journal.fail(&missing);
+            return;
+        }
+        {
+            let t = self.tools.clone();
+            self.rt.spawn(async move { t.prewarm().await });
+        }
+        let idle = if p.idle_s < 2.0 { 8.0 } else { p.idle_s };
+        let mut sess: Option<Arc<dyn Session>> = None;
+        let mut out = None;
+        let mut speaking = false;
+        let mut checked = 0i64;
+        let mut ready_at = Instant::now();
+        let mut last_voice: Option<Instant> = None;
+        let _ = (sure, &clip);
+
+        // открыть разговор с моделью и отдать ему весь звук с момента слова
+        let open = |sess: &mut Option<Arc<dyn Session>>, out: &mut Option<std::sync::mpsc::Receiver<Vec<i16>>>, ready_at: &mut Instant| -> bool {
+            if by_word {
+                self.leds.set(Mode::Thinking); // соединяюсь с моделью — бегущий огонёк
+            }
+            let x = self.new_session(&s, &p);
+            {
+                let mut st = self.st.lock().unwrap();
+                let mut first = preroll.clone();
+                first.extend_from_slice(&st.hold);
+                x.feed(&boost(&first, s.mic_boost_db));
+                st.hold.clear();
+                st.holding = false;
+                st.live = Some(x.clone());
+            }
+            *sess = Some(x.clone());
+            if let Err(e) = x.ready(Duration::from_secs(12)) {
+                log::info!("разговор не открылся: {e}");
+                x.dialog().finish_turn(&format!("разговор не открылся: {}", short(&e)));
+                return false;
+            }
+            if let Err(e) = self.start_voice(&*x) {
+                x.dialog().finish_turn(&format!("динамик: {e}"));
+                return false;
+            }
+            *out = x.take_audio();
+            *ready_at = Instant::now();
+            x.dialog().touch();
+            self.leds.set(Mode::Listening);
+            true
+        };
+        let close = |sess: &Option<Arc<dyn Session>>| {
+            if let Some(x) = sess {
+                x.close();
+            }
+        };
+        if !open(&mut sess, &mut out, &mut ready_at) {
+            close(&sess);
+            return;
+        }
+        let x = sess.clone().unwrap();
+        let out = out.unwrap();
+        let mut tick = Instant::now();
+        loop {
+            match out.recv_timeout(Duration::from_millis(20)) {
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.player.stop(true);
+                    x.dialog().finish_turn("");
+                    return close(&sess);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Ok(pcm) => {
+                    if !x.dialog().muted() {
+                        if !self.player.playing() && loud(&pcm) {
+                            let _ = self.start_voice(&*x); // после перебивания плеер был остановлен
+                        }
+                        let _ = self.player.write(&pcm);
+                        if loud(&pcm) {
+                            last_voice = Some(Instant::now());
+                        }
+                        self.leds.level(peak(&pcm) / 9000.0);
+                        if loud(&pcm) != speaking {
+                            speaking = !speaking;
+                            self.leds.set(if speaking { Mode::Speaking } else { Mode::Listening });
+                        }
+                    }
+                }
+            }
+            if x.interrupted() {
+                self.player.stop(true);
+                speaking = false;
+                self.leds.set(Mode::Listening);
+            }
+            if tick.elapsed() < Duration::from_millis(100) {
+                continue;
+            }
+            tick = Instant::now();
+            let stopped = {
+                let st = self.st.lock().unwrap();
+                st.aborted || !st.live.as_ref().is_some_and(|l| same(l, &x))
+            };
+            if stopped {
+                self.player.stop(true);
+                x.dialog().finish_turn("");
+                return close(&sess);
+            }
+            // разговор открыт сразу по слову, а человек так ничего и не сказал — слово сработало зря
+            if by_word && checked == 0 && x.dialog().user_turns() == 0 && ready_at.elapsed() > Duration::from_secs(5) && !last_voice.is_some_and(|t| t > ready_at) {
+                log::info!("Джарвис: ложное срабатывание (никто ничего не сказал) — молчу");
+                self.player.stop(true);
+                x.dialog().annotate("ложное срабатывание", "");
+                x.dialog().finish_turn("");
+                return close(&sess);
+            }
+            let (id, text, since) = x.dialog().utterance();
+            if id != 0 && id != checked && since >= Duration::from_millis(350) {
+                checked = id;
+                if self.handle(&x, &text, "модель") {
+                    return close(&sess);
+                }
+            }
+            if x.dialog().idle(idle) {
+                log::info!("разговор: тишина {idle:.0} с — окончен");
+                self.player.finish(Duration::from_secs(3));
+                x.dialog().finish_turn("");
+                return close(&sess);
+            }
+        }
+    }
+
+    /// Законченная фраза человека: «стоп», команды плагинов, Алисе и умному дому — сами, без модели.
+    /// true — разговор закончен.
+    fn handle(&self, x: &Arc<dyn Session>, text: &str, from: &str) -> bool {
+        let cmd = fastcmd::canon_name(text);
+        let quiet = || {
+            x.dialog().mute();
+            self.player.stop(true);
+        };
+        let note = |route: &str, answer: &str| {
+            x.dialog().annotate(route, answer);
+            if x.dialog().turn_text().is_empty() {
+                x.dialog().set_text(text);
+            }
+            x.dialog().finish_turn("");
+        };
+        if fastcmd::is_stop(&cmd) {
+            quiet();
+            if fastcmd::is_stop_all(&cmd) {
+                log::info!("Джарвис: «{text}» — стоп ({from})");
+            } else {
+                log::info!("Джарвис: «{text}» — разговор закрыт, музыка не тронута ({from})");
+            }
+            note("стоп", "");
+            return true;
+        }
+        let rt = &self.rt;
+        if let Some(answer) = rt.block_on(async { tokio::time::timeout(Duration::from_secs(20), self.host.command(&cmd)).await.ok().flatten() }) {
+            quiet();
+            log::info!("Джарвис: «{text}» → плагин ({from})");
+            note("плагин", &answer);
+            if !answer.trim().is_empty() {
+                (self.say_hook())(answer);
+            } else {
+                self.earcon(true);
+            }
+            return true;
+        }
+        if let Some(answer) = rt.block_on(self.tools.ha_vacuum(&cmd)) {
+            quiet();
+            note("Home Assistant", &answer);
+            (self.say_hook())(answer);
+            return true;
+        }
+        let t0 = Instant::now();
+        if let Some(answer) = rt.block_on(self.tools.smartlife_fast(&cmd)) {
+            quiet();
+            log::info!("Джарвис: «{text}» → Smart Life ({:.2} с, {from})", t0.elapsed().as_secs_f64());
+            note("Smart Life", &answer);
+            self.earcon(answer == "Готово.");
+            return true;
+        }
+        // таймеры, будильники, напоминания, музыка — умеет только штатная Алиса; команды умного дома
+        // отдаём ей, если так выбрано в настройках
+        let mut to_alice = fastcmd::alice_skill_for(&cmd, self.store.with(|s| s.use_home("yandexmusic")));
+        if to_alice.is_none() && self.store.with(|s| s.use_home("alice")) {
+            to_alice = rt.block_on(self.tools.home_command(&cmd));
+        }
+        if let Some(a) = to_alice {
+            quiet();
+            match alice::text(&a, false) {
+                Ok(()) => {
+                    log::info!("Джарвис: «{a}» → Алисе ({from}, {:.2} с)", t0.elapsed().as_secs_f64());
+                    note("умный дом → Алиса", &format!("передал Алисе: «{a}»"));
+                    return true;
+                }
+                Err(e) => log::info!("Алиса: {e} — выполняю сам"),
+            }
+        }
+        if self.store.with(|s| s.use_home("yandex"))
+            && let Some(answer) = rt.block_on(self.tools.fast(&cmd))
+        {
+            quiet();
+            log::info!("Джарвис: быстрая команда «{text}» → {answer} (Яндекс {:.2} с, {from})", t0.elapsed().as_secs_f64());
+            note("умный дом (быстро)", &answer);
+            self.earcon(answer == "Готово.");
+            return true;
+        }
+        false
+    }
+
+    /// Озвучка короткого ответа (плагины, команды). Пока голосом нет — звуком «готово».
+    fn say_hook(&self) -> impl Fn(String) + '_ {
+        move |answer: String| {
+            log::info!("Джарвис: ответ «{}»", crate::plugins::clip(&answer, 200));
+            self.earcon(true);
+        }
+    }
+
+    /// «Джарвис» посреди ответа: замолчать сразу, слушать новую фразу.
+    fn interrupt(&self, sess: &Arc<dyn Session>) {
+        log::info!("Джарвис: перебили словом — замолкаю");
+        sess.dialog().mute();
+        self.player.stop(true);
+        self.leds.set(Mode::Listening);
+    }
+
+    /// Прервать разговор и музыку (Алиса, кнопка «Стоп» в настройках).
+    pub fn stop(&self, reason: &str) {
+        self.end_chat(reason);
+    }
+
+    /// Закончить только разговор: музыка, если играет, играет дальше. Блокирует до 3 с.
+    pub fn end_chat(&self, reason: &str) {
+        let sess = {
+            let mut st = self.st.lock().unwrap();
+            let sess = st.live.take();
+            if st.busy || sess.is_some() {
+                st.aborted = true;
+            }
+            if sess.is_none() && st.busy {
+                log::info!("Джарвис: остановлен до начала разговора ({reason})");
+            }
+            sess
+        };
+        if let Some(sess) = sess {
+            log::info!("Джарвис: разговор прерван ({reason})");
+            self.player.stop(true);
+            sess.close();
+        }
+    }
+
+    /// Журнал maind: штатный споттер «Алиса» — Джарвис уступает.
+    fn watch_alice(self: &Arc<Self>) {
+        let w = Arc::downgrade(self);
+        alice::follow_log(alice::MAIND_LOG, move |line| {
+            let Some(e) = w.upgrade() else { return };
+            if line.contains("onPhraseSpotted") && line.contains("alice_capability") && e.talking() {
+                e.stop("позвали Алису");
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn helpers() {
+        assert!(super::loud(&[0, 700]) && !super::loud(&[600, -600]));
+        assert_eq!(super::boost(&[1000], 6)[0], 1995);
+        assert_eq!(super::peak(&[-32768, 5]), 32768.0);
+    }
+}

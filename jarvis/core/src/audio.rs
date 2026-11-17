@@ -241,3 +241,20 @@ fn wait_child(child: &mut Child, timeout: Duration) {
         thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// Отправить WAV (16 кГц моно) в сокет микрофона кусками по 10 мс в реальном времени — для проверки на колонке.
+#[cfg(unix)]
+pub fn send_wav(sock: &std::path::Path, wav: &std::path::Path) -> std::io::Result<()> {
+    let raw = std::fs::read(wav)?;
+    let pcm = if raw.len() > 44 && &raw[..4] == b"RIFF" { &raw[44..] } else { &raw[..] };
+    let s = std::os::unix::net::UnixDatagram::unbound()?;
+    let t0 = Instant::now();
+    for (i, c) in pcm.chunks(320).enumerate() {
+        let due = t0 + Duration::from_millis(10 * i as u64);
+        if let Some(d) = due.checked_duration_since(Instant::now()) {
+            thread::sleep(d);
+        }
+        s.send_to(c, sock)?;
+    }
+    Ok(())
+}

@@ -225,7 +225,8 @@ impl Native {
                 continue;
             }
             if m.method == "voice.event" {
-                continue; // голосовые сессии модулей — когда перенесём движки
+                crate::chatgpt::voice_event(&self, m.params.unwrap_or(Value::Null));
+                continue;
             }
             let me = self.clone();
             tokio::spawn(async move { me.handle(m).await });
@@ -294,6 +295,16 @@ impl Native {
         if m.id != 0 {
             let _ = self.send(Msg { id: m.id, result: Some(result), error: err, ..Default::default() }).await;
         }
+    }
+
+    /// Уведомление без ответа (звук в голосовую сессию модуля).
+    pub async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
+        self.send(Msg { method: method.into(), params: Some(params), ..Default::default() }).await
+    }
+
+    /// Процесс плагина сейчас (после перезапуска — другой).
+    pub fn pid(&self) -> Option<u32> {
+        self.st.lock().unwrap().proc.as_ref().map(|p| p.pid)
     }
 
     async fn send(&self, m: Msg) -> Result<(), String> {
