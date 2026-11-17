@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Go пишет пустой список как null: читаем его как пустой.
-fn nd<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
+pub fn nd<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
     Option::<T>::deserialize(d).map(Option::unwrap_or_default)
 }
 

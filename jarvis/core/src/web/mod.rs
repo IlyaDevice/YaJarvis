@@ -8,6 +8,7 @@
 //!   - строгий CSP, запрет встраивания во фреймы.
 
 mod auth;
+mod memory;
 mod plugins;
 pub mod state;
 mod talk;
@@ -80,6 +81,12 @@ pub fn router(app: App) -> Router {
         .route("/api/talk", post(talk::talk))
         .route("/api/stop", post(talk::stop))
         .route("/api/journal", get(talk::journal))
+        .route("/api/memory", get(memory::get).put(memory::put))
+        .route("/api/memory/month", put(memory::month))
+        .route("/api/memory/archive", get(memory::archive))
+        .route("/api/memory/forget", post(memory::forget))
+        .route("/api/memory/compact", post(memory::compact))
+        .route("/api/chatgpt/newchat", post(memory::new_chat))
         .route("/p/{id}/{*file}", get(plugins::page_file))
         .route("/api/p/{id}/{*path}", any(plugins::page_proxy).layer(DefaultBodyLimit::max(16 << 20)))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));

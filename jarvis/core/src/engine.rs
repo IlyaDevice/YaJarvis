@@ -256,13 +256,18 @@ impl Engine {
         if s.is_night() {
             text += "\n\nСейчас ночь, в доме могут спать: отвечай коротко и спокойно, без длинных списков.";
         }
-        // общая память разговора ещё не перенесена — пока контекст из журнала последних 30 минут
-        let h = self.journal.history();
-        if !h.is_empty() {
-            let ctx: Vec<_> = h.iter().map(|t| serde_json::json!({"user": t.text, "jarvis": t.answer})).collect();
-            text += &format!("\n\nПредыдущие реплики разговора: {}", serde_json::Value::Array(ctx));
+        match &self.tools.memory {
+            // общая память разговора: у всех ассистентов, переживает перезапуск
+            Some(m) => text += &crate::memory::instructions(m, p.engine == "chatgpt"),
+            None => {
+                let h = self.journal.history();
+                if !h.is_empty() {
+                    let ctx: Vec<_> = h.iter().map(|t| serde_json::json!({"user": t.text, "jarvis": t.answer})).collect();
+                    text += &format!("\n\nПредыдущие реплики разговора: {}", serde_json::Value::Array(ctx));
+                }
+            }
         }
-        if p.engine == "chatgpt" {
+        if p.engine == "chatgpt" && self.tools.memory.is_some() {
             // напоминание после истории: в длинном чате модель иначе сползает в обычный стиль ChatGPT
             let persona = s.prompt_text(&p.prompt).trim().to_string();
             let persona = if persona.chars().count() > 2500 { format!("{}…", persona.chars().take(2500).collect::<String>()) } else { persona };
@@ -282,14 +287,22 @@ impl Engine {
         Arc::new(move |task: String| {
             let (host, tools, p) = (host.clone(), tools.clone(), p.clone());
             Box::pin(async move {
-                let instr = format!("{}{}", rules::BACKEND_RULES, tools.context().await);
-                let auth = host.provider("chatgpt")?.request("auth.token", serde_json::Value::Null, Duration::from_secs(20)).await?;
-                chatgpt::ask_codex(&host, auth, &p, &instr, &task, Some(&tools)).await
+                // контекст дома, список инструментов и вход — разом: каждый из них ходит в плагины
+                let t0 = Instant::now();
+                let (ctx, defs, auth) = tokio::join!(tools.context(), tools.definitions(), async {
+                    host.provider("chatgpt")?.request("auth.token", serde_json::Value::Null, Duration::from_secs(20)).await
+                });
+                log::info!("бэкенд: контекст и инструменты за {:.2} с", t0.elapsed().as_secs_f64());
+                let instr = format!("{}{ctx}", rules::BACKEND_RULES);
+                chatgpt::ask_codex(&host, auth?, &p, &instr, &task, Some(&tools), defs).await
             })
         })
     }
 
     fn chat_thread(&self) -> String {
+        if let Some(m) = &self.tools.memory {
+            return m.thread();
+        }
         std::fs::read(self.data.join("chatgpt-chat.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -308,8 +321,34 @@ impl Engine {
                 instructions: self.instructions(s, p),
                 brain: Some(self.brain(p)),
                 journal: self.journal.clone(),
+                memory: self.tools.memory.clone(),
             },
         )
+    }
+
+    /// Чем память сжимает старые реплики: текстовая модель подписки ChatGPT (Gemini и OpenAI — когда
+    /// появятся их плагины). Выбор — как в Go: выбранный в «Памяти» или первый доступный.
+    pub fn summarizer(&self) -> crate::memory::Summarizer {
+        let (host, store) = (self.host.clone(), self.store.clone());
+        Arc::new(move |instructions: String, text: String| {
+            let (host, store) = (host.clone(), store.clone());
+            Box::pin(async move {
+                let s = store.get();
+                let m = &s.memory;
+                let chatgpt = chatgpt::signed_in(&s.chatgpt) && host.provider("chatgpt").is_ok();
+                if m.off || m.provider == "none" || !chatgpt {
+                    return Err(crate::memory::NO_SUMMARIZER.to_string());
+                }
+                let model = if m.provider == "chatgpt" && crate::settings::BACKEND_MODELS.contains(&m.model.as_str()) {
+                    m.model.clone()
+                } else {
+                    crate::settings::BACKEND_MODELS[0].to_string()
+                };
+                let p = Profile { backend_model: model, effort: "low".into(), ..Default::default() };
+                let auth = host.provider("chatgpt")?.request("auth.token", serde_json::Value::Null, Duration::from_secs(20)).await?;
+                chatgpt::ask_codex(&host, auth, &p, &instructions, &text, None, vec![]).await
+            })
+        })
     }
 
     fn start_voice(&self, sess: &dyn Session) -> Result<(), String> {

@@ -25,6 +25,8 @@ pub struct Tools {
     pub music_ctl: Option<MusicFn>,
     /// Добавить в очередь YouTube.
     pub music_queue: Option<MusicFn>,
+    /// Общая память: «вспомни», «забудь/запомни».
+    pub memory: Option<Arc<crate::memory::Memory>>,
 }
 
 const DAYS: [&str; 7] = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
@@ -45,7 +47,7 @@ fn as_str(v: &Value) -> String {
 
 impl Tools {
     pub fn new(host: Arc<Host>, store: Store) -> Tools {
-        Tools { host, store, music: None, music_ctl: None, music_queue: None }
+        Tools { host, store, music: None, music_ctl: None, music_queue: None, memory: None }
     }
 
     /// Запрос к плагину, который даёт возможность cap.
@@ -215,6 +217,10 @@ impl Tools {
         if self.use_ch("alice") {
             defs.push(def("alice_command"));
         }
+        if self.memory.as_ref().is_some_and(|m| m.enabled()) {
+            defs.push(def("recall_conversation"));
+            defs.push(def("edit_memory"));
+        }
         defs.extend(self.host.tools());
         if self.has_token() && self.use_ch("yandex") && self.has_catalog().await {
             defs.push(def("smart_home"));
@@ -262,6 +268,19 @@ impl Tools {
                 return "Не понял команду для музыки.".into();
             }
             return m(c).await;
+        }
+        if let Some(m) = &self.memory {
+            if name == "recall_conversation" {
+                let (q, d) = (field("query"), field("date"));
+                if q.is_empty() && d.is_empty() {
+                    return "Скажи, что вспомнить: ключевые слова или день.".into();
+                }
+                return m.search(&q, &d);
+            }
+            if name == "edit_memory" {
+                let words: Vec<String> = a.get("words").and_then(Value::as_array).map(|w| w.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                return m.edit(&field("forget"), &field("remember"), &words);
+            }
         }
         if name == "alice_command" && self.use_ch("alice") {
             let cmd = field("command");

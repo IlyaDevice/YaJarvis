@@ -94,7 +94,7 @@ fn pct(s: &str) -> String {
     String::from_utf8_lossy(&out).into()
 }
 
-fn memory_state(s: &Settings) -> Value {
+pub fn memory_state(s: &Settings) -> Value {
     let has = |p: &str| match p {
         "chatgpt" => crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
         "gemini" => !s.gemini_key.is_empty(),
@@ -172,7 +172,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "eleven_keys": eleven, "gemini_keys": gemini, "vpn": vpn,
         "chatgpt": {"signed_in": crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
                     "plan": str_of(&s.chatgpt, "plan"), "email": str_of(&s.chatgpt, "email"),
-                    "login": Value::Null, "chat": Value::Null, "memory": memory_state(&s), "limited_until": 0},
+                    "login": Value::Null, "chat": super::memory::chat_state(&app), "memory": memory_state(&s), "limited_until": 0},
         "vless": vless,
         "youtube": {"plugin": app.plugins.provider("youtube").is_ok()},
         "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),

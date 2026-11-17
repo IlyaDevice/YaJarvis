@@ -5,6 +5,7 @@
 mod alice;
 mod audio;
 mod chatgpt;
+mod memory;
 mod engine;
 mod fastcmd;
 mod hardware;
@@ -214,7 +215,25 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         let st = store.clone();
         led::Leds::new(Box::new(move || st.with(|s| s.led_for())))
     };
-    let tools = Arc::new(tools::Tools::new(host.clone(), store.clone()));
+    tokio::spawn(chatgpt::warm_loop(host.clone(), store.clone()));
+    let journal = Arc::new(journal::Journal::default());
+    let memory = {
+        let (a, b) = (store.clone(), store.clone());
+        memory::Memory::load(f.data.join("chatgpt-chat.json"), Box::new(move || !a.with(|s| s.memory.off)), Box::new(move || b.with(|s| s.now())))
+    };
+    {
+        let m = memory.clone();
+        *journal.on_remember.lock().unwrap() = Some(Box::new(move |t: journal::Turn| {
+            if !t.model.is_empty() {
+                m.add(&t.text, &t.answer); // разговор с моделью — в общую память, какой бы ассистент ни отвечал
+            } else if !t.answer.is_empty() && memory::worthy(&t.answer) {
+                m.add(&t.text, &format!("[{}]", t.answer)); // выполнено без модели — модель тоже должна знать
+            }
+        }));
+    }
+    let mut tools = tools::Tools::new(host.clone(), store.clone());
+    tools.memory = Some(memory.clone());
+    let tools = Arc::new(tools);
     let engine = engine::Engine::new(
         tokio::runtime::Handle::current(),
         store.clone(),
@@ -222,11 +241,12 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         mic,
         player,
         leds,
-        Arc::new(journal::Journal::default()),
+        journal,
         tools,
         listener,
         f.data.clone(),
     );
+    memory.set_summarizer(Some(engine.summarizer()));
     engine.run(det);
     let app = web::Web::new(store.clone(), host.clone(), proxy, f.data.clone(), engine);
     if let Err(e) = web::serve(app, &f.listen).await {

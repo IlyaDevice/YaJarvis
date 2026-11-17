@@ -26,6 +26,8 @@ pub const LIVE_MODEL: &str = "gpt-live-1-codex";
 /// Лимит подписки кончился — до этого времени (unix, с) отвечаем другим движком.
 pub static LIMITED_UNTIL: AtomicI64 = AtomicI64::new(0);
 const LIMIT_REST: i64 = 3600;
+/// Сколько звука микрофона (16 кГц) уходит плагину за такт 100 мс.
+const FEED_MAX: usize = 4800;
 
 fn unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -60,6 +62,7 @@ pub struct ChatGptSession {
     id: String,
     dialog: Dialog,
     journal: Arc<Journal>,
+    memory: Option<Arc<crate::memory::Memory>>,
     rt: tokio::runtime::Handle,
     brain: Option<Brain>,
     pending: Mutex<Vec<i16>>,
@@ -79,6 +82,7 @@ pub struct Open {
     pub instructions: String,
     pub brain: Option<Brain>,
     pub journal: Arc<Journal>,
+    pub memory: Option<Arc<crate::memory::Memory>>,
 }
 
 impl ChatGptSession {
@@ -89,6 +93,7 @@ impl ChatGptSession {
             id: new_id(),
             dialog: Dialog::new(o.journal.clone(), "GPT-Live (subscription)", LIVE_MODEL),
             journal: o.journal,
+            memory: o.memory,
             rt: rt.clone(),
             brain: o.brain,
             pending: Mutex::default(),
@@ -142,7 +147,10 @@ impl ChatGptSession {
             if n.pid() != pid {
                 break; // плагин перезапустился — разговора на той стороне больше нет
             }
-            let pcm = take_mic(&mut self.pending.lock().unwrap(), 1600);
+            // до 0,3 с за такт — втрое быстрее реального времени: звук, накопленный с момента слова и пока
+            // открывался звонок, быстро уходит плагину, а тот догоняет, выкидывая паузы. По 0,1 с за такт
+            // очередь не убывала никогда, и модель весь разговор слышала человека на 3–4 с позже.
+            let pcm = take_mic(&mut self.pending.lock().unwrap(), FEED_MAX);
             if pcm.is_empty() {
                 continue;
             }
@@ -165,6 +173,16 @@ impl ChatGptSession {
 
     /// Разговор до этого — для задачи бэкенду (без общей памяти: последние полчаса журнала).
     fn with_history(&self, task: &str) -> String {
+        if let Some(m) = self.memory.as_ref().filter(|m| m.enabled()) {
+            // общий чат: весь недавний разговор, а не только последние полчаса
+            let mem = m.transcript(4000);
+            if mem.is_empty() {
+                return task.into();
+            }
+            return format!(
+                "Разговор до этого (для контекста; что было раньше — ищи инструментом recall_conversation):\n{mem}\n\nЗадача от голосового ассистента — выполни её с учётом разговора выше: {task}"
+            );
+        }
         let now = crate::journal::now_s();
         let mut lines = vec![];
         for t in self.journal.items(16).iter().rev() {
@@ -264,9 +282,29 @@ pub async fn brain_request(params: Value) -> Result<Value, String> {
     let brain = s.brain.clone().ok_or("brain unavailable")?;
     let task = s.with_history(task);
     drop(s);
-    match tokio::time::timeout(Duration::from_secs(45), brain(task)).await {
+    let t0 = Instant::now();
+    let r = match tokio::time::timeout(Duration::from_secs(45), brain(task)).await {
         Ok(r) => r.map(Value::String),
         Err(_) => Err("бэкенд не ответил за 45 с".into()),
+    };
+    match &r {
+        Ok(_) => log::info!("бэкенд ответил за {:.2} с", t0.elapsed().as_secs_f64()),
+        Err(e) => log::info!("бэкенд: {e} ({:.2} с)", t0.elapsed().as_secs_f64()),
+    }
+    r
+}
+
+/// Держать у плагина заготовку звонка (WebRTC с собранными адресами), пока голос ассистента — ChatGPT:
+/// звонок тогда открывается на ~0,4 с быстрее. После каждого звонка плагин готовит новую сам.
+pub async fn warm_loop(host: Arc<Host>, store: crate::settings::Store) {
+    tokio::time::sleep(Duration::from_secs(15)).await; // плагины ещё запускаются
+    loop {
+        if store.with(|s| s.active_profile().engine == "chatgpt")
+            && let Ok(n) = host.provider("chatgpt")
+        {
+            let _ = n.request("voice.warm", Value::Null, Duration::from_secs(1)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(300)).await;
     }
 }
 
@@ -281,13 +319,10 @@ pub fn effort(model: &str, effort: &str) -> String {
 }
 
 /// Текстовый запрос к модели подписки через плагин (Codex) с инструментами колонки.
-pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str, text: &str, tools: Option<&Tools>) -> Result<String, String> {
+/// defs — инструменты (список готовит вызывающий: заодно с контекстом, параллельно).
+pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str, text: &str, tools: Option<&Tools>, mut defs: Vec<Value>) -> Result<String, String> {
     let model = if p.backend_model.is_empty() { BACKEND_MODELS[0].to_string() } else { p.backend_model.clone() };
     let effort = effort(&model, &p.effort);
-    let mut defs = match tools {
-        Some(t) => t.definitions().await,
-        None => vec![],
-    };
     if p.web_search {
         defs.push(json!({"type": "web_search"}));
     }
