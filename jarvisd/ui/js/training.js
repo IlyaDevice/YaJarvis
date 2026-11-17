@@ -33,8 +33,9 @@ export async function viewTraining() {
   $("#t-mode").addEventListener("change", (e) => api("PUT", "/api/settings", { train_mode: e.target.checked }).then(() => { toast(e.target.checked ? "Запись для обучения включена" : "Запись выключена"); viewTraining(); }).catch((err) => toast(err.message, true)));
   $("#t-lim").addEventListener("input", (e) => ($("#t-lim-v").textContent = `${used} из ${e.target.value} МБ`));
   $("#t-lim").addEventListener("change", (e) => api("PUT", "/api/settings", { train_limit_mb: +e.target.value }).catch((err) => toast(err.message, true)));
-  $("#t-model").addEventListener("change", (e) => { const file = e.target.files[0]; if (!file) return; act(null, async () => { await upload("PUT", "/api/train/model", file); await waitRestart("Модель загружена — Джарвис перезапускается"); }); });
-  $("#t-restore")?.addEventListener("click", (e) => act(e.target, async () => { await api("POST", "/api/train/model/restore"); await waitRestart("Возвращаю прежнюю модель — Джарвис перезапускается"); }));
+  const modelApplied = async (result) => { if (result?.reloaded) { toast("Модель применена без перезапуска"); await viewTraining(); } else await waitRestart("Применяю модель — Джарвис перезапускается"); };
+  $("#t-model").addEventListener("change", (e) => { const file = e.target.files[0]; if (!file) return; act(null, async () => modelApplied(await upload("PUT", "/api/train/model", file))); });
+  $("#t-restore")?.addEventListener("click", (e) => act(e.target, async () => modelApplied(await api("POST", "/api/train/model/restore"))));
 }
 
 export function trainStepsHtml() {

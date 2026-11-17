@@ -1,4 +1,4 @@
-use super::{Callback,ChatGpt,client,opus,rtc_runtime::RoutedRuntime};
+use super::{Callback,ChatGpt,opus,rtc_runtime::RoutedRuntime};
 use std::{sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},collections::BTreeMap,time::{Duration,Instant}};
 use serde_json::{Value,json};
 use base64::{Engine,engine::general_purpose::STANDARD as B64};
@@ -68,7 +68,7 @@ impl RtcVoice {
         let instructions=params["instructions"].as_str().unwrap_or("");let voice=params["profile"]["voice"].as_str().unwrap_or("cove");let voice=if ["cove","juniper","maple","spruce","ember","vale","breeze","arbor","sol"].contains(&voice){voice}else{"cove"};
         let thread=params["profile"]["thread"].as_str().filter(|s|!s.is_empty()&&s.len()<=128).unwrap_or(&id);
         let session=json!({"model":"gpt-live-1-codex","instructions":instructions,"audio":{"output":{"voice":voice}},"delegation":{"type":"client"},"initial_items":[{"type":"message","role":"developer","content":[{"type":"input_text","text":instructions}]}]});
-        let response=client(&network)?.post(&provider.call_url).bearer_auth(access).header("ChatGPT-Account-ID",account).header("OpenAI-Alpha","quicksilver=v2").header("session-id",thread).header("thread-id",thread).header("x-session-id",&id).header("originator","codex_cli_rs").json(&json!({"sdp":offer,"session":session})).send().await.map_err(|_|"Не создать звонок ChatGPT")?;
+        let response=provider.client_for(&network)?.post(&provider.call_url).bearer_auth(access).header("ChatGPT-Account-ID",account).header("OpenAI-Alpha","quicksilver=v2").header("session-id",thread).header("thread-id",thread).header("x-session-id",&id).header("originator","codex_cli_rs").json(&json!({"sdp":offer,"session":session})).send().await.map_err(|_|"Не создать звонок ChatGPT")?;
         let status=response.status();if !status.is_success(){if [403,429].contains(&status.as_u16()){emit(&provider.services,&id,"limit",Value::Null).await;}return Err(format!("ChatGPT не открыл звонок ({})",status.as_u16()));}
         let answer=response.text().await.map_err(|_|"Нет ответа SDP")?;if answer.len()>1024*1024{return Err("Слишком большой SDP".into());}
         if proxied && !answer.lines().any(|line|line.starts_with("a=candidate:") && line.to_ascii_lowercase().contains(" tcp ")){return Err("В ответе ChatGPT нет TCP ICE: прямой UDP при выбранном VPN запрещён".into());}

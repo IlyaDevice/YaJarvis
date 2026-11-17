@@ -92,12 +92,18 @@ pub fn check_file(data: &Path, wav: &Path, store: &Store) -> Result<(), String> 
 pub struct Listener {
     pub ready: std::sync::atomic::AtomicBool,
     pub last_prob: std::sync::atomic::AtomicU32,
+    reload:std::sync::atomic::AtomicBool,
 }
 
 impl Listener {
     pub fn new(data: &Path, store: &Store) -> (std::sync::Arc<Listener>, Box<dyn Wake>) {
         let w = load(data, store);
-        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into() });
+        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into(),reload:false.into() });
         (me, w.det)
+    }
+    pub fn request_reload(&self){self.reload.store(true,std::sync::atomic::Ordering::Release);}
+    pub fn take_reload(&self,data:&Path,store:&Store)->Option<Box<dyn Wake>>{
+        if !self.reload.swap(false,std::sync::atomic::Ordering::AcqRel){return None;}
+        let loaded=load(data,store);self.ready.store(loaded.ready,std::sync::atomic::Ordering::Release);self.last_prob.store(0,std::sync::atomic::Ordering::Relaxed);Some(loaded.det)
     }
 }

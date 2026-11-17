@@ -123,15 +123,29 @@ impl Kws {
             return Err("wake.bin: не тот формат".into());
         }
         let n = u32::from_le_bytes(data[5..9].try_into().unwrap()) as usize;
+        if data.len()>4*1024*1024 || n>64*1024 {return Err("wake.bin: модель слишком большая".into());}
         if 9 + n > data.len() {
             return Err("wake.bin: обрезан".into());
         }
         let h: Header = serde_json::from_slice(&data[9..9 + n]).map_err(|e| e.to_string())?;
+        if data.len()>4*1024*1024 || n>64*1024 || h.sample_rate!=16000
+            || !(16..=2048).contains(&h.n_fft) || !h.n_fft.is_power_of_two()
+            || h.win==0 || h.win>h.n_fft || h.hop==0 || h.hop>h.win
+            || !(2..=128).contains(&h.n_mels) || !(1..=128).contains(&h.channels)
+            || !(1..=9).contains(&h.kernel) || h.dilations.len()>16
+            || h.dilations.iter().any(|d|!(1..=256).contains(d))
+            || !h.fmin.is_finite() || !h.fmax.is_finite() || h.fmin<0.0 || h.fmax<=h.fmin || h.fmax>8000.0
+            || h.thresholds.len()!=10 || h.thresholds.iter().any(|n|!n.is_finite() || !(0.0..=1.0).contains(n)) {
+            return Err("wake.bin: неподдерживаемые параметры модели".into());
+        }
+        let history=h.dilations.iter().map(|d|((h.kernel-1)*d+1)*h.channels).sum::<usize>();
+        if history>1024*1024{return Err("wake.bin: модель требует слишком много памяти".into());}
         let raw = &data[9 + n..];
         if raw.len() % 4 != 0 {
             return Err("wake.bin: веса повреждены".into());
         }
         let floats: Vec<f32> = raw.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        if floats.iter().any(|v|!v.is_finite()){return Err("wake.bin: веса содержат неверные числа".into());}
         let mut off = 0;
         let mut take = |n: usize| -> Result<Vec<f32>, String> {
             if floats.len() - off < n {
@@ -142,6 +156,7 @@ impl Kws {
         };
         let mean = take(h.n_mels)?;
         let std = take(h.n_mels)?;
+        if std.iter().any(|v|*v<=0.0){return Err("wake.bin: неверная нормализация".into());}
         let mut mk = |cin: usize, cout: usize, k: usize, dil: usize| -> Result<Conv, String> {
             let w = take(cout * cin * k)?;
             let b = take(cout)?;
@@ -274,6 +289,14 @@ impl crate::Wake for Kws {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]fn rejects_invalid_geometry_before_allocating_or_running(){
+        let original=include_bytes!("../../../models/wake.bin");let n=u32::from_le_bytes(original[5..9].try_into().unwrap()) as usize;
+        for (field,value) in [("hop",serde_json::json!(0)),("n_fft",serde_json::json!(513)),("channels",serde_json::json!(usize::MAX)),("dilations",serde_json::json!([0]))]{
+            let mut header:serde_json::Value=serde_json::from_slice(&original[9..9+n]).unwrap();header[field]=value;let header=serde_json::to_vec(&header).unwrap();
+            let mut bytes=b"JKWS1".to_vec();bytes.extend((header.len() as u32).to_le_bytes());bytes.extend(header);bytes.extend(&original[9+n..]);assert!(Kws::load(&bytes,Box::new(||5)).is_err());
+        }
+        assert!(Kws::load(original,Box::new(||5)).is_ok());
+    }
 
     /// Совпадение с PyTorch: JARVIS_KWS_DIR=…/kws/out cargo test -p jarvis-dsp kws
     #[test]

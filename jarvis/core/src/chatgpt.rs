@@ -36,6 +36,15 @@ fn unix() -> i64 {
 pub fn limited() -> bool {
     unix() < LIMITED_UNTIL.load(Ordering::Relaxed)
 }
+fn clip_error(text:&str)->String{text.chars().take(240).collect()}
+async fn await_open(future:impl std::future::Future<Output=Result<Value,String>>,closed:&tokio::sync::Notify)->Result<(),String>{
+    tokio::pin!(future);
+    tokio::select!{
+        biased;
+        result=&mut future=>result.map(|_|()),
+        _=closed.notified()=>tokio::time::timeout(Duration::from_millis(100),&mut future).await.unwrap_or_else(|_|Err("разговор отменён".into())).map(|_|()),
+    }
+}
 
 pub fn voice(v: &str) -> String {
     let v = v.to_lowercase();
@@ -136,10 +145,8 @@ impl ChatGptSession {
             let left = Duration::from_secs(40).saturating_sub(t0.elapsed()).max(Duration::from_secs(1));
             n.request("voice.open", json!({"id": self.id, "profile": {"voice": voice, "thread": thread}, "instructions": instructions, "auth": auth}), left).await
         };
-        let res = tokio::select! {
-            r = open => r.map(|_| ()),
-            _ = self.wake.notified() => Err("разговор отменён".into()),
-        };
+        // `closed` may arrive immediately before the actual connection error.
+        let res = await_open(open,&self.wake).await;
         let ok = res.is_ok();
         if ok{log::info!("ChatGPT: разговор готов за {:.2} с, в очереди микрофона {:.2} с",self.created.elapsed().as_secs_f64(),self.pending.lock().unwrap().len() as f64/16000.0);}
         let _ = started.send(res);
@@ -267,7 +274,7 @@ fn event(native:Option<&Arc<Native>>,p:Value){
             LIMITED_UNTIL.store(unix() + LIMIT_REST, Ordering::Relaxed);
             s.cancel();
         }
-        "error" => s.dialog.finish_turn(text),
+        "error" => {log::info!("ChatGPT: ошибка сессии: {}",clip_error(text));s.dialog.finish_turn(text);},
         "closed" => s.cancel(),
         "audio" => {
             let Ok(data) = B64.decode(text) else { return };
@@ -365,6 +372,14 @@ pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn provider_close_does_not_mask_connection_failure(){
+        let closed=tokio::sync::Notify::new();
+        let request=async{closed.notify_one();tokio::time::sleep(std::time::Duration::from_millis(5)).await;Err("ChatGPT HTTP 403".to_string())};
+        assert_eq!(super::await_open(request,&closed).await.unwrap_err(),"ChatGPT HTTP 403");
+        let cancelled=tokio::sync::Notify::new();cancelled.notify_one();
+        assert!(super::await_open(std::future::pending(),&cancelled).await.unwrap_err().contains("отменён"));
+    }
     #[test]
     fn efforts_and_ids() {
         assert_eq!(super::effort("gpt-6.1-sol", "none"), "low");

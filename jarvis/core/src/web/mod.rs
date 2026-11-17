@@ -11,6 +11,7 @@ mod auth;
 mod chatgpt;
 mod config;
 mod diagnostics;
+mod device;
 mod homeassistant;
 mod keys;
 mod memory;
@@ -48,6 +49,7 @@ pub struct Web {
     pub data_dir: PathBuf,
     pub started: Instant,
     pub telemetry: Arc<crate::telemetry::Telemetry>,
+    wake_update:tokio::sync::Mutex<()>,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
     reset_at: Mutex<Option<Instant>>,
 }
@@ -57,7 +59,7 @@ pub type App = Arc<Web>;
 impl Web {
     pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, engine: Arc<crate::engine::Engine>) -> App {
         let telemetry=crate::telemetry::Telemetry::start(data_dir.clone());
-        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, wake_update:tokio::sync::Mutex::new(()), started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 
@@ -99,6 +101,9 @@ pub fn router(app: App) -> Router {
         .route("/api/state", get(state::state))
         .route("/api/stats", get(diagnostics::stats))
         .route("/api/logs", get(diagnostics::logs))
+        .route("/api/leds/preview", post(device::leds))
+        .route("/api/train/model", put(device::model).layer(DefaultBodyLimit::max(4<<20)))
+        .route("/api/train/model/restore", post(device::restore))
         .route("/api/password", put(auth::change_password))
         .route("/api/settings", put(config::settings))
         .route("/api/keys", put(keys::put))

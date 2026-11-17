@@ -356,6 +356,8 @@ impl Module {
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.cancel.send_replace(true);
+        #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
+        if let Implementation::Cloud(provider)=&self.implementation{provider.close();}
         #[cfg(feature="chatgpt")]
         if let Implementation::ChatGpt(provider)=&self.implementation{provider.shutdown().await;}
         #[cfg(feature = "vpn")]

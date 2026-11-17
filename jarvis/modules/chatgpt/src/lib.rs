@@ -13,13 +13,19 @@ pub struct ChatGpt {
     services:Callback,refresh:tokio::sync::Mutex<()>,login:Arc<Mutex<Value>>,
     generation:Arc<std::sync::atomic::AtomicU64>,poller:Mutex<Option<tokio::task::JoinHandle<()>>>,
     issuer:String,codex:String,call_url:String,
+    client_cache:Mutex<Option<(Value,reqwest::Client)>>,
     voices:Mutex<std::collections::BTreeMap<String,Arc<rtc_voice::RtcVoice>>>,voice_lock:tokio::sync::Mutex<()>,
 }
 impl ChatGpt {
-    pub fn new(services:Callback)->Self{Self{services,refresh:tokio::sync::Mutex::new(()),login:Arc::new(Mutex::new(Value::Null)),generation:Arc::new(std::sync::atomic::AtomicU64::new(0)),poller:Mutex::new(None),issuer:ISSUER.into(),codex:"https://chatgpt.com/backend-api/codex/responses".into(),call_url:"https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas".into(),voices:Mutex::default(),voice_lock:tokio::sync::Mutex::new(())}}
-    async fn client(&self)->Result<reqwest::Client,String>{client(&(self.services)("network".into(),json!({})).await?)}
+    pub fn new(services:Callback)->Self{Self{services,refresh:tokio::sync::Mutex::new(()),login:Arc::new(Mutex::new(Value::Null)),generation:Arc::new(std::sync::atomic::AtomicU64::new(0)),poller:Mutex::new(None),issuer:ISSUER.into(),codex:"https://chatgpt.com/backend-api/codex/responses".into(),call_url:"https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas".into(),client_cache:Mutex::default(),voices:Mutex::default(),voice_lock:tokio::sync::Mutex::new(())}}
+    async fn client(&self)->Result<reqwest::Client,String>{self.client_for(&(self.services)("network".into(),json!({})).await?)}
+    fn client_for(&self,network:&Value)->Result<reqwest::Client,String>{
+        if let Some(error)=network["error"].as_str(){return Err(error.into());}
+        let mut cached=self.client_cache.lock().unwrap();if let Some((route,client))=cached.as_ref(){if route==network{return Ok(client.clone());}}
+        let client=client(network)?;*cached=Some((network.clone(),client.clone()));Ok(client)
+    }
     pub fn login_state(&self)->Value{self.login.lock().unwrap().clone()}
-    pub fn stop(&self){self.generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if let Some(task)=self.poller.lock().unwrap().take(){task.abort();}*self.login.lock().unwrap()=Value::Null;self.voices.lock().unwrap().clear();}
+    pub fn stop(&self){self.generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if let Some(task)=self.poller.lock().unwrap().take(){task.abort();}*self.login.lock().unwrap()=Value::Null;self.voices.lock().unwrap().clear();self.client_cache.lock().unwrap().take();}
     pub async fn shutdown(&self){let voices=std::mem::take(&mut*self.voices.lock().unwrap());self.stop();for (_,voice) in voices{voice.close().await;}}
     pub async fn request(&self,method:&str,params:Value)->Result<Value,String>{
         match method{

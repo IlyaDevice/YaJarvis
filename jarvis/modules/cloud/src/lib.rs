@@ -1,10 +1,10 @@
 //! Optional cloud providers. Each provider is independently selected at compile time.
 use serde_json::{Value,json};
-use std::{time::Duration,net::SocketAddr};
+use std::{time::Duration,net::SocketAddr,sync::Mutex};
 use base64::{Engine,engine::general_purpose::STANDARD};
 pub type Socket=tokio_tungstenite::WebSocketStream<reqwest::Upgraded>;
 
-pub struct Provider {id:&'static str,base:reqwest::Url}
+pub struct Provider {id:&'static str,base:reqwest::Url,client:Mutex<Option<(Value,reqwest::Client)>>}
 impl Provider {
     pub fn new(id:&str)->Result<Self,String> {
         let (id,url):(&'static str,&str)=match id {
@@ -14,7 +14,7 @@ impl Provider {
             #[cfg(feature="elevenlabs")] "elevenlabs"=>("elevenlabs","https://api.elevenlabs.io/"),
             _=>return Err("Провайдер не включён в сборку".into()),
         };
-        Ok(Self{id,base:reqwest::Url::parse(url).map_err(|e|e.to_string())?})
+        Ok(Self{id,base:reqwest::Url::parse(url).map_err(|e|e.to_string())?,client:Mutex::default()})
     }
     pub fn id(&self)->&'static str{self.id}
     pub async fn socket(&self,key:&str,network:&Value)->Result<Socket,String>{
@@ -41,6 +41,8 @@ impl Provider {
     fn client(&self,network:&Value)->Result<reqwest::Client,String> {
         if let Some(error)=network["error"].as_str(){return Err(error.into());}
         if !network.is_object(){return Err("Хост не предоставил сетевой маршрут".into());}
+        let mut saved=self.client.lock().unwrap();
+        if let Some((route,client))=saved.as_ref(){if route==network{return Ok(client.clone());}}
         let mut builder=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(60)).connect_timeout(Duration::from_secs(10));
         if let Some(socks)=network["socks"].as_str(){
             let addr:SocketAddr=socks.parse().map_err(|_|"Неверный SOCKS VPN")?;
@@ -48,8 +50,10 @@ impl Provider {
             if !addr.ip().is_loopback() || addr.port()==0 || user.is_empty() || pass.is_empty(){return Err("Неверный SOCKS VPN".into());}
             builder=builder.proxy(reqwest::Proxy::all(format!("socks5h://{socks}")).map_err(|_|"Неверный SOCKS VPN")?.basic_auth(user,pass));
         }
-        builder.build().map_err(|_|"Не создать HTTP-клиент".into())
+        let client=builder.build().map_err(|_|"Не создать HTTP-клиент")?;
+        *saved=Some((network.clone(),client.clone()));Ok(client)
     }
+    pub fn close(&self){self.client.lock().unwrap().take();}
     fn authenticate(&self,request:reqwest::RequestBuilder,key:&str)->reqwest::RequestBuilder {
         match self.id {"gemini"=>request.header("x-goog-api-key",key),"elevenlabs"=>request.header("xi-api-key",key),_=>request.bearer_auth(key)}
     }
@@ -125,6 +129,15 @@ impl Provider {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    #[tokio::test]
+    async fn reuses_http_connection_without_reusing_request_credentials(){
+        tokio::time::timeout(Duration::from_secs(5),async{
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let mut provider=Provider::new("openai").unwrap();provider.base=format!("http://{}/",listener.local_addr().unwrap()).parse().unwrap();
+            let server=tokio::spawn(async move{let (mut socket,_)=listener.accept().await.unwrap();for key in ["first-key","second-key"]{let mut header=Vec::new();while !header.ends_with(b"\r\n\r\n"){let b=socket.read_u8().await.unwrap();header.push(b);assert!(header.len()<8192);}assert!(String::from_utf8_lossy(&header).to_lowercase().contains(&format!("authorization: bearer {key}")));socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"data\":[]}").await.unwrap();}});
+            for key in ["first-key","second-key"]{provider.request(json!({"key":key,"op":"models"}),json!({})).await.unwrap();}
+            server.await.unwrap();provider.close();assert!(provider.client.lock().unwrap().is_none());
+        }).await.unwrap();
+    }
     #[tokio::test]
     async fn authenticates_and_preserves_response_and_never_bypasses_blocked_vpn(){
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
