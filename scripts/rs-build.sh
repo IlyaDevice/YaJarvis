@@ -8,9 +8,10 @@ cd "$(dirname "$0")/.."
 VER="${1:-dev}"
 export JARVIS_VERSION="$VER"
 export JARVIS_UI="${JARVIS_UI:-$PWD/jarvisd/ui}"
-if command -v zig >/dev/null 2>&1; then
-	export CC_aarch64_unknown_linux_musl="zig cc -target aarch64-linux-musl"
-	export AR_aarch64_unknown_linux_musl="zig ar"
+# C-код (ring): zig. cc-rs добавляет --target=aarch64-unknown-linux-musl, а zig такой триплет не понимает,
+# поэтому нужна обёртка (ZCC), которая его убирает и ставит -target aarch64-linux-musl.
+if [ -n "${ZCC:-}" ]; then
+	export CC_aarch64_unknown_linux_musl="$ZCC" AR_aarch64_unknown_linux_musl="${ZAR:-$ZCC}"
 fi
 (cd jarvis && cargo build --release --target aarch64-unknown-linux-musl)
 mkdir -p build

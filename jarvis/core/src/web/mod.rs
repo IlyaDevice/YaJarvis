@@ -8,10 +8,11 @@
 //!   - строгий CSP, запрет встраивания во фреймы.
 
 mod auth;
-mod state;
+mod plugins;
+pub mod state;
 mod ui;
 
-use crate::settings::Store;
+use crate::{plugins::Host, settings::Store, vpn::Proxy};
 use axum::{
     Json, Router,
     body::Body,
@@ -19,7 +20,7 @@ use axum::{
     http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use serde_json::{Value, json};
 use std::{
@@ -32,6 +33,8 @@ use std::{
 
 pub struct Web {
     pub store: Store,
+    pub plugins: Arc<Host>,
+    pub proxy: Arc<Proxy>,
     pub data_dir: PathBuf,
     pub started: Instant,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
@@ -41,8 +44,8 @@ pub struct Web {
 pub type App = Arc<Web>;
 
 impl Web {
-    pub fn new(store: Store, data_dir: PathBuf) -> App {
-        Arc::new(Web { store, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+    pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf) -> App {
+        Arc::new(Web { store, plugins, proxy, data_dir, started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 
@@ -63,6 +66,17 @@ pub fn router(app: App) -> Router {
     let api = Router::new()
         .route("/api/state", get(state::state))
         .route("/api/password", put(auth::change_password))
+        .route("/api/plugins", get(plugins::list))
+        .route("/api/plugins/catalog", get(plugins::catalog))
+        .route("/api/plugins/install", post(plugins::install))
+        .route("/api/plugins/upload", post(plugins::upload).layer(DefaultBodyLimit::max(crate::plugins::install::ZIP_MAX + 1)))
+        .route("/api/plugins/warned", post(plugins::warned))
+        .route("/api/plugins/{id}/enable", post(plugins::enable))
+        .route("/api/plugins/{id}/settings", post(plugins::settings))
+        .route("/api/plugins/{id}", delete(plugins::remove))
+        .route("/api/onboarded", post(plugins::onboarded))
+        .route("/p/{id}/{*file}", get(plugins::page_file))
+        .route("/api/p/{id}/{*path}", any(plugins::page_proxy).layer(DefaultBodyLimit::max(16 << 20)))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -70,7 +84,7 @@ pub fn router(app: App) -> Router {
         .route("/api/logout", post(auth::logout))
         .route("/api/setup", post(auth::setup))
         .merge(api)
-        .route("/api/{*rest}", axum::routing::any(not_ported))
+        .route("/api/{*rest}", any(not_ported))
         .fallback(get(ui::serve))
         .layer(DefaultBodyLimit::max(256 << 10))
         .layer(middleware::from_fn_with_state(app.clone(), guard))

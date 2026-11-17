@@ -147,10 +147,25 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
     let mut night = s.night.clone();
     night.fill();
     let ha = &s.home_assistant;
+    let mut vless = vless_view(&s.vless);
+    let (info, verr) = app.proxy.status();
+    if !verr.is_empty() {
+        vless["error"] = verr.into();
+    }
+    if let Some(Value::Object(i)) = info {
+        for k in ["name", "host", "port", "network", "security", "sni"] {
+            if let Some(v) = i.get(k) {
+                vless[k] = v.clone();
+            }
+        }
+    }
     let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let mut out = json!({
         "version": version(),
-        "home_plugin": {"available": false, "error": "плагин «Умный дом» ещё не подключён к новому ядру"},
+        "home_plugin": match app.plugins.provider("homeassistant") {
+            Ok(_) => json!({"available": true}),
+            Err(e) => json!({"available": false, "error": e}),
+        },
         "profiles": s.profiles, "active": s.active, "prompts": s.prompts, "live_voices": s.live_voices,
         "keys": {"openai": mask(&s.openai_key), "gemini": mask(&s.gemini_key), "grok": mask(&s.grok_key),
                  "elevenlabs": mask(&s.elevenlabs_key), "yandex": mask(&s.yandex_token)},
@@ -158,15 +173,15 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "chatgpt": {"signed_in": crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
                     "plan": str_of(&s.chatgpt, "plan"), "email": str_of(&s.chatgpt, "email"),
                     "login": Value::Null, "chat": Value::Null, "memory": memory_state(&s), "limited_until": 0},
-        "vless": vless_view(&s.vless),
-        "youtube": {"plugin": false},
+        "vless": vless,
+        "youtube": {"plugin": app.plugins.provider("youtube").is_ok()},
         "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),
                            "rooms": ha.get("rooms").cloned().unwrap_or(Value::Null)},
         "xiaomi": {"signed_in": s.home_connected("xiaomi")},
         "smartlife": {"signed_in": s.home_connected("smartlife")},
         "rooms": Value::Null,
         "update_available": false,
-        "plugin_pages": [],
+        "plugin_pages": app.plugins.pages(),
         "speaker": {"model": model.name, "model_id": model.id, "mic": false, "mic_why": "", "leds": false,
                     "wake_model": false, "talking": false, "uptime_s": app.started.elapsed().as_secs(), "volume": 0},
         "settings": {"wake_enabled": s.wake_enabled, "wake_sensitivity": s.wake_sensitivity, "mic_boost_db": s.mic_boost_db,
@@ -175,7 +190,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
                      "home_use": s.home_use_state(), "speaker_room": s.speaker_room, "led": s.led, "train_mode": s.train_mode,
                      "language": s.language, "night": night, "night_now": s.is_night(), "radio": !s.radio_off,
                      "onboarded": s.onboarded, "plugins_warned": s.plugins_warned},
-        "plugins": {"installed": [], "enabled": []},
+        "plugins": app.plugins.summary(),
         "repo": crate::DEFAULT_REPO,
         "security": security_checks(),
     });
