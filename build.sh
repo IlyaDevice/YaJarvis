@@ -69,7 +69,9 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     core_assets="$core_assets jarvisd-$arch"
     bytes=$(wc -c < "$stage/jarvisd" | tr -d '[:space:]')
     printf '%s{"arch":"%s","asset":"jarvisd-%s","modules":[],"bytes":%s}' "$comma" "$arch" "$arch" "$bytes" >> "$manifest"
-    sh scripts/pack-official.sh "$out" "$arch" "$target" "$release"
+    if [ "${STATION_CORE_ONLY:-0}" != 1 ]; then
+        sh scripts/pack-official.sh "$out" "$arch" "$target" "$release"
+    fi
     comma=,
 done
 printf ']}\n' >> "$manifest"

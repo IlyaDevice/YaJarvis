@@ -51,7 +51,7 @@ function speakerRow(sp, i) {
 
 $("#scan").addEventListener("click", async (e) => {
   $("#scan").disabled = true;
-  $("#scan-st").innerHTML = `<span class="radar" aria-hidden="true"><i></i><i></i></span> Готовлю ADB и ищу подключённые колонки…`;
+  $("#scan-st").innerHTML = `<span class="radar" aria-hidden="true"><i></i><i></i></span> Ищу колонки в домашней сети…`;
   $("#found").innerHTML = "";
   try {
     const d = await api("GET", "/api/scan");

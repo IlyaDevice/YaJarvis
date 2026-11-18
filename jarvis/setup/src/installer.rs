@@ -19,6 +19,7 @@ use std::{
 };
 
 mod adb;
+mod discovery;
 
 const REPO: &str = match option_env!("JARVIS_REPO") {
     Some(s) => s,
@@ -47,6 +48,7 @@ struct Setup {
     address: SocketAddr,
     job: Mutex<Job>,
     adb: tokio::sync::OnceCell<PathBuf>,
+    scanning: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default, Serialize)]
@@ -115,6 +117,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         address,
         job: Mutex::default(),
         adb: tokio::sync::OnceCell::new(),
+        scanning: tokio::sync::Mutex::new(()),
     });
     let api = Router::new()
         .route("/api/scan", get(scan))
@@ -370,11 +373,15 @@ impl Setup {
 }
 
 async fn scan(State(app): State<App>) -> Response {
+    let Ok(_scanning) = app.scanning.try_lock() else {
+        return bad("Поиск колонок уже идёт");
+    };
     let devices = match app.adb(&["devices"], 10).await {
         Ok(d) => d,
         Err(e) => return bad(e),
     };
-    let mut speakers = Vec::new();
+    let mut already = std::collections::BTreeSet::new();
+    let mut candidates = Vec::new();
     for line in devices.lines().skip(1) {
         let mut fields = line.split_whitespace();
         let Some(ip) = fields
@@ -384,13 +391,30 @@ async fn scan(State(app): State<App>) -> Response {
         else {
             continue;
         };
-        if fields.next() != Some("device") {
-            continue;
-        }
-        if let Ok(speaker) = app.inspect(ip).await {
-            speakers.push(speaker);
+        already.insert(ip);
+        if fields.next() == Some("device") {
+            candidates.push((ip, false));
         }
     }
+    let nearby = discovery::nearby(&already).await;
+    candidates.extend(nearby.into_iter().take(16).map(|ip| (ip, true)));
+    let mut probes = tokio::task::JoinSet::new();
+    for (ip, new) in candidates {
+        let app = app.clone();
+        probes.spawn(async move {
+            let found = tokio::time::timeout(Duration::from_secs(9), app.inspect(ip)).await
+                .ok().and_then(Result::ok).filter(|speaker| !new || !speaker.userland.is_empty());
+            if new && found.is_none() {
+                let _ = app.adb(&["disconnect", &format!("{ip}:5555")], 2).await;
+            }
+            found
+        });
+    }
+    let mut speakers = Vec::new();
+    while let Some(probe) = probes.join_next().await {
+        if let Ok(Some(speaker)) = probe { speakers.push(speaker); }
+    }
+    speakers.sort_by(|a, b| a.ip.cmp(&b.ip));
     reply(StatusCode::OK, json!({"speakers":speakers}))
 }
 async fn check(State(app): State<App>, Json(new): Json<Address>) -> Response {
