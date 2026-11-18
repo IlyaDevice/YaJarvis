@@ -16,7 +16,7 @@ cargo build --locked --release -p jarvis-setup
 
 `build/release` содержит ZIP-пакеты прошивки, ядра для обновления, пакеты плагинов и контрольные суммы. GitHub Actions собирает установщики для Windows, Linux и macOS. Для локальной сборки под одну архитектуру задайте `STATION_ARCHES=arm64` или `STATION_ARCHES=armv7`, для своего репозитория задайте `REPO=owner/repo`.
 
-Установщику нужен `adb` из Android Platform Tools. Добавьте его в PATH или задайте `JARVIS_ADB` с полным путём. Для теста локального пакета задайте `JARVIS_SETUP_PAYLOAD` с путём к каталогу ZIP-файлов. После установки Станция работает самостоятельно.
+Установщик ищет `adb` рядом с собой, в PATH и папках Android SDK. На Windows, macOS и Linux x86-64 он скачает Android Platform Tools с сайта Google, если ADB ещё нет. Чтобы указать свой `adb`, задайте `JARVIS_ADB` с полным путём. Для теста локального пакета задайте `JARVIS_SETUP_PAYLOAD` с путём к каталогу ZIP-файлов.
 
 | Каталог | Содержимое |
 | --- | --- |

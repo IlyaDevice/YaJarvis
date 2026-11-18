@@ -18,6 +18,8 @@ use std::{
     time::Duration,
 };
 
+mod adb;
+
 const REPO: &str = match option_env!("JARVIS_REPO") {
     Some(s) => s,
     None => "newfpv/YaJavis",
@@ -44,7 +46,7 @@ struct Setup {
     token: String,
     address: SocketAddr,
     job: Mutex<Job>,
-    adb: PathBuf,
+    adb: tokio::sync::OnceCell<PathBuf>,
 }
 
 #[derive(Default, Serialize)]
@@ -108,14 +110,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(0);
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
     let address = listener.local_addr()?;
-    let adb = std::env::var_os("JARVIS_ADB")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "adb".into());
     let app = Arc::new(Setup {
         token: token()?,
         address,
         job: Mutex::default(),
-        adb,
+        adb: tokio::sync::OnceCell::new(),
     });
     let api = Router::new()
         .route("/api/scan", get(scan))
@@ -240,14 +239,15 @@ fn bad(message: impl Into<String>) -> Response {
 
 impl Setup {
     async fn adb(&self, args: &[&str], seconds: u64) -> Result<String, String> {
-        let mut cmd = tokio::process::Command::new(&self.adb);
+        let path = self.adb.get_or_try_init(adb::prepare).await?;
+        let mut cmd = tokio::process::Command::new(path);
         let result = tokio::time::timeout(
             Duration::from_secs(seconds),
             cmd.args(args).kill_on_drop(true).output(),
         )
         .await
         .map_err(|_| "ADB не ответил вовремя")?
-        .map_err(|_| "ADB не найден. Добавьте Platform Tools в PATH или укажите JARVIS_ADB")?;
+        .map_err(|error| format!("Не удалось запустить ADB: {error}"))?;
         if !result.status.success() {
             return Err(format!(
                 "Команда ADB завершилась с ошибкой {}",
