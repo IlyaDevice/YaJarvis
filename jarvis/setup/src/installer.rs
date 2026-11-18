@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::{Cursor, ErrorKind, Read},
+    io::{Cursor, ErrorKind, Read, Seek},
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -32,6 +32,8 @@ const VERSION: &str = match option_env!("JARVIS_VERSION") {
 };
 const STAGE: &str = "/tmp/jarvis-setup-stage";
 const MAX_PAYLOAD: usize = 40 << 20;
+const INSTALL_RESERVE_KIB: u64 = 1024;
+const MODELS: [&str; 3] = ["wake.bin", "oww.bin", "wake_oww.bin"];
 const REQUIRED: &[&str] = &[
     "jarvisd",
     "jarvis-supervisor",
@@ -75,8 +77,58 @@ struct Speaker {
     free_mb: u64,
     staging_mb: u64,
     ram_mb: u64,
-    need_mb: u64,
+    need_mb: Option<u64>,
+    space_ok: Option<bool>,
     problems: Vec<String>,
+    #[serde(skip)]
+    storage: Storage,
+}
+
+#[derive(Default)]
+struct Storage {
+    flash_kib: u64,
+    previous_kib: u64,
+    temp_kib: u64,
+    present_models: [bool; MODELS.len()],
+}
+
+struct Footprint {
+    flash_kib: u64,
+    temp_kib: u64,
+}
+
+impl Footprint {
+    fn from_files(files: &BTreeMap<&str, u64>, userland: &str, present_models: &[bool; MODELS.len()]) -> Self {
+        let tap = format!("vqe_tap-{userland}.so");
+        let mut result = Self { flash_kib: INSTALL_RESERVE_KIB, temp_kib: INSTALL_RESERVE_KIB };
+        for (&name, &bytes) in files {
+            let kib = bytes.div_ceil(4096) * 4;
+            result.temp_kib += kib;
+            let kept = MODELS.iter().position(|model| *model == name).is_some_and(|i| present_models[i]);
+            let unused_tap = matches!(name, "vqe_tap-armhf.so" | "vqe_tap-arm64.so") && name != tap;
+            if name != "S98jarvisd" && !unused_tap && !kept {
+                result.flash_kib += kib;
+            }
+        }
+        result
+    }
+}
+
+impl Speaker {
+    fn check_space(&mut self, files: &BTreeMap<&str, u64>) -> Result<(), String> {
+        let needed = Footprint::from_files(files, &self.userland, &self.storage.present_models);
+        self.need_mb = Some(needed.flash_kib.div_ceil(1024));
+        let flash_ok = self.storage.flash_kib + self.storage.previous_kib >= needed.flash_kib;
+        let temp_ok = self.storage.temp_kib >= needed.temp_kib;
+        self.space_ok = Some(flash_ok && temp_ok);
+        if !flash_ok {
+            return Err(format!("На колонке нужно {} МиБ для этого пакета", needed.flash_kib.div_ceil(1024)));
+        }
+        if !temp_ok {
+            return Err(format!("Для распаковки на колонке нужно {} МиБ в /tmp", needed.temp_kib.div_ceil(1024)));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -272,7 +324,11 @@ impl Setup {
             return Err("Нужен IP вашей колонки в домашней сети".into());
         }
         self.adb(&["connect", &format!("{ip}:5555")], 10).await?;
-        let info = self.shell(ip, r#"id -u; uname -m; head -c 160 /proc/device-tree/model 2>/dev/null | tr -d '\000\n'; printf '\n'; df -k /data 2>/dev/null | awk 'END{print $4}'; awk '/MemTotal/{print $2}' /proc/meminfo; od -An -tu1 -N20 /system/vendor/quasar/maind 2>/dev/null | tr '\n' ' '; printf '\n'; if test -d /etc/init.d && command -v aplay >/dev/null && command -v start-stop-daemon >/dev/null; then echo ready; else echo missing; fi; du -k /data/opt/jarvisd/jarvisd.prev-rust 2>/dev/null | awk '{print $1}'"#).await?;
+        let info = self.shell(ip, r#"id -u; uname -m; head -c 160 /proc/device-tree/model 2>/dev/null | tr -d '\000\n'; printf '\n'; df -k /data 2>/dev/null | awk 'END{print $4}'; awk '/MemTotal/{print $2}' /proc/meminfo; od -An -tu1 -N20 /system/vendor/quasar/maind 2>/dev/null | tr '\n' ' '; printf '\n'; if test -d /etc/init.d && command -v aplay >/dev/null && command -v start-stop-daemon >/dev/null; then echo ready; else echo missing; fi
+d=/data/opt/jarvisd
+if [ -f "$d/jarvisd.prev-rust" ]; then du -k "$d/jarvisd.prev-rust" 2>/dev/null | awk '{print $1}'; else echo 0; fi
+df -k /tmp 2>/dev/null | awk 'END{print $4}'
+for model in wake.bin oww.bin wake_oww.bin; do if [ -e "$d/$model" ]; then echo 1; else echo 0; fi; done"#).await?;
         let fields: Vec<_> = info.lines().collect();
         let field = |i: usize| fields.get(i).map_or("", |s| s.trim());
         let root = field(0) == "0";
@@ -303,7 +359,6 @@ impl Setup {
             .unwrap_or_default();
         let free_kb = field(3).parse::<u64>().unwrap_or(0);
         let rollback_kb = field(7).parse::<u64>().unwrap_or(0);
-        let need_mb = if installed.is_empty() { 19 } else { 14 };
         let mut sp = Speaker {
             ip: ip.to_string(),
             model: field(2).into(),
@@ -314,7 +369,12 @@ impl Setup {
             free_mb: free_kb / 1024,
             staging_mb: (free_kb + rollback_kb) / 1024,
             ram_mb: field(4).parse::<u64>().unwrap_or(0) / 1024,
-            need_mb,
+            storage: Storage {
+                flash_kib: free_kb,
+                previous_kib: rollback_kb,
+                temp_kib: field(8).parse().unwrap_or_default(),
+                present_models: std::array::from_fn(|i| field(9 + i) == "1"),
+            },
             ..Default::default()
         };
         let profile = self
@@ -333,6 +393,14 @@ impl Setup {
             sp.problems.push(
                 "Не подтверждены Linux-прошивка, профиль maind или аудиоинтерфейс колонки".into(),
             );
+        }
+        if sp.problems.is_empty()
+            && let Some(dir) = payload_dir().0
+            && let Ok(file) = std::fs::File::open(dir.join(format!("station-{}.zip", sp.arch)))
+            && let Ok(files) = package_sizes(file)
+            && let Err(error) = sp.check_space(&files)
+        {
+            sp.problems.push(error);
         }
         Ok(sp)
     }
@@ -479,15 +547,19 @@ fn local_payload(dir: &Path, name: &str, require_checksum: bool) -> Result<Optio
     Ok(Some(bytes))
 }
 
-async fn payload(app: &Setup, arch: &str) -> Result<Vec<u8>, String> {
-    let name = format!("station-{arch}.zip");
-    let (dir, explicit) = match std::env::var_os("JARVIS_SETUP_PAYLOAD") {
+fn payload_dir() -> (Option<PathBuf>, bool) {
+    match std::env::var_os("JARVIS_SETUP_PAYLOAD") {
         Some(path) => (Some(PathBuf::from(path)), true),
         None => (
             std::env::current_exe().ok().and_then(|path| path.parent().map(Path::to_path_buf)),
             false,
         ),
-    };
+    }
+}
+
+async fn payload(app: &Setup, arch: &str) -> Result<Vec<u8>, String> {
+    let name = format!("station-{arch}.zip");
+    let (dir, explicit) = payload_dir();
     if let Some(dir) = dir {
         let local_name = name.clone();
         let local = tokio::task::spawn_blocking(move || local_payload(&dir, &local_name, !explicit))
@@ -565,20 +637,68 @@ mod payload_tests {
         std::fs::write(dir.join(name), b"corrupt").unwrap();
         assert!(local_payload(dir, name, true).is_err());
     }
+
+    #[test]
+    fn footprint_distinguishes_flash_ram_and_existing_models() {
+        let files = BTreeMap::from([
+            ("jarvisd", 6_039_752),
+            ("jarvis-supervisor", 441_992),
+            ("vqe_tap-arm64.so", 5_600),
+            ("vqe_tap-armhf.so", 4_648),
+            ("spotcmd", 6_908),
+            ("wake.bin", 175_678),
+            ("oww.bin", 1_348_172),
+            ("wake_oww.bin", 627_900),
+            ("jarvisd.sh", 2_750),
+            ("S98jarvisd", 355),
+        ]);
+        let clean = Footprint::from_files(&files, "armhf", &[false; 3]);
+        let update = Footprint::from_files(&files, "armhf", &[true; 3]);
+        assert_eq!(clean.flash_kib.div_ceil(1024), 10);
+        assert_eq!(update.flash_kib.div_ceil(1024), 8);
+        assert_eq!(clean.temp_kib, update.temp_kib);
+        let mut speaker = Speaker {
+            userland: "armhf".into(),
+            storage: Storage { flash_kib: clean.flash_kib, temp_kib: clean.temp_kib - 1, ..Default::default() },
+            ..Default::default()
+        };
+        assert!(speaker.check_space(&files).unwrap_err().contains("/tmp"));
+        speaker.storage.temp_kib = clean.temp_kib;
+        assert!(speaker.check_space(&files).is_ok());
+    }
 }
 
-fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let mut sums = BTreeMap::new();
-    for name in REQUIRED.iter().chain(std::iter::once(&"spotcmd")) {
-        let mut entry = match zip.by_name(name) {
+fn package_entries<R: Read + Seek>(
+    reader: R,
+    mut visit: impl FnMut(&'static str, zip::read::ZipFile<'_, R>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+    for name in REQUIRED.iter().copied().chain(std::iter::once("spotcmd")) {
+        let entry = match zip.by_name(name) {
             Ok(e) => e,
-            Err(_) if *name == "spotcmd" => continue,
+            Err(zip::result::ZipError::FileNotFound) if name == "spotcmd" => continue,
             Err(_) => return Err(format!("В пакете отсутствует {name}")),
         };
         if !entry.is_file() || entry.is_symlink() || entry.size() > jarvis_station::MAX_BINARY {
             return Err(format!("Некорректный файл {name}"));
         }
+        visit(name, entry)?;
+    }
+    Ok(())
+}
+
+fn package_sizes<R: Read + Seek>(reader: R) -> Result<BTreeMap<&'static str, u64>, String> {
+    let mut sizes = BTreeMap::new();
+    package_entries(reader, |name, entry| {
+        sizes.insert(name, entry.size());
+        Ok(())
+    })?;
+    Ok(sizes)
+}
+
+fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut sums = BTreeMap::new();
+    package_entries(Cursor::new(bytes), |name, mut entry| {
         let mut data = Vec::new();
         entry
             .by_ref()
@@ -589,24 +709,19 @@ fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String
             return Err(format!("Слишком большой файл {name}"));
         }
         let path = dir.join(name);
-        std::fs::write(&path, data).map_err(|e| e.to_string())?;
-        sums.insert(
-            name.to_string(),
-            jarvis_station::sha256(&path).map_err(|e| e.to_string())?,
-        );
-    }
+        std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+        sums.insert(name.to_string(), format!("{:x}", Sha256::digest(&data)));
+        Ok(())
+    })?;
     Ok(sums)
 }
 
 async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
     let ip = input.ip;
     app.log("Подключаюсь к выбранной колонке…");
-    let sp = app.inspect(ip).await?;
+    let mut sp = app.inspect(ip).await?;
     if !sp.problems.is_empty() {
         return Err(sp.problems.join(". "));
-    }
-    if sp.staging_mb < sp.need_mb {
-        return Err("На колонке недостаточно места для установки".into());
     }
     if (sp.installed.is_empty() || !input.password.is_empty())
         && !(6..=72).contains(&input.password.len())
@@ -614,8 +729,14 @@ async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
         return Err("Пароль панели должен содержать от 6 до 72 байт".into());
     }
     app.log(&format!("Определена архитектура колонки: {}", sp.arch));
+    let bytes = payload(app, &sp.arch).await?;
+    let files = package_sizes(Cursor::new(&bytes))?;
+    sp.check_space(&files)?;
+    if let Some(need) = sp.need_mb {
+        app.log(&format!("Проверено место на колонке. Пакету нужно до {need} МиБ на флеше"));
+    }
     let temp = Scratch::new()?;
-    let sums = unpack(payload(app, &sp.arch).await?, &temp.0)?;
+    let sums = unpack(bytes, &temp.0)?;
     let stage = format!("{STAGE}-{}", token()?);
     app.shell(ip, &format!("umask 077; mkdir {stage}")).await?;
     let result = stage_install(app, input, &sp, &stage, &temp.0, &sums).await;

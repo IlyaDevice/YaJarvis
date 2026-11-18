@@ -1,5 +1,5 @@
 // Мастер первого запуска. Он предлагает только пакеты из официального каталога.
-import { mountService } from "./connections.js";
+import { connDefs, mountService } from "./connections.js";
 import { $, api, esc, icon, toast } from "./core.js";
 import { S, go, reload, voicePlugin } from "./main.js";
 import { PL, plCatalog, plDescription, plIcon, plLoad, plOfficialItems } from "./plugins.js";
@@ -15,7 +15,6 @@ const groups = [
 ];
 const voiceIds = ["chatgpt", "gemini", "openai", "grok", "elevenlabs"];
 const serviceIds = { yandexhome: "yandex" };
-const hasService = new Set([...voiceIds, "vpn", "youtube", "yandexhome", "homeassistant", "smartlife", "xiaomi"]);
 const picked = new Set();
 const failed = new Map();
 let step = 0, busy = false, error = "";
@@ -23,11 +22,6 @@ let leaveService;
 
 function installed() {
   return new Map((PL.data?.installed || []).map((p) => [p.id, p]));
-}
-
-function ready(id) {
-  if (id === "chatgpt") return S.chatgpt?.signed_in;
-  return !!S.keys?.[id];
 }
 
 export function wizOpen(at = 0) {
@@ -90,14 +84,20 @@ function options() {
 }
 
 function configuration() {
-  const have = [...installed().values()].filter((p) => p.official && (hasService.has(p.id) || p.id === "training"));
+  const services = new Map(connDefs().map((service) => [service.id, service.on]));
+  const have = [...installed().values()].filter((p) => p.official && (services.has(serviceIds[p.id] || p.id) || p.id === "training"));
   have.sort((a, b) => Number(b.id === "vpn") - Number(a.id === "vpn"));
-  const configured = have.filter((p) => p.running && voiceIds.includes(p.id) && ready(p.id));
+  const ready = (p) => p.running && (p.id === "training" ? !!S.settings.wake_profile : services.get(serviceIds[p.id] || p.id));
+  const configured = have.filter((p) => voiceIds.includes(p.id) && ready(p));
   const current = S.profiles?.find((p) => p.id === S.active)?.engine;
   const selected = configured.find((p) => p.id === voicePlugin(current))?.id || configured[0]?.id;
   return `<h1>Настройте подключения</h1><p>Откройте нужный плагин и следуйте инструкции в его настройках. Если потребуется VPN, начните с него.</p>
-    ${have.length ? `<div class="wz-list">${have.map((p) => `<div class="wz-ai">${plIcon(p.icon)}<div><b>${esc(p.name)}</b><span>${esc(plDescription(p))}</span></div>
-      <button class="btn sm" type="button" data-wz-conn="${esc(p.id)}">${ready(p.id) ? "Открыть" : "Настроить"}</button></div>`).join("")}</div>`
+    ${have.length ? `<div class="wz-list">${have.map((p) => {
+      const on = ready(p);
+      return `<div class="wz-ai wz-connection${on ? " on" : ""}">${plIcon(p.icon)}
+        <div><b>${esc(p.name)}</b><span>${esc(plDescription(p))}</span>${on ? '<span class="st ok">Настроено</span>' : ""}</div>
+        <button class="btn sm" type="button" data-wz-conn="${esc(p.id)}">${on ? "Открыть" : "Настроить"}</button></div>`;
+    }).join("")}</div>`
       : '<p class="muted">Подключения можно добавить позже. Чтобы Джарвис отвечал голосом, выберите и настройте голосового ассистента.</p>'}
     ${configured.length ? `<div class="f"><label for="wz-voice">Кто будет отвечать</label><select id="wz-voice">${configured.map((p) => {
       const engine = p.id === "elevenlabs" && current !== "elevenlabs" ? "eleven_realtime" : p.id;

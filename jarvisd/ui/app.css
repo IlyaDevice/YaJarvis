@@ -1434,6 +1434,7 @@ h1 { font-size: 34px; line-height: 40px; }
   border: 1px solid transparent; cursor: default; }
 label.wz-ai { cursor: pointer; }
 .wz-ai.on { border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.wz-connection.on { background: color-mix(in srgb, var(--ok) 8%, var(--raise)); }
 .wz-ai > .ic { width: 20px; height: 20px; color: var(--fg3); }
 .wz-ai.on > .ic { color: var(--ok); }
 .wz-ai div { display: grid; gap: 2px; }

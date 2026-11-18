@@ -75,11 +75,10 @@ function tile(k, v, sub, pct, tone) {
 }
 function drawSpace(sp) {
   const after = sp.staging_mb ?? sp.free_mb;
-  const short = after < sp.need_mb;
-  const changed = after > sp.free_mb;
-  $("#tile-space").outerHTML = tile("Место для установки", `${after}<small>МБ</small>`, short ? "Нужно " + sp.need_mb + " МБ" :
-    changed ? "Включая место от предыдущей копии" : "Нужно " + sp.need_mb + " МБ",
-    after / Math.max(sp.need_mb * 2, after) * 100, short ? "bad" : "").replace('class="tile', 'id="tile-space" class="tile');
+  const short = sp.space_ok === false;
+  const need = sp.need_mb == null ? "Уточним после загрузки пакета" : `Нужно до ${sp.need_mb} МиБ`;
+  $("#tile-space").outerHTML = tile("Место для установки", `${after}<small>МиБ</small>`, need,
+    sp.need_mb == null ? null : after / Math.max(sp.need_mb * 2, after) * 100, short ? "bad" : "").replace('class="tile', 'id="tile-space" class="tile');
   $("#to3").disabled = !!sp.problems?.length || short;
 }
 function show(sp) {
