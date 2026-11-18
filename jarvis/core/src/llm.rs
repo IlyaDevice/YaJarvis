@@ -7,6 +7,12 @@ fn configured<'a>(s:&'a Settings,id:&str)->&'a str {
     match id{"openai"=>&s.openai_key,"gemini"=>&s.gemini_key,"grok"=>&s.grok_key,_=>""}
 }
 pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
+    if !p.llm_plugin.is_empty() {
+        #[cfg(any(feature = "lua", feature = "native-plugins"))]
+        return ask_plugin(host, &p.llm_plugin, instructions, text, tools, &defs).await;
+        #[cfg(not(any(feature = "lua", feature = "native-plugins")))]
+        return Err("В этой сборке нет поддержки текстовых плагинов".into());
+    }
     let preferred=if ["openai","live",""].contains(&p.engine.as_str()){"openai"}else{p.engine.as_str()};
     if preferred=="chatgpt" && crate::chatgpt::signed_in(&s.chatgpt){
         let auth=host.provider("chatgpt")?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
@@ -47,9 +53,7 @@ pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,t
         }
         let mut gemini_results=vec![];
         for call in calls {
-            if call.name.is_empty() || call.name.len()>100 || call.arguments.len()>256*1024{return Err("Неверный вызов инструмента".into());}
-            if !defs.iter().any(|def|def["name"]==call.name){return Err("Модель вызвала необъявленный инструмент".into());}
-            let result=tokio::time::timeout(Duration::from_secs(15),tools.call(&call.name,&call.arguments)).await.unwrap_or_else(|_|"Инструмент не ответил за 15 с".into());
+            let result = run_tool(tools, &defs, &call).await?;
             match id {
                 "gemini"=>{let mut value=json!({"name":call.name,"response":{"result":result}});if !call.id.is_empty(){value["id"]=call.id.into();}gemini_results.push(json!({"functionResponse":value}));},
                 "grok"=>messages.push(json!({"role":"tool","tool_call_id":call.id,"content":result})),
@@ -60,6 +64,58 @@ pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,t
     }
     Err("Модель не закончила за 5 шагов".into())
 }
+async fn run_tool(tools: &Tools, defs: &[Value], call: &Call) -> Result<String, String> {
+    if call.name.is_empty() || call.name.len() > 100 || call.arguments.len() > 256 * 1024 {
+        return Err("Неверный вызов инструмента".into());
+    }
+    if !defs.iter().any(|def| def["name"] == call.name) {
+        return Err("Модель вызвала необъявленный инструмент".into());
+    }
+    Ok(tokio::time::timeout(Duration::from_secs(15), tools.call(&call.name, &call.arguments))
+        .await.unwrap_or_else(|_| "Инструмент не ответил за 15 с".into()))
+}
+
+#[cfg(any(feature = "lua", feature = "native-plugins"))]
+async fn ask_plugin(host: &Host, id: &str, instructions: &str, text: &str, tools: &Tools, defs: &[Value]) -> Result<String, String> {
+    let mut messages = vec![json!({"role":"system","content":instructions}), json!({"role":"user","content":text})];
+    let schemas: Vec<_> = defs.iter().filter(|def| def["type"] == "function").map(|def| {
+        json!({"type":"function","function":{"name":def["name"],"description":def["description"],"parameters":def["parameters"]}})
+    }).collect();
+    for _ in 0..5 {
+        let response = host.plugin_chat(id, json!({"messages":messages,"tools":schemas})).await?;
+        let answer = response.as_str().or_else(|| response["text"].as_str()).unwrap_or_default().trim();
+        let Some(calls) = response.get("tool_calls").and_then(Value::as_array).filter(|calls| !calls.is_empty()) else {
+            if answer.is_empty() || answer.len() > 32 * 1024 {
+                return Err("Текстовый плагин вернул пустой или слишком длинный ответ".into());
+            }
+            return Ok(answer.to_owned());
+        };
+        if calls.len() > 16 { return Err("Плагин вернул слишком много вызовов инструментов".into()); }
+        let mut parsed = Vec::with_capacity(calls.len());
+        let mut ids = std::collections::HashSet::new();
+        for call in calls {
+            let field = |key| call[key].as_str().ok_or("Неверный вызов инструмента от плагина");
+            let id = field("id")?;
+            let name = field("name")?;
+            let arguments = field("arguments")?;
+            if id.is_empty() || id.len() > 128 || !ids.insert(id)
+                || arguments.len() > 32 * 1024 || !serde_json::from_str::<Value>(arguments).is_ok_and(|v| v.is_object())
+                || !schemas.iter().any(|schema| schema["function"]["name"] == name)
+            {
+                return Err("Плагин вернул неверный или необъявленный инструмент".into());
+            }
+            parsed.push(Call { id: id.into(), name: name.into(), arguments: arguments.into() });
+        }
+        let tool_calls: Vec<_> = parsed.iter().map(|call| json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call.arguments}})).collect();
+        messages.push(json!({"role":"assistant","content":answer,"tool_calls":tool_calls}));
+        for call in parsed {
+            let output = run_tool(tools, defs, &call).await?;
+            messages.push(json!({"role":"tool","tool_call_id":call.id,"content":output}));
+        }
+    }
+    Err("Текстовый плагин не закончил за 5 шагов".into())
+}
+
 struct Call {name:String,arguments:String,id:String}
 fn decode(id:&str,response:&Value)->Result<(String,Vec<Call>),String>{
     let mut answer=String::new();let mut calls=vec![];
@@ -77,4 +133,43 @@ fn decode(id:&str,response:&Value)->Result<(String,Vec<Call>),String>{
 #[cfg(test)]mod tests{use super::*;#[test]fn decodes_provider_tool_calls_without_speaking_thoughts(){
     let (answer,calls)=decode("gemini",&json!({"candidates":[{"content":{"parts":[{"text":"private","thought":true},{"text":"Ответ"},{"functionCall":{"name":"test","args":{"a":1},"id":"x"}}]}}]})).unwrap();assert_eq!(answer,"Ответ");assert_eq!(calls[0].name,"test");assert_eq!(calls[0].arguments,"{\"a\":1}");
     let (_,calls)=decode("openai",&json!({"output":[{"type":"function_call","name":"x","arguments":"{}","call_id":"id"}]})).unwrap();assert_eq!(calls[0].id,"id");
-}}
+}
+
+    #[cfg(feature = "lua")]
+    #[tokio::test]
+    async fn selected_lua_provider_can_use_a_declared_tool() {
+        let dir = std::env::temp_dir().join(format!("jarvis-llm-{}", crate::settings::rand_hex(6)));
+        let plugin = dir.join("plugins/example-llm");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("plugin.json"), json!({
+            "id":"example-llm","name":"Example","version":"1.0.0","kind":"lua","category":"assistant",
+            "main":"main.lua","api":1,"provides":["llm"],"permissions":["tools"]
+        }).to_string()).unwrap();
+        std::fs::write(plugin.join("main.lua"), r#"return {
+            chat = function(request)
+                local last = request.messages[#request.messages]
+                if last.role == 'tool' then return last.content end
+                assert(request.messages[1].content == 'system text')
+                assert(request.tools[1]["function"].name == 'probe')
+                local name = last.content == 'denied' and 'undeclared' or 'probe'
+                return { tool_calls = {{ id = 'one', name = name, arguments = '{"text":"works"}' }} }
+            end,
+            tools = {{name = 'probe', description = 'Test', parameters = {type = 'object'},
+                handler = function(args) return args.text end}}
+        }"#).unwrap();
+        let host = Host::new(dir.clone(), crate::plugins::Hooks::default());
+        host.load().await;
+        assert_eq!(host.text_plugins()[0]["id"], "example-llm");
+        let store = crate::settings::Store::open(dir.join("settings.json")).unwrap();
+        let tools = Tools::new(host.clone(), store);
+        let profile = Profile { llm_plugin: "example-llm".into(), ..Default::default() };
+        let reply = ask(&host, &Settings::default(), &profile, "system text", "test", &tools, host.tools()).await;
+        assert_eq!(reply.as_deref(), Ok("works"));
+        let denied = ask(&host, &Settings::default(), &profile, "system text", "denied", &tools, host.tools()).await;
+        assert!(denied.unwrap_err().contains("необъявленный"));
+        host.set_enabled("example-llm", false).await.unwrap();
+        assert!(host.text_plugins().is_empty());
+        assert!(ask(&host, &Settings::default(), &profile, "system text", "test", &tools, vec![]).await.is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

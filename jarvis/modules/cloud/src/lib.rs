@@ -3,8 +3,14 @@ use serde_json::{Value,json};
 use std::{time::Duration,net::SocketAddr,sync::Mutex};
 use base64::{Engine,engine::general_purpose::STANDARD};
 pub type Socket=tokio_tungstenite::WebSocketStream<reqwest::Upgraded>;
+pub use tokio_tungstenite::tungstenite::Message;
 
-pub struct Provider {id:&'static str,base:reqwest::Url,client:Mutex<Option<(Value,reqwest::Client)>>}
+pub struct Provider {
+    id:&'static str,
+    base:reqwest::Url,
+    client:Mutex<Option<(Value,reqwest::Client)>>,
+    websocket:Mutex<Option<(Value,reqwest::Client)>>,
+}
 impl Provider {
     pub fn new(id:&str)->Result<Self,String> {
         let (id,url):(&'static str,&str)=match id {
@@ -14,7 +20,7 @@ impl Provider {
             #[cfg(feature="elevenlabs")] "elevenlabs"=>("elevenlabs","https://api.elevenlabs.io/"),
             _=>return Err("Провайдер не включён в сборку".into()),
         };
-        Ok(Self{id,base:reqwest::Url::parse(url).map_err(|e|e.to_string())?,client:Mutex::default()})
+        Ok(Self{id,base:reqwest::Url::parse(url).map_err(|e|e.to_string())?,client:Mutex::default(),websocket:Mutex::default()})
     }
     pub fn id(&self)->&'static str{self.id}
     pub async fn socket(&self,key:&str,network:&Value)->Result<Socket,String>{
@@ -38,22 +44,28 @@ impl Provider {
         let mut url=self.base.join(path).map_err(|_|"Неверный адрес провайдера")?;
         if self.id=="gemini"{url.query_pairs_mut().append_pair("key",key);}
         let nonce=generate_key();let expected=derive_accept_key(nonce.as_bytes());
-        let request=self.client(network)?.get(url).version(reqwest::Version::HTTP_11).header("Connection","Upgrade").header("Upgrade","websocket").header("Sec-WebSocket-Version","13").header("Sec-WebSocket-Key",nonce);
-        let request=if let Some(secret)=secret{request.bearer_auth(secret)}else{self.authenticate(request,key)};
+        let request=self.client_for(network, true)?.get(url).header("Connection","Upgrade").header("Upgrade","websocket").header("Sec-WebSocket-Version","13").header("Sec-WebSocket-Key",nonce);
+        let request=if self.id=="gemini"{request}else if let Some(secret)=secret{request.bearer_auth(secret)}else{self.authenticate(request,key)};
         let response=request.send().await.map_err(|_|"Не подключиться к голосовому провайдеру")?;
         if response.status()!=101 || response.headers().get("Sec-WebSocket-Accept").and_then(|h|h.to_str().ok())!=Some(expected.as_str()) || response.headers().contains_key("Sec-WebSocket-Extensions") || response.headers().contains_key("Sec-WebSocket-Protocol"){
-            return Err(format!("Голосовой провайдер не подтвердил WebSocket ({})",response.status().as_u16()));
+            let status = response.status();
+            if self.id == "gemini" && status.as_u16() == 404 {
+                return Err("Gemini Live вернул HTTP 404 на адресе голосового WebSocket".into());
+            }
+            return Err(format!("{}: голосовой WebSocket отклонён (HTTP {})", self.id, status.as_u16()));
         }
         let upgraded=response.upgrade().await.map_err(|_|"Обрыв голосового соединения")?;
         let config=WebSocketConfig::default().max_message_size(Some(4*1024*1024)).max_frame_size(Some(4*1024*1024)).write_buffer_size(16*1024).max_write_buffer_size(256*1024);
         Ok(tokio_tungstenite::WebSocketStream::from_raw_socket(upgraded,Role::Client,Some(config)).await)
     }
-    fn client(&self,network:&Value)->Result<reqwest::Client,String> {
+    fn client_for(&self,network:&Value,websocket:bool)->Result<reqwest::Client,String> {
         if let Some(error)=network["error"].as_str(){return Err(error.into());}
         if !network.is_object(){return Err("Хост не предоставил сетевой маршрут".into());}
-        let mut saved=self.client.lock().unwrap();
+        let mut saved=if websocket { &self.websocket } else { &self.client }.lock().unwrap();
         if let Some((route,client))=saved.as_ref(){if route==network{return Ok(client.clone());}}
         let mut builder=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(60)).connect_timeout(Duration::from_secs(10));
+        // Forcing the request version does not disable HTTP/2 negotiation over TLS.
+        if websocket { builder = builder.http1_only().pool_max_idle_per_host(0); }
         if let Some(socks)=network["socks"].as_str(){
             let addr:SocketAddr=socks.parse().map_err(|_|"Неверный SOCKS VPN")?;
             let user=network["user"].as_str().unwrap_or("");let pass=network["pass"].as_str().unwrap_or("");
@@ -63,14 +75,14 @@ impl Provider {
         let client=builder.build().map_err(|_|"Не создать HTTP-клиент")?;
         *saved=Some((network.clone(),client.clone()));Ok(client)
     }
-    pub fn close(&self){self.client.lock().unwrap().take();}
+    pub fn close(&self){self.client.lock().unwrap().take();self.websocket.lock().unwrap().take();}
     fn authenticate(&self,request:reqwest::RequestBuilder,key:&str)->reqwest::RequestBuilder {
         match self.id {"gemini"=>request.header("x-goog-api-key",key),"elevenlabs"=>request.header("xi-api-key",key),_=>request.bearer_auth(key)}
     }
     pub async fn request(&self,params:Value,network:Value)->Result<Value,String> {
         let key=params["key"].as_str().unwrap_or("").trim();
         if key.is_empty() || key.len()>4096 || key.bytes().any(|b|b<33 || b>126){return Err("Неверный API-ключ".into());}
-        let client=self.client(&network)?;
+        let client=self.client_for(&network, false)?;
         let op=params["op"].as_str().unwrap_or("");
         if matches!(op,"text"|"tts"|"realtime.session") && !params["body"].is_object(){return Err("Нужен объект body".into());}
         if op=="realtime.session" && params["body"].to_string().len()>128*1024{return Err("Слишком большие настройки сессии".into());}

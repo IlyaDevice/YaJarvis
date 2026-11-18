@@ -17,6 +17,7 @@ pub fn routes() -> axum::Router<App> {
         .route("/api/train/records", get(list).put(settings).delete(clear))
         .route("/api/train/records/clip", get(clip))
         .route("/api/train/records/move", post(move_clip))
+        .route("/api/train/records/compact", post(compact))
         .route("/api/train/records/download", get(download))
         .route(
             "/api/train/background",
@@ -56,6 +57,13 @@ async fn list(State(app): State<App>) -> Response {
     {
         Ok(value) => reply(StatusCode::OK, value),
         Err(e) => bad(e),
+    }
+}
+
+async fn compact(State(app): State<App>) -> Response {
+    match file_operation(&app, |records| records.compact()).await {
+        Ok(result) => reply(StatusCode::OK, result),
+        Err(error) => bad(error),
     }
 }
 

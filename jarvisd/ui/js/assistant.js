@@ -19,6 +19,10 @@ export function viewProfile(id) {
   p.tts_model ||= "eleven_flash_v2_5";
   if(p.engine==="elevenlabs")p.backend_model=p.llm_model;
   const active = p.id === S.active;
+  const textPlugins = [...(S.text_plugins || [])];
+  if (p.llm_plugin && !textPlugins.some((plugin) => plugin.id === p.llm_plugin)) {
+    textPlugins.push({ id: p.llm_plugin, name: p.llm_plugin + " (отключён)" });
+  }
   $("#view").innerHTML = `<header class="ph who"><span id="pav" class="ringbox">${avatar(p, true)}</span><div><h1>${isNew ? "Новый ассистент" : esc(p.name)}</h1><p class="sub">${isNew ? "Свой голос, модель и характер" : active ? "Сейчас отвечает на «Джарвис»" : "Не активен"}</p></div></header>
   ${sec("Основное", "Как ассистент выглядит в списке и кем он себя считает",
     `<div class="grid g2"><div class="f"><label>Имя ${tip("Как ассистент называется в списке слева. На слово активации не влияет.")}</label><input type="text" id="p-name" maxlength="40" value="${esc(p.name)}" placeholder="Например, Джарвис"></div>
@@ -40,6 +44,9 @@ export function viewProfile(id) {
     <div class="eng" data-for="openai chatgpt elevenlabs"><div class="f half"><label>Текстовая модель ${tip("Чем умнее модель, тем дольше она думает. Для голосового помощника обычно хватает самой быстрой.")}</label><select id="p-model">${S.backend_models.map((m) => `<option${m === p.backend_model ? " selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
       <div class="f"><label>Сколько думать ${tip("Доступные уровни зависят от выбранной текстовой модели: не все модели поддерживают «не думать». Немного — быстрее, средне и долго — для сложных вопросов.")}</label><div class="seg" id="p-effort">${S.efforts.map((e) => `<button type="button" data-v="${e}" class="${e === p.effort ? "on" : ""}">${({ none: "не думать", low: "немного", medium: "средне", high: "долго" })[e] || e}</button>`).join("")}</div></div>
     <label class="sw"><input type="checkbox" id="p-priority"${p.priority ? " checked" : ""}><span class="tr"></span>Приоритет ${tip("Запросы обрабатываются в быстрой очереди OpenAI: ответ быстрее, но стоит дороже.")}</label></div>
+    ${textPlugins.length ? `<div class="f"><label for="p-llm-plugin">Текстовая модель из плагина</label>
+      <select id="p-llm-plugin"><option value="">По настройкам ассистента</option>${textPlugins.map((plugin) => `<option value="${esc(plugin.id)}"${p.llm_plugin === plugin.id ? " selected" : ""}>${esc(plugin.name)}</option>`).join("")}</select>
+      <small>Используется в переписке и классическом голосовом режиме.</small></div>` : ""}
     <div class="stack">
       <label class="sw"><input type="checkbox" id="p-web"${p.web_search ? " checked" : ""}><span class="tr"></span>Поиск в интернете ${tip("Для погоды, новостей, курсов и всего свежего. Без него Джарвис знает только то, чему его научили.")}</label></div>
     <div class="f narrow"><label>Конец разговора, с ${tip("Если вы оба молчите столько секунд, разговор закрывается и колонка снова ждёт «Джарвис». Пока разговор открыт, звать по имени не нужно.")}</label><input type="number" id="p-idle" min="2" max="60" step="1" value="${p.idle_s}"></div>`)}
@@ -59,6 +66,7 @@ export function viewProfile(id) {
     ${!isNew && !active ? `<button class="btn ghost danger" id="p-del">Удалить</button>` : ""}<span class="dirty hidden" id="dirty">есть несохранённые изменения</span></div>`;
 
   const mark = () => { setDirty(true); $("#dirty").classList.remove("hidden"); };
+  $("#p-llm-plugin")?.addEventListener("change", mark);
   const effortOptions = (model) => S.model_efforts?.[model] || S.efforts;
   const refreshEffortOptions = () => {
     const allowed = effortOptions($("#p-model").value);
@@ -135,6 +143,7 @@ export function viewProfile(id) {
     Object.assign(p, { name: $("#p-name").value.trim(), prompt: $("#p-prompt").value, backend_model: $("#p-model").value,
       priority: $("#p-priority").checked, web_search: $("#p-web").checked, idle_s: +$("#p-idle").value || 8, mode: "live",
       volume: +$("#p-vol").value,
+      llm_plugin: $("#p-llm-plugin")?.value || "",
       live_model: p.engine === "gemini" ? $("#p-gmodel").value : "" });
     p.mode=p.engine==="elevenlabs"?"classic":"live";
     if(p.engine==="eleven_realtime"){p.live_model=$("#p-eleven-rtmodel").value;if(!p.tts_voice)throw new Error("Выберите голос ElevenLabs");}

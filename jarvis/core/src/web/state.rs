@@ -205,6 +205,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
                      "onboarded": s.onboarded, "plugins_warned": s.plugins_warned},
         "plugins": app.plugins.summary(),
         "providers": app.plugins.service_providers(),
+        "text_plugins": app.plugins.text_plugins(),
         "repo": crate::DEFAULT_REPO,
         "security": security_checks(),
     });

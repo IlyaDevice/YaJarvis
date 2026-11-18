@@ -4,7 +4,7 @@
 use super::{Host, Manifest, PluginState, valid_id};
 use std::{
     collections::BTreeMap,
-    io::Read,
+    io::{Read, Write},
     path::Path,
     sync::Arc,
 };
@@ -168,6 +168,10 @@ impl Host {
             return Err("репозиторий — вида owner/name".into());
         }
         let official = repo.eq_ignore_ascii_case(crate::DEFAULT_REPO);
+        #[cfg(feature = "lua")]
+        if official && tag.is_empty() && let Some(raw) = bundled_lua(id)? {
+            return self.install(&raw, crate::DEFAULT_REPO, true).await;
+        }
         let names: Vec<String> = if official {
             if !valid_id(id) {
                 return Err("не указан плагин".into());
@@ -195,18 +199,51 @@ impl Host {
             return Err(format!("в последнем релизе {repo} нет {}", names.join(" или ")));
         };
         let raw = crate::net::download(&link, ZIP_MAX).await?;
-        let m = self.install(&raw, repo, official).await?;
-        if official && m.id != id {
-            log::info!("плагины: ждали {id}, а в архиве {}", m.id);
+        if official && unpack(&raw)?.1.id != id {
+            return Err("В архиве другой плагин".into());
         }
-        Ok(m)
+        self.install(&raw, repo, official).await
     }
+}
+
+#[cfg(feature = "lua")]
+fn bundled_lua(id: &str) -> Result<Option<Vec<u8>>, String> {
+    macro_rules! files {
+        ($id:literal) => {
+            (include_str!(concat!("../../../../plugins/", $id, "/plugin.json")),
+             include_str!(concat!("../../../../plugins/", $id, "/main.lua")))
+        }
+    }
+    let (manifest, script) = match id {
+        "weather" => files!("weather"),
+        "currency" => files!("currency"),
+        "dice" => files!("dice"),
+        "compatible-chat" => files!("compatible-chat"),
+        _ => return Ok(None),
+    };
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, text) in [("plugin.json", manifest), ("main.lua", script)] {
+        archive.start_file(name, zip::write::SimpleFileOptions::default()).map_err(|e| e.to_string())?;
+        archive.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(Some(archive.finish().map_err(|e| e.to_string())?.into_inner()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn bundled_catalog_archives_contain_matching_lua() {
+        for id in ["weather", "currency", "dice", "compatible-chat"] {
+            let (files, manifest) = unpack(&bundled_lua(id).unwrap().unwrap()).unwrap();
+            assert_eq!(manifest.id, id);
+            assert_eq!(manifest.kind, "lua");
+            assert!(files.contains_key("main.lua"));
+        }
+    }
 
     pub fn make_zip(files: &[(&str, &str)]) -> Vec<u8> {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));

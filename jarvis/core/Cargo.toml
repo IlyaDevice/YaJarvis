@@ -9,6 +9,7 @@ build = "build.rs"
 [features]
 default = ["lua"]
 lua = ["dep:mlua"]
+native-plugins = ["dep:jarvis-native-plugins"]
 homeassistant = ["dep:jarvis-homeassistant"]
 yandexhome = ["dep:jarvis-yandexhome"]
 smartlife = ["dep:jarvis-smartlife", "dep:jarvis-home-common"]
@@ -27,6 +28,7 @@ name = "jarvis"
 path = "src/main.rs"
 
 [dependencies]
+jarvis-native-plugins = { path = "../native-plugins", optional = true }
 jarvis-station = { path = "../station-runtime" }
 jarvis-wake-train = { path = "../modules/wake-train", optional = true }
 jarvis-youtube = { path = "../modules/youtube", optional = true }
@@ -56,7 +58,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 libc = "0.2"
 base64 = "0.22"
 regex-lite = "0.1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json", "socks", "stream", "http2"] }
 
 [build-dependencies]

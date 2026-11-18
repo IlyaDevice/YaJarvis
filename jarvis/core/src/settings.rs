@@ -98,6 +98,8 @@ pub struct Profile {
     pub idle_s: f64,
     pub prompt: String,
     pub llm_model: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub llm_plugin: String,
     pub tts_voice: String,
     pub tts_model: String,
     pub stt_engine: String,

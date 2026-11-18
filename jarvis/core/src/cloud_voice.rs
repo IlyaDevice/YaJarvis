@@ -62,7 +62,14 @@ impl Voice {
                 },
                 message=socket.next()=>{
                     let Some(message)=message else{return Ok(());};let message=message.map_err(|_|"Обрыв голосового соединения")?;
-                    if message.is_close(){return Ok(());}if !message.is_text() && !message.is_binary(){continue;}
+                    if let jarvis_cloud::Message::Close(close) = &message {
+                        if !started {
+                            let detail = close.as_ref().map(|frame| frame.reason.replace(key,"***").chars().take(220).collect::<String>()).unwrap_or_default();
+                            return Err(if detail.is_empty() { format!("{} закрыл голосовое соединение до начала разговора", self.id) } else { format!("{}: {detail}",self.id) });
+                        }
+                        return Ok(());
+                    }
+                    if !message.is_text() && !message.is_binary(){continue;}
                     let event:Value=serde_json::from_slice(&message.into_data()).map_err(|_|"Неверное голосовое событие")?;
                     for id in event.pointer("/toolCallCancellation/ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str){if let Some(handle)=handles.remove(id){handle.abort();}}
                     let kind=event["type"].as_str().unwrap_or("");

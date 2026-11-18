@@ -102,7 +102,7 @@ fn lang_name(l: &str) -> &'static str {
 pub fn key_missing(s: &Settings, engine: &str) -> String {
     match engine {
         "chatgpt" if !chatgpt::signed_in(&s.chatgpt) => "не выполнен вход в ChatGPT — войдите в «Подключениях»".into(),
-        "chatgpt" => String::new(),
+        "chatgpt" => chatgpt::voice_limit().unwrap_or_default(),
         "" | "live" | "openai" => if !cfg!(feature="openai"){"Модуль OpenAI не включён в сборку".into()}else if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
         "gemini" => if !cfg!(feature="gemini"){"Модуль Gemini не включён в сборку".into()}else if s.gemini_key.is_empty(){"Добавьте ключ Gemini в «Подключениях»".into()}else{String::new()},
         "grok" => if !cfg!(feature="grok"){"Модуль Grok не включён в сборку".into()}else if s.grok_key.is_empty(){"Добавьте ключ Grok в «Подключениях»".into()}else{String::new()},

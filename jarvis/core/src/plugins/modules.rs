@@ -22,9 +22,17 @@ const BUILTINS: &[(&str, bool)] = &[
 ];
 
 pub fn catalog() -> impl Iterator<Item = (Manifest, bool)> {
-    BUILTINS.iter().map(|&(raw, compiled)| {
+    let builtins = BUILTINS.iter().map(|&(raw, compiled)| {
         (serde_json::from_str(raw).expect("manifest module"), compiled)
-    })
+    });
+    #[cfg(feature = "native-plugins")]
+    let builtins = builtins.chain(super::native_addon::entries().map(|(manifest, _)| (manifest, true)));
+    builtins
+}
+
+#[cfg(feature = "native-plugins")]
+pub fn built_in(id: &str) -> bool {
+    BUILTINS.iter().any(|&(raw, _)| serde_json::from_str::<Manifest>(raw).is_ok_and(|m| m.id == id))
 }
 
 pub fn manifests() -> Vec<Manifest> {

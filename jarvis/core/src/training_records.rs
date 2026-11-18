@@ -3,6 +3,7 @@ use crate::{
     settings::{rand_hex, write_atomic},
     training_background::Recorder,
 };
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -23,6 +24,7 @@ pub const MAX_LIMIT_MB: i64 = 5;
 const KINDS: [&str; 4] = ["pos", "false", "near", "bg"];
 const CLIPS: &str = "rust-clips";
 const OLD_CLIPS: &str = "clips";
+const GZIP: &[u8] = b"\x1f\x8b";
 
 #[derive(Clone, Serialize)]
 pub struct Clip {
@@ -184,7 +186,9 @@ impl Records {
         if self.stopped.load(Ordering::Acquire) {
             return Ok(());
         }
-        let data = pcm_wav(pcm);
+        let wav = pcm_wav(pcm);
+        let compressed = compress(&wav).map_err(|e| e.to_string())?;
+        let data = if compressed.len() < wav.len() { compressed } else { wav };
         let limit = (limit_mb.clamp(1, MAX_LIMIT_MB) as u64) << 20;
         let name = format!(
             "{}-{}_p{}.wav",
@@ -255,6 +259,34 @@ impl Records {
         Ok(())
     }
 
+    /// Compact the internal files without changing their logical names or WAV downloads.
+    pub fn compact(&self) -> Result<Value, String> {
+        let clips = {
+            let _lock = self.files.lock().unwrap();
+            self.list()
+        };
+        let mut changed = 0;
+        let mut saved = 0;
+        for clip in clips {
+            let _lock = self.files.lock().unwrap();
+            if self.stopped.load(Ordering::Acquire) { break; }
+            let path = self.path(clip.storage, &clip.kind, &clip.name)?;
+            let Ok(meta) = path.symlink_metadata() else { continue };
+            if !meta.is_file() || meta.len() > MAX_CLIP { continue; }
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            if bytes.starts_with(GZIP) || !bytes.starts_with(b"RIFF") { continue; }
+            let smaller = compress(&bytes).map_err(|e| e.to_string())?;
+            if smaller.len() >= bytes.len() { continue; }
+            write_atomic(&path, &smaller, 0o600).map_err(|e| e.to_string())?;
+            if let (Ok(file), Ok(time)) = (fs::File::open(&path), meta.modified()) {
+                let _ = file.set_modified(time);
+            }
+            changed += 1;
+            saved += bytes.len() - smaller.len();
+        }
+        Ok(json!({"changed":changed,"saved_bytes":saved}))
+    }
+
     pub fn archive(&self, data_dir: &Path, sensitivity: i64) -> Result<Vec<u8>, String> {
         let _lock = self.files.lock().unwrap();
         let clips = self.list();
@@ -281,8 +313,13 @@ impl Records {
             include_bytes!("../../modules/wake-train/assets/finetune.py"),
         )
         .map_err(|e| e.to_string())?;
+        let mut total = 0;
         for clip in clips {
             let data = read_clip(&self.path(clip.storage, &clip.kind, &clip.name)?)?;
+            total += data.len() as u64;
+            if total > MAX_ARCHIVE {
+                return Err("Архив больше 32 МБ. Скачайте записи по одной".into());
+            }
             add(&format!("{}/{}", clip.kind, clip.name), &data).map_err(|e| e.to_string())?;
         }
         zip.finish()
@@ -314,7 +351,22 @@ fn read_clip(path: &Path) -> Result<Vec<u8>, String> {
     if bytes.len() as u64 > MAX_CLIP {
         return Err("Запись слишком большая".into());
     }
-    Ok(bytes)
+    if !bytes.starts_with(GZIP) { return Ok(bytes); }
+    let mut wav = Vec::new();
+    GzDecoder::new(bytes.as_slice())
+        .take(MAX_CLIP + 1)
+        .read_to_end(&mut wav)
+        .map_err(|e| e.to_string())?;
+    if wav.len() as u64 > MAX_CLIP || !wav.starts_with(b"RIFF") {
+        return Err("Повреждена сжатая запись".into());
+    }
+    Ok(wav)
+}
+
+fn compress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(bytes)?;
+    encoder.finish()
 }
 
 pub fn pcm_wav(pcm: &[i16]) -> Vec<u8> {
@@ -365,6 +417,11 @@ mod tests {
         assert!(zip.by_name("near/legacy.wav").is_ok());
         assert!(zip.by_name(&format!("pos/{}", reviewed.name)).is_ok());
         assert!(zip.by_name("wake.bin").is_ok());
+        let raw = pcm_wav(&pcm);
+        fs::write(&old, &raw).unwrap();
+        assert_eq!(records.compact().unwrap()["changed"], 1);
+        assert_eq!(records.compact().unwrap()["changed"], 0);
+        assert_eq!(records.read("near", "legacy.wav").unwrap(), raw);
         fs::remove_dir_all(root).unwrap();
     }
 }

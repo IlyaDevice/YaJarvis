@@ -5,6 +5,8 @@ pub mod catalog;
 pub mod coresvc;
 pub mod install;
 pub(crate) mod modules;
+#[cfg(feature = "native-plugins")]
+mod native_addon;
 #[cfg(feature = "lua")]
 mod lua;
 
@@ -23,7 +25,7 @@ pub const PLUGIN_API: i64 = 1;
 
 pub fn compiled_modules() -> Vec<String> { modules::manifests().into_iter().map(|m|m.id).collect() }
 
-#[cfg(feature = "lua")]
+#[cfg(any(feature = "lua", feature = "native-plugins"))]
 pub fn command_text(text: &str) -> String {
     let normalized = crate::fastcmd::norm_text(text);
     normalized.strip_prefix("джарвис ").or_else(|| normalized.strip_prefix("jarvis "))
@@ -146,7 +148,11 @@ impl Manifest {
             return Err("у плагина нет name".into());
         }
         if !["lua", "module"].contains(&self.kind.as_str()) {
-            return Err(r#"kind плагина — "lua" или "module""#.into());
+            return Err(if matches!(self.kind.as_str(), "js" | "native") {
+                "Это пакет для старого ядра. Возьмите Lua-версию плагина или установите Rust-модуль из каталога"
+            } else {
+                "В plugin.json укажите kind: lua. Встроенный Rust-модуль выбирается из каталога"
+            }.into());
         }
         if !valid_category(&self.category) {
             let ids: Vec<_> = CATEGORIES.iter().map(|c| c.0).collect();
@@ -244,6 +250,8 @@ impl Default for Hooks {
 #[derive(Clone)]
 pub enum Runtime {
     Module(Arc<modules::Module>),
+    #[cfg(feature = "native-plugins")]
+    Native(Arc<native_addon::Native>),
     #[cfg(feature = "lua")]
     Lua(Arc<lua::Script>),
 }
@@ -252,6 +260,8 @@ impl Runtime {
     pub fn tools(&self) -> Vec<Value> {
         match self {
             Runtime::Module(_) => vec![],
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.tools(),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.tools(),
         }
@@ -259,6 +269,8 @@ impl Runtime {
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         match self {
             Runtime::Module(_) => None,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.call_tool(name, args).await,
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.call_tool(name, args).await,
         }
@@ -266,6 +278,9 @@ impl Runtime {
     pub async fn command(&self, text: &str) -> Option<String> {
         match self {
             Runtime::Module(_) => None,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.request("command", command_text(text).into(), Duration::from_secs(2))
+                .await.ok().and_then(|value| value.as_str().map(str::to_owned)),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.command(text).await,
         }
@@ -273,6 +288,8 @@ impl Runtime {
     pub fn configure(&self, settings: Map<String, Value>) {
         match self {
             Runtime::Module(_) => {},
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.configure(settings),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.configure(settings),
         }
@@ -280,6 +297,8 @@ impl Runtime {
     pub fn status(&self) -> String {
         match self {
             Runtime::Module(_) => "Встроенный модуль Rust".into(),
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(_) => "Нативное расширение Rust".into(),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.status(),
         }
@@ -287,6 +306,8 @@ impl Runtime {
     pub async fn stop(&self) {
         match self {
             Runtime::Module(n) => n.stop().await,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.stop(),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.stop().await,
         }
@@ -294,6 +315,8 @@ impl Runtime {
     pub async fn request(&self, method:&str, params:Value, timeout:Duration)->Result<Value,String> {
         match self {
             Self::Module(n)=>n.request(method,params,timeout).await,
+            #[cfg(feature = "native-plugins")]
+            Self::Native(n)=>n.request(method,params,timeout).await,
             #[cfg(feature="lua")]
             Self::Lua(_)=>Err("Lua-плагин не является провайдером подключения".into()),
         }
@@ -301,6 +324,16 @@ impl Runtime {
     pub async fn notify(&self, method:&str, params:Value)->Result<(),String> {
         match self {
             _=>self.request(method,params,Duration::from_secs(3)).await.map(|_|()),
+        }
+    }
+
+    fn supports_chat(&self) -> bool {
+        match self {
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.supports_chat(),
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.supports_chat(),
+            _ => false,
         }
     }
 }
@@ -471,7 +504,18 @@ impl Host {
             (m, dir, settings)
         };
         let res: Result<Runtime, String> = match m.kind.as_str() {
-            "module" => modules::Module::start(&m,Arc::downgrade(self)).map(|m|Runtime::Module(Arc::new(m))),
+            "module" => {
+                #[cfg(feature = "native-plugins")]
+                let custom = native_addon::entries().find(|(manifest, _)| manifest.id == id).map(|(_, entry)| entry);
+                #[cfg(feature = "native-plugins")]
+                if let Some(entry) = custom {
+                    native_addon::Native::start(entry, self, id, dir, settings).map(|n| Runtime::Native(Arc::new(n)))
+                } else {
+                    modules::Module::start(&m, Arc::downgrade(self)).map(|n| Runtime::Module(Arc::new(n)))
+                }
+                #[cfg(not(feature = "native-plugins"))]
+                modules::Module::start(&m, Arc::downgrade(self)).map(|n| Runtime::Module(Arc::new(n)))
+            },
             #[cfg(feature = "lua")]
             "lua" => lua::Script::start(self.clone(), m.clone(), dir, settings).await.map(Runtime::Lua),
             #[cfg(not(feature = "lua"))]
@@ -523,6 +567,30 @@ impl Host {
                     _ => false,
                 }
             })
+    }
+
+    pub fn text_plugins(&self) -> Vec<Value> {
+        let installed = self.inner.lock().unwrap();
+        installed.plugins.values().filter(|plugin| plugin.rt.as_ref().is_some_and(Runtime::supports_chat))
+            .map(|plugin| json!({"id": plugin.manifest.id, "name": plugin.manifest.name})).collect()
+    }
+
+    #[cfg(any(feature = "lua", feature = "native-plugins"))]
+    pub async fn plugin_chat(&self, id: &str, request: Value) -> Result<Value, String> {
+        let runtime = {
+            let installed = self.inner.lock().unwrap();
+            installed.plugins.get(id).and_then(|plugin| plugin.rt.as_ref())
+                .filter(|runtime| runtime.supports_chat()).cloned()
+                .ok_or_else(|| format!("Включите текстовый плагин «{id}» в «Подключениях»"))?
+        };
+        let result = match runtime {
+            #[cfg(feature = "lua")]
+            Runtime::Lua(script) => script.chat(request).await,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(plugin) => plugin.request("llm.chat", request, Duration::from_secs(30)).await,
+            _ => return Err("Плагин не поддерживает текстовые запросы".into()),
+        };
+        result.map_err(|error| clip(&error, 300))
     }
 
     #[cfg(feature = "wake-training")]
@@ -655,9 +723,14 @@ impl Host {
     }
 
     pub async fn uninstall(&self, id: &str) -> Result<(), String> {
+        let _operation = self.install_lock.lock().await;
         let dir = self.inner.lock().unwrap().plugins.get(id).map(|p| p.dir.clone()).ok_or("нет такого плагина")?;
         self.stop(id).await;
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        for path in [dir, self.dir().join(format!("{id}.old")), self.dir().join(format!("{id}.tmp"))] {
+            std::fs::remove_dir_all(path).or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(error) }
+            }).map_err(|error| error.to_string())?;
+        }
         let mut g = self.inner.lock().unwrap();
         g.plugins.remove(id);
         match g.state.get(id).cloned() {

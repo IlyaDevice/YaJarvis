@@ -174,6 +174,9 @@ pub async fn profile(State(app): State<App>, Json(mut p): Json<Profile>) -> Resp
     if p.engine.trim().is_empty() {
         return bad("Выберите голосовой модуль");
     }
+    if !p.llm_plugin.is_empty() && !crate::plugins::valid_id(&p.llm_plugin) {
+        return bad("Неверный идентификатор текстового плагина");
+    }
     if p.mode != "classic" {
         p.mode = "live".into();
     }

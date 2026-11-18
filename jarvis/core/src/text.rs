@@ -12,7 +12,8 @@ impl Engine {
             self.journal.note("стоп",text,"");return;
         }
         let s=self.store.get();let p=s.active_profile();
-        let id=self.journal.new_turn("текст",&p.backend_model);
+        let model = if p.llm_plugin.is_empty() { &p.backend_model } else { &p.llm_plugin };
+        let id=self.journal.new_turn("текст",model);
         self.journal.update(id,|t|{t.text=text.into();t.live=true;});
         let epoch=self.speech_epoch.load(Ordering::SeqCst);
         let work=async {

@@ -1,0 +1,20 @@
+{
+  "id": "compatible-chat",
+  "name": "DeepSeek и OpenRouter",
+  "description": "Подключает текстовую модель DeepSeek или OpenRouter.",
+  "kind": "lua",
+  "main": "main.lua",
+  "api": 1,
+  "version": "1.0.0",
+  "min_core": "0.9.84",
+  "category": "assistant",
+  "icon": "sparkles",
+  "provides": ["llm"],
+  "permissions": ["network"],
+  "network_allow": ["https://api.deepseek.com", "https://openrouter.ai"],
+  "settings": [
+    {"key":"provider","label":"Сервис","type":"select","options":["DeepSeek","OpenRouter"],"default":"DeepSeek"},
+    {"key":"model","label":"ID модели","type":"text","required":true,"hint":"Скопируйте ID модели из кабинета провайдера"},
+    {"key":"key","label":"Ключ API","type":"password","required":true}
+  ]
+}

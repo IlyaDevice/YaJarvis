@@ -73,7 +73,16 @@ impl RtcVoice {
         let thread=params["profile"]["thread"].as_str().filter(|s|!s.is_empty()&&s.len()<=128).unwrap_or(&id);
         let session=json!({"model":"gpt-live-1-codex","instructions":instructions,"audio":{"output":{"voice":voice}},"delegation":{"type":"client"},"initial_items":[{"type":"message","role":"developer","content":[{"type":"input_text","text":instructions}]}]});
         let response=provider.client_for(&network)?.post(&provider.call_url).bearer_auth(access).header("ChatGPT-Account-ID",account).header("OpenAI-Alpha","quicksilver=v2").header("session-id",thread).header("thread-id",thread).header("x-session-id",&id).header("originator","codex_cli_rs").json(&json!({"sdp":offer,"session":session})).send().await.map_err(|_|"Не создать звонок ChatGPT")?;
-        let status=response.status();if !status.is_success(){if [403,429].contains(&status.as_u16()){emit(&provider.services,&id,"limit",Value::Null).await;}return Err(format!("ChatGPT не открыл звонок ({})",status.as_u16()));}
+        let status = response.status();
+        if status.as_u16() == 429 {
+            let retry = response.headers().get("Retry-After").and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok()).unwrap_or(60).clamp(1, 86400);
+            emit(&provider.services, &id, "limit", json!(retry)).await;
+            return Err(format!("ChatGPT ограничил голосовые звонки аккаунта (429). Повторите через {} мин.", retry.div_ceil(60)));
+        }
+        if !status.is_success() {
+            return Err(format!("ChatGPT не открыл звонок ({})", status.as_u16()));
+        }
         let answer=response.text().await.map_err(|_|"Нет ответа SDP")?;if answer.len()>1024*1024{return Err("Слишком большой SDP".into());}
         if tcp_only && !answer.lines().any(|line|line.starts_with("a=candidate:") && line.to_ascii_lowercase().contains(" tcp ")){return Err("VPN не поддерживает UDP, а ChatGPT не предложил TCP ICE".into());}
         pc.set_remote_description(RTCSessionDescription::answer(answer).map_err(|e|e.to_string())?).await.map_err(|e|e.to_string())?;

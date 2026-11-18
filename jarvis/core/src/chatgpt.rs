@@ -23,9 +23,8 @@ use std::{
 pub const VOICES: &[&str] = &["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"];
 pub const LIVE_MODEL: &str = "gpt-live-1-codex";
 
-/// Лимит подписки кончился — до этого времени (unix, с) отвечаем другим движком.
+/// Пауза перед следующим голосовым звонком после HTTP 429.
 pub static LIMITED_UNTIL: AtomicI64 = AtomicI64::new(0);
-const LIMIT_REST: i64 = 3600;
 /// Сколько звука микрофона (16 кГц) уходит плагину за такт 20 мс.
 const FEED_MAX: usize = 960;
 
@@ -33,8 +32,9 @@ fn unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-pub fn limited() -> bool {
-    unix() < LIMITED_UNTIL.load(Ordering::Relaxed)
+pub fn voice_limit() -> Option<String> {
+    let remaining = LIMITED_UNTIL.load(Ordering::Relaxed) - unix();
+    (remaining > 0).then(|| format!("ChatGPT ограничил голосовые звонки аккаунта. Повторите через {} мин.", (remaining + 59) / 60))
 }
 fn clip_error(text:&str)->String{text.chars().take(240).collect()}
 async fn await_open(future:impl std::future::Future<Output=Result<Value,String>>,closed:&tokio::sync::Notify)->Result<(),String>{
@@ -262,8 +262,7 @@ pub fn module_voice_event(p: Value) {
         "heard" => {s.dialog.heard_voice();if !s.first_audio.swap(true,Ordering::Relaxed){log::info!("ChatGPT: первый голос через {:.2} с от открытия сессии",s.created.elapsed().as_secs_f64());}},
         "working" => s.dialog.working(value.as_i64().unwrap_or(0) as i32),
         "limit" => {
-            LIMITED_UNTIL.store(unix() + LIMIT_REST, Ordering::Relaxed);
-            s.cancel();
+            LIMITED_UNTIL.store(unix() + value.as_i64().unwrap_or(60).clamp(1, 86400), Ordering::Relaxed);
         }
         "error" => {log::info!("ChatGPT: ошибка сессии: {}",clip_error(text));s.dialog.finish_turn(text);},
         "closed" => s.cancel(),

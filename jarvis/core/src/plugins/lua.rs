@@ -25,6 +25,7 @@ pub struct Script {
     tx: mpsc::Sender<Request>,
     tools: Vec<Value>,
     commands: bool,
+    chat: bool,
     status: Arc<Mutex<String>>,
     stopped: Arc<AtomicBool>,
 }
@@ -47,7 +48,7 @@ impl Vm {
         status: Arc<Mutex<String>>,
         stopped: Arc<AtomicBool>,
         runtime: tokio::runtime::Handle,
-    ) -> mlua::Result<(Self, Vec<Value>, bool)> {
+    ) -> mlua::Result<(Self, Vec<Value>, bool, bool)> {
         let root = dir.canonicalize().map_err(mlua::Error::external)?;
         let main = dir
             .join(&m.main)
@@ -194,6 +195,10 @@ impl Vm {
         if commands && !m.permissions.iter().any(|p| p == "commands") {
             return Err(mlua::Error::external("нужно право commands"));
         }
+        let chat = exports.get::<Option<Function>>("chat")?.is_some();
+        if chat != m.provides("llm") {
+            return Err(mlua::Error::external("Для текстового провайдера нужны provides: [\"llm\"] и функция chat"));
+        }
         let vm = Self {
             lua,
             exports,
@@ -203,7 +208,7 @@ impl Vm {
             timers,
         };
         vm.lifecycle("init")?;
-        Ok((vm, defs, commands))
+        Ok((vm, defs, commands, chat))
     }
     fn budget(&self) {
         *self.deadline.lock().unwrap() = Instant::now() + Duration::from_secs(2);
@@ -229,6 +234,8 @@ impl Vm {
         self.budget();
         let f = if name == "command" {
             self.exports.get::<Function>("command")?
+        } else if name == "llm.chat" {
+            self.exports.get::<Function>("chat")?
         } else {
             self.handlers
                 .get(name)
@@ -267,7 +274,7 @@ impl Script {
         std::thread::Builder::new()
             .name(format!("lua-{}", m.id))
             .spawn(move || {
-                let (vm, defs, commands) = match Vm::open(
+                let (vm, defs, commands, chat) = match Vm::open(
                     host,
                     &m,
                     dir,
@@ -282,7 +289,7 @@ impl Script {
                         return;
                     }
                 };
-                if ready.send(Ok((defs, commands))).is_err() {
+                if ready.send(Ok((defs, commands, chat))).is_err() {
                     return;
                 }
                 while !stop.load(Ordering::Relaxed) {
@@ -313,11 +320,12 @@ impl Script {
                 stop.store(true, Ordering::Relaxed);
             })
             .map_err(|e| e.to_string())?;
-        let (tools, commands) = wait.await.map_err(|e| e.to_string())??;
+        let (tools, commands, chat) = wait.await.map_err(|e| e.to_string())??;
         Ok(Arc::new(Self {
             tx,
             tools,
             commands,
+            chat,
             status,
             stopped,
         }))
@@ -341,6 +349,17 @@ impl Script {
             .await
             .map_err(|_| "Lua: время ожидания истекло".to_string())?
             .map_err(|e| e.to_string())?
+    }
+
+    pub fn supports_chat(&self) -> bool {
+        self.chat && !self.stopped.load(Ordering::Relaxed)
+    }
+
+    pub async fn chat(&self, args: Value) -> Result<Value, String> {
+        if !self.supports_chat() {
+            return Err("Текстовый плагин отключён".into());
+        }
+        self.request("llm.chat", args).await
     }
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         if !self.tools.iter().any(|t| t["name"] == name) {

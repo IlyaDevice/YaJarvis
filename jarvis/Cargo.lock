@@ -1286,6 +1286,7 @@ dependencies = [
  "jarvis-dsp",
  "jarvis-home-common",
  "jarvis-homeassistant",
+ "jarvis-native-plugins",
  "jarvis-smartlife",
  "jarvis-station",
  "jarvis-vpn",
@@ -1368,6 +1369,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.28.0",
+]
+
+[[package]]
+name = "jarvis-native-plugins"
+version = "0.9.71"
+dependencies = [
+ "jarvis-plugin-sdk",
+]
+
+[[package]]
+name = "jarvis-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
