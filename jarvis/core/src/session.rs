@@ -43,13 +43,13 @@ struct DState {
     muted: bool,
     muted_at: Option<Instant>,
     user_turns: usize,
+    model: String,
 }
 
 /// Учёт хода разговора; есть в сессии каждого движка.
 pub struct Dialog {
     journal: Arc<Journal>,
     route: String,
-    model: String,
     st: Mutex<DState>,
 }
 
@@ -66,12 +66,19 @@ pub fn last_sentence(s: &str) -> &str {
 
 impl Dialog {
     pub fn new(journal: Arc<Journal>, route: &str, model: &str) -> Dialog {
-        Dialog { journal, route: route.into(), model: model.into(), st: Mutex::new(DState { last_activity: Some(Instant::now()), ..Default::default() }) }
+        Dialog { journal, route: route.into(), st: Mutex::new(DState { model: model.into(), last_activity: Some(Instant::now()), ..Default::default() }) }
+    }
+
+    pub fn set_model(&self, model: &str) {
+        let mut st = self.st.lock().unwrap();
+        if st.model == model { return; }
+        st.model = model.into();
+        self.journal.update(st.turn, |t| t.model = model.into());
     }
 
     fn next_turn(&self, st: &mut DState) {
         self.finish_turn_locked(st);
-        st.turn = self.journal.new_turn(&self.route, &self.model);
+        st.turn = self.journal.new_turn(&self.route, &st.model);
         self.journal.update(st.turn, |t| t.live = true);
         st.turn_user.clear();
         st.turn_bot.clear();
@@ -197,7 +204,7 @@ impl Dialog {
         let mut st = self.st.lock().unwrap();
         if !err.is_empty() {
             if st.turn == 0 {
-                st.turn = self.journal.new_turn(&self.route, &self.model);
+                st.turn = self.journal.new_turn(&self.route, &st.model);
             }
             self.journal.update(st.turn, |t| t.error = err.into());
         }

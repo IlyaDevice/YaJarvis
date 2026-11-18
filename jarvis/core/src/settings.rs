@@ -114,7 +114,7 @@ pub struct Profile {
     pub extra: Map<String, Value>,
 }
 
-pub const BACKEND_MODELS: &[&str] = &["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-5.6-luna"];
+pub const BACKEND_MODELS: &[&str] = &["gpt-6-luna", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-luna"];
 pub const ELEVEN_DEFAULT_MODEL: &str = "eleven_flash_v2_5";
 
 impl Profile {

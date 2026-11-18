@@ -6,6 +6,42 @@ use std::time::Duration;
 fn configured<'a>(s:&'a Settings,id:&str)->&'a str {
     match id{"openai"=>&s.openai_key,"gemini"=>&s.gemini_key,"grok"=>&s.grok_key,_=>""}
 }
+
+pub const MEMORY_PROVIDERS: [&str; 3] = ["chatgpt", "gemini", "openai"];
+pub const GEMINI_TEXT_MODEL: &str = "gemini-3.8-flash";
+
+pub fn memory_available(host: &Host, settings: &Settings, provider: &str) -> bool {
+    let configured = if provider == "chatgpt" {
+        crate::chatgpt::signed_in(&settings.chatgpt)
+    } else {
+        !configured(settings, provider).is_empty()
+    };
+    configured && host.provider(provider).is_ok()
+}
+
+pub fn memory_candidates(host: &Host, settings: &Settings) -> Vec<&'static str> {
+    if settings.memory.off || settings.memory.provider == "none" { return vec![]; }
+    let candidates: Vec<_> = MEMORY_PROVIDERS.into_iter()
+        .filter(|provider| memory_available(host, settings, provider)).collect();
+    if let Some(i) = candidates.iter().position(|provider| *provider == settings.memory.provider) {
+        let selected = candidates[i];
+        return vec![selected];
+    }
+    candidates
+}
+
+pub fn memory_model<'a>(settings: &'a Settings, provider: &str) -> &'a str {
+    let selected = &settings.memory.model;
+    let use_selected = settings.memory.provider.is_empty() || settings.memory.provider == provider;
+    if provider == "gemini" {
+        return if use_selected && selected.starts_with("gemini-") { selected } else { GEMINI_TEXT_MODEL };
+    }
+    if use_selected && crate::settings::BACKEND_MODELS.contains(&selected.as_str()) {
+        selected
+    } else {
+        crate::settings::BACKEND_MODELS[0]
+    }
+}
 pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
     if !p.llm_plugin.is_empty() {
         return ask_plugin(host, &p.llm_plugin, instructions, text, tools, &defs).await;
@@ -23,7 +59,7 @@ pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,t
     }
     let provider=host.provider(id)?;let key=configured(s,id);
     let model=match id {
-        "gemini"=>if p.backend_model.starts_with("gemini-"){p.backend_model.as_str()}else{"gemini-3.8-flash"},
+        "gemini"=>if p.backend_model.starts_with("gemini-"){p.backend_model.as_str()}else{GEMINI_TEXT_MODEL},
         "grok"=>if p.backend_model.starts_with("grok-"){p.backend_model.as_str()}else{"grok-4-1-fast-non-reasoning"},
         _=>if p.backend_model.is_empty(){crate::settings::BACKEND_MODELS[0]}else{p.backend_model.as_str()},
     };

@@ -6,6 +6,7 @@ pub type Callback=Arc<dyn Fn(String,Value)->Pin<Box<dyn Future<Output=Result<Val
 const ISSUER:&str="https://auth.openai.com";
 const CLIENT:&str="app_EMoamEEZ73f0CkXaXp7hrann";
 mod opus;
+mod mic;
 mod rtc_runtime;
 mod rtc_udp;
 mod rtc_voice;
@@ -35,13 +36,24 @@ impl ChatGpt {
             "login.start"=>self.start().await,
             "auth.logout"=>{self.stop();let before=(self.services)("auth.get".into(),Value::Null).await?;(self.services)("auth.set".into(),json!({"before":before,"after":{}})).await?;Ok(json!({}))},
             "codex.request"=>self.codex(params).await,
+            "voice.warm"=>{
+                let auth=(self.services)("auth.get".into(),Value::Null).await?;
+                if auth["refresh"].as_str().is_some_and(|value| !value.is_empty()) {
+                    let client=self.client().await?;
+                    let url=reqwest::Url::parse(&self.call_url).map_err(|_|"Неверный адрес звонка ChatGPT")?;
+                    // Reuse DNS, SOCKS and TLS. HEAD carries no token, audio or conversation.
+                    let _=client.head(url).timeout(Duration::from_secs(4)).send().await;
+                }
+                Ok(Value::Null)
+            },
             "voice.open"=>{
                 let _lock=self.voice_lock.lock().await;let id=params["id"].as_str().ok_or("Нужен ID звонка")?;
                 if self.voices.lock().unwrap().contains_key(id){return Ok(json!({"rate":48000}));}
                 if self.voices.lock().unwrap().len()>=2{return Err("Лимит: два звонка ChatGPT".into());}
                 let generation=self.generation.load(std::sync::atomic::Ordering::SeqCst);let voice=rtc_voice::RtcVoice::open(self,&params).await?;
                 if generation!=self.generation.load(std::sync::atomic::Ordering::SeqCst){voice.close().await;return Err("Звонок отменён".into());}
-                self.voices.lock().unwrap().insert(voice.id.clone(),voice);Ok(json!({"rate":48000}))
+                let model=voice.requested_model;
+                self.voices.lock().unwrap().insert(voice.id.clone(),voice);Ok(json!({"rate":48000,"requested_model":model}))
             },
             "voice.feed"=>{let voice=self.voice(&params)?;voice.feed(params["pcm"].as_str().ok_or("Нет PCM")?)?;Ok(Value::Null)},
             "voice.say"=>{self.voice(&params)?.say(params["text"].as_str().unwrap_or("")).await?;Ok(Value::Null)},

@@ -1,15 +1,17 @@
 {
  "backend_models": [
   "gpt-6-luna",
-  "gpt-6-sol",
-  "gpt-6.1-sol",
+  "gpt-6.2-sol",
+  "gpt-6.2-astra",
   "gpt-6.1-terra",
+  "gpt-6.1-sol",
+  "gpt-6-sol",
   "gpt-6-astra",
   "gpt-5.6-luna"
  ],
  "chatgpt_voice_groups": [
   {
-   "name": "Подписка ChatGPT",
+   "name": "GPT-Live Codex V1",
    "voices": [
     {
      "ID": "cove",
@@ -47,6 +49,25 @@
      "ID": "sol",
      "Note": "яркий"
     }
+   ]
+  },
+  {
+   "name": "GPT-Live Codex V3",
+   "voices": [
+    {"ID":"aube","Note":"французский"},
+    {"ID":"rivage","Note":"французский"},
+    {"ID":"bubbie","Note":"английский"},
+    {"ID":"haetsal","Note":"корейский"},
+    {"ID":"hanul","Note":"корейский"},
+    {"ID":"himari","Note":"японский"},
+    {"ID":"rindo","Note":"японский"},
+    {"ID":"leher","Note":"хинди"},
+    {"ID":"neer","Note":"хинди"},
+    {"ID":"miko","Note":"немецкий"},
+    {"ID":"sonna","Note":"немецкий"},
+    {"ID":"rio","Note":"португальский, Бразилия"},
+    {"ID":"viola","Note":"португальский, Бразилия"},
+    {"ID":"tinta","Note":"испанский, Мексика"}
    ]
   }
  ],
@@ -239,6 +260,8 @@
   }
  ],
  "model_efforts": {
+  "gpt-6.2-astra": ["low", "medium", "high"],
+  "gpt-6.2-sol": ["low", "medium", "high"],
   "gpt-5.6-luna": [
    "none",
    "low",

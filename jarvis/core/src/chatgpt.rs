@@ -20,8 +20,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const VOICES: &[&str] = &["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"];
-pub const LIVE_MODEL: &str = "gpt-live-1-codex";
+pub const VOICES: &[&str] = &[
+    "cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol",
+    "aube", "rivage", "bubbie", "haetsal", "hanul", "himari", "rindo", "leher", "neer",
+    "miko", "sonna", "rio", "viola", "tinta",
+];
+const LIVE_MODEL: &str = "GPT-Live по подписке";
 
 /// Пауза перед следующим голосовым звонком после HTTP 429.
 pub static LIMITED_UNTIL: AtomicI64 = AtomicI64::new(0);
@@ -46,9 +50,10 @@ async fn await_open(future:impl std::future::Future<Output=Result<Value,String>>
     }
 }
 
-pub fn voice(v: &str) -> String {
-    let v = v.to_lowercase();
-    if VOICES.contains(&v.as_str()) { v } else { "cove".into() }
+pub fn voice(v: &str) -> Option<String> {
+    let v = v.trim().to_ascii_lowercase();
+    if v.is_empty() { return Some("cove".into()); }
+    VOICES.contains(&v.as_str()).then_some(v)
 }
 
 pub fn new_id() -> String {
@@ -84,6 +89,7 @@ pub struct ChatGptSession {
     done: (Mutex<bool>, Condvar),
     created:Instant,
     first_audio:AtomicBool,
+    last_input: Mutex<Option<Instant>>,
 }
 
 pub struct Open {
@@ -115,7 +121,7 @@ impl ChatGptSession {
             cancelled: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
             done: (Mutex::new(false), Condvar::new()),
-            created:Instant::now(),first_audio:AtomicBool::new(false),
+            created:Instant::now(),first_audio:AtomicBool::new(false),last_input:Mutex::default(),
         });
         let me = s.clone();
         rt.spawn(async move { me.run(o.host, o.voice, o.thread, o.instructions, stx).await });
@@ -141,21 +147,26 @@ impl ChatGptSession {
         let t0 = Instant::now();
         let open = async {
             let left = Duration::from_secs(40).saturating_sub(t0.elapsed()).max(Duration::from_secs(1));
-            n.request("voice.open", json!({"id": self.id, "profile": {"voice": voice, "thread": thread}, "instructions": instructions}), left).await
+            let response = n.request("voice.open", json!({"id": self.id, "profile": {"voice": voice, "thread": thread}, "instructions": instructions}), left).await?;
+            if let Some(model) = response["requested_model"].as_str() {
+                log::info!("ChatGPT: запрошена модель {model} (фактическую подтверждает событие сессии)");
+            }
+            Ok(response)
         };
         // `closed` may arrive immediately before the actual connection error.
         let res = await_open(open,&self.wake).await;
         let ok = res.is_ok();
         if ok{log::info!("ChatGPT: разговор готов за {:.2} с, в очереди микрофона {:.2} с",self.created.elapsed().as_secs_f64(),self.pending.lock().unwrap().len() as f64/16000.0);}
         let _ = started.send(res);
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while ok && !self.cancelled.load(Ordering::SeqCst) {
             tokio::select! {
                 _ = self.wake.notified() => continue,
-                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                _ = tick.tick() => {}
             }
-            // до 0,06 с за такт — втрое быстрее реального времени: звук, накопленный с момента слова и пока
-            // открывался звонок, быстро уходит плагину, а тот догоняет, выкидывая паузы. По 0,1 с за такт
-            // очередь не убывала никогда. Длинные паузы сокращаем до отправки, речь сохраняем.
+            // До 60 мс за такт, чтобы накопленный звук быстро дошёл до плагина.
+            // Длинные тихие паузы сокращаем до отправки. Темп RTP задаёт плагин.
             let pcm = take_mic_caught_up(&mut self.pending.lock().unwrap(), FEED_MAX);
             if pcm.is_empty() {
                 continue;
@@ -212,6 +223,11 @@ impl ChatGptSession {
 
 impl Session for ChatGptSession {
     fn feed(&self, pcm: &[i16]) {
+        if !self.first_audio.load(Ordering::Relaxed)
+            && pcm.chunks(320).any(|frame| frame.iter().filter(|v| v.unsigned_abs() > 220).count() >= 24)
+        {
+            *self.last_input.lock().unwrap() = Some(Instant::now());
+        }
         queue_mic(&mut self.pending.lock().unwrap(), pcm);
     }
     fn take_audio(&self) -> Option<Receiver<Vec<i16>>> {
@@ -258,7 +274,19 @@ pub fn module_voice_event(p: Value) {
     match kind {
         "user" => s.dialog.on_user(text),
         "bot" => s.dialog.on_bot(text),
-        "heard" => {s.dialog.heard_voice();if !s.first_audio.swap(true,Ordering::Relaxed){log::info!("ChatGPT: первый голос через {:.2} с от открытия сессии",s.created.elapsed().as_secs_f64());}},
+        "heard" => {
+            s.dialog.heard_voice();
+            if !s.first_audio.swap(true,Ordering::Relaxed) {
+                log::info!("ChatGPT: первый голос через {:.2} с от открытия сессии",s.created.elapsed().as_secs_f64());
+                if let Some(input) = *s.last_input.lock().unwrap() {
+                    log::info!("ChatGPT: от последнего речевого кадра до первого голоса {:.2} с",input.elapsed().as_secs_f64());
+                }
+            }
+        },
+        "model" => {
+            s.dialog.set_model(text);
+            log::info!("ChatGPT: сервер сообщил модель {}", clip_error(text));
+        },
         "working" => s.dialog.working(value.as_i64().unwrap_or(0) as i32),
         "limit" => {
             LIMITED_UNTIL.store(unix() + value.as_i64().unwrap_or(60).clamp(1, 86400), Ordering::Relaxed);
@@ -299,17 +327,16 @@ pub async fn brain_request(params: Value) -> Result<Value, String> {
     r
 }
 
-/// Держать у плагина заготовку звонка (WebRTC с собранными адресами), пока голос ассистента — ChatGPT:
-/// звонок тогда открывается на ~0,4 с быстрее. После каждого звонка плагин готовит новую сам.
+/// Прогреть сетевое соединение без звонка и без передачи звука.
 pub async fn warm_loop(host: Arc<Host>, store: crate::settings::Store) {
     tokio::time::sleep(Duration::from_secs(15)).await; // плагины ещё запускаются
     loop {
         if store.with(|s| s.active_profile().engine == "chatgpt")
             && let Ok(n) = host.provider("chatgpt")
         {
-            let _ = n.request("voice.warm", Value::Null, Duration::from_secs(1)).await;
+            let _ = n.request("voice.warm", Value::Null, Duration::from_secs(5)).await;
         }
-        tokio::time::sleep(Duration::from_secs(300)).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
     }
 }
 
@@ -317,6 +344,7 @@ pub async fn warm_loop(host: Arc<Host>, store: crate::settings::Store) {
 pub fn effort(model: &str, effort: &str) -> String {
     let e = effort.trim().to_lowercase();
     let allowed: &[&str] = match model.trim().to_lowercase().as_str() {
+        "gpt-6.2-sol" | "gpt-6.2-astra" => &["low", "medium", "high", "xhigh", "max"],
         "gpt-6.1-sol" | "gpt-6-astra" => &["low", "medium", "high"],
         _ => &["none", "low", "medium", "high"],
     };
@@ -375,7 +403,20 @@ mod tests {
         assert_eq!(super::effort("gpt-6-luna", " High "), "high");
         let id = super::new_id();
         assert_eq!(id.len(), 36);
-        assert_eq!(super::voice("Ember"), "ember");
-        assert_eq!(super::voice("x"), "cove");
+        assert_eq!(super::voice("Ember").as_deref(), Some("ember"));
+        assert_eq!(super::voice(" AUBE ").as_deref(), Some("aube"));
+        assert_eq!(super::voice("").as_deref(), Some("cove"));
+        assert_eq!(super::voice("porto"), None);
+        assert_eq!(super::voice("selva"), None);
+    }
+
+    #[test]
+    fn subscription_voice_catalog_matches_validation() {
+        let catalog: serde_json::Value = serde_json::from_str(include_str!("catalog.json")).unwrap();
+        let groups = catalog["chatgpt_voice_groups"].as_array().unwrap();
+        assert_eq!(groups.iter().map(|group| group["voices"].as_array().unwrap().len()).collect::<Vec<_>>(), [9, 14]);
+        let choices: Vec<_> = groups.iter().flat_map(|group| group["voices"].as_array().unwrap())
+            .map(|voice| voice["ID"].as_str().unwrap()).collect();
+        assert_eq!(choices, super::VOICES);
     }
 }

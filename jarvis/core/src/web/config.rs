@@ -178,7 +178,8 @@ pub async fn profile(State(app): State<App>, Json(mut p): Json<Profile>) -> Resp
         p.mode = "live".into();
     }
     if p.engine == "chatgpt" {
-        p.voice = crate::chatgpt::voice(&p.voice);
+        let Some(voice) = crate::chatgpt::voice(&p.voice) else { return bad("Этот голос недоступен для подписки ChatGPT") };
+        p.voice = voice;
     }
     let result = app.store.update(|s| -> Result<(), std::io::Error> {
         if s.profiles

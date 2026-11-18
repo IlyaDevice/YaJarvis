@@ -94,18 +94,15 @@ fn pct(s: &str) -> String {
     String::from_utf8_lossy(&out).into()
 }
 
-pub fn memory_state(s: &Settings) -> Value {
-    let has = |p: &str| match p {
-        "chatgpt" => crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
-        "gemini" => !s.gemini_key.is_empty(),
-        "openai" => !s.openai_key.is_empty(),
-        _ => false,
-    };
+pub fn memory_state(s: &Settings, host: &crate::plugins::Host) -> Value {
+    let has = |p: &str| crate::llm::memory_available(host, s, p);
+    let active = crate::llm::memory_candidates(host, s).first().copied();
     let backend = catalog().get("backend_models").cloned().unwrap_or(json!([]));
     json!({
         "off": s.memory.off, "provider": s.memory.provider, "model": s.memory.model,
         "has": {"chatgpt": has("chatgpt"), "gemini": has("gemini"), "openai": has("openai")},
-        "models": {"chatgpt": backend, "gemini": [""], "openai": backend},
+        "models": {"chatgpt": backend, "gemini": [crate::llm::GEMINI_TEXT_MODEL], "openai": backend},
+        "active": active, "active_model": active.map(|provider| crate::llm::memory_model(s, provider)),
     })
 }
 
@@ -183,7 +180,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "eleven_keys": eleven, "gemini_keys": gemini, "vpn": vpn,
         "chatgpt": {"signed_in": crate::settings::has_all(&s.chatgpt, &["refresh", "account"]),
                     "plan": str_of(&s.chatgpt, "plan"), "email": str_of(&s.chatgpt, "email"),
-                    "login": chatgpt_login, "chat": super::memory::chat_state(&app), "memory": memory_state(&s), "limited_until": crate::chatgpt::LIMITED_UNTIL.load(std::sync::atomic::Ordering::Relaxed)},
+                    "login": chatgpt_login, "chat": super::memory::chat_state(&app), "memory": memory_state(&s,&app.plugins), "limited_until": crate::chatgpt::LIMITED_UNTIL.load(std::sync::atomic::Ordering::Relaxed)},
         "vless": vless,
         "youtube": super::music::youtube_state(&app).await,
         "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),

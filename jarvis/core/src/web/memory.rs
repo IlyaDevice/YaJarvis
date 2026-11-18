@@ -27,7 +27,7 @@ pub async fn get(State(app): State<App>) -> Response {
     if let Some(o) = st.as_object_mut() {
         o.remove("recent"); // реплики страница листает сама — через архив
     }
-    reply(StatusCode::OK, json!({"memory": st, "settings": super::state::memory_state(&app.store.get())}))
+    reply(StatusCode::OK, json!({"memory": st, "settings": super::state::memory_state(&app.store.get(), &app.plugins)}))
 }
 
 pub async fn put(State(app): State<App>, b: Bytes) -> Response {

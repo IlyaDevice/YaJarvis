@@ -9,7 +9,11 @@ impl PeerConnectionEventHandler for PeerHandler{
 }
 #[tokio::test]
 async fn loopback_call_keeps_thread_and_carries_opus_and_delegations(){
-    call(json!({})).await;
+    call(json!({}), false).await;
+}
+#[tokio::test]
+async fn rejected_live_11_retries_live_1_with_the_same_voice() {
+    call(json!({}), true).await;
 }
 #[tokio::test]
 async fn vpn_call_carries_signaling_ice_dtls_opus_and_delegations(){
@@ -35,11 +39,11 @@ async fn vpn_call_carries_signaling_ice_dtls_opus_and_delegations(){
             _=tasks.join_next(),if !tasks.is_empty()=>{},
         }}
     });
-    call(network).await;
+    call(network, false).await;
     assert!(packets.load(Ordering::SeqCst)>5,"ICE, DTLS and RTP must traverse VLESS UDP");
     vpn.stop().await;proxy.abort();let _=proxy.await;
 }
-async fn call(network:Value){
+async fn call(network:Value, fallback: bool){
     tokio::time::timeout(Duration::from_secs(25),async{
         let (events,event_rx)=tokio::sync::mpsc::channel(128);let mut event_rx=event_rx;
         let services:Callback=Arc::new(move|method,params|{let events=events.clone();let network=network.clone();Box::pin(async move{match method.as_str(){
@@ -57,20 +61,38 @@ async fn call(network:Value){
         remote.add_track(remote_track.clone() as Arc<dyn TrackLocal>).await.unwrap();
         let _guard=Guard(Some(remote.clone()));let pc=remote.clone();
         let server=tokio::spawn(async move{
+            let models: &[_] = if fallback { &[LIVE_11, LIVE_1] } else { &[LIVE_11] };
+            for &model in models {
             let (mut socket,_)=listener.accept().await.unwrap();let mut request=Vec::new();let mut chunk=[0;4096];
             let header_end=loop{let n=socket.read(&mut chunk).await.unwrap();assert!(n>0);request.extend(&chunk[..n]);if let Some(at)=request.windows(4).position(|v|v==b"\r\n\r\n"){break at+4;}assert!(request.len()<65536);};
             let headers=String::from_utf8_lossy(&request[..header_end]).to_lowercase();assert!(headers.contains("thread-id: thread-stable"));assert!(headers.contains("session-id: thread-stable"));
             let length:usize=headers.lines().find_map(|line|line.strip_prefix("content-length:").map(str::trim)).unwrap().parse().unwrap();while request.len()<header_end+length{let n=socket.read(&mut chunk).await.unwrap();assert!(n>0);request.extend(&chunk[..n]);}
             let body:Value=serde_json::from_slice(&request[header_end..header_end+length]).unwrap();assert_eq!(body["session"]["initial_items"][0]["role"],"developer");
+            assert_eq!(body["session"]["model"], model);
+            assert_eq!(body["session"]["audio"]["output"]["voice"], "aube");
+            if fallback && model == LIVE_11 {
+                let rejection = r#"{"error":{"code":"model_not_found","param":"model"}}"#;
+                socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejection}", rejection.len()).as_bytes()).await.unwrap();
+                continue;
+            }
             pc.set_remote_description(RTCSessionDescription::offer(body["sdp"].as_str().unwrap().to_string()).unwrap()).await.unwrap();let answer=pc.create_answer(None).await.unwrap();pc.set_local_description(answer).await.unwrap();let _=tokio::time::timeout(Duration::from_secs(3),gathered.notified()).await;let answer=pc.local_description().await.unwrap().sdp;
-            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",answer.len(),answer).as_bytes()).await.unwrap();
+            socket.write_all(format!("HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",answer.len(),answer).as_bytes()).await.unwrap();
+            }
         });
-        provider.request("voice.open",json!({"id":"local-call","profile":{"voice":"cove","thread":"thread-stable"},"instructions":"You are Jarvis"})).await.unwrap();server.await.unwrap();
+        let opened = provider.request("voice.open",json!({"id":"local-call","profile":{"voice":"aube","thread":"thread-stable"},"instructions":"You are Jarvis"})).await.unwrap();
+        assert_eq!(opened["requested_model"], if fallback { LIVE_1 } else { LIVE_11 });
+        server.await.unwrap();
         let channel=channel_rx.recv().await.unwrap();
+        let actual = "gpt-live-1.1-codex-test";
+        channel.send_text(&json!({"type":"session.created","session":{"model":actual}}).to_string()).await.unwrap();
         channel.send_text(&json!({"type":"session.input_transcript.added","item":{"text":"hello"}}).to_string()).await.unwrap();
         channel.send_text(&json!({"type":"delegation.created","item":{"id":"d1","content":[{"text":"test task"}]}}).to_string()).await.unwrap();
         loop{if let Some(DataChannelEvent::OnMessage(message))=channel.poll().await{let result:Value=serde_json::from_slice(&message.data).unwrap();if result["type"]=="delegation.context.append"{assert_eq!(result["content"][0]["text"],"done");break;}}}
-        let mut heard=false;while let Some(event)=event_rx.recv().await{if event["kind"]=="user" && event["value"]=="hello"{heard=true;break;}}assert!(heard);
+        let mut confirmed = false;
+        let mut heard=false;while let Some(event)=event_rx.recv().await{
+            if event["kind"]=="model" { assert_eq!(event["value"], actual); confirmed = true; }
+            if event["kind"]=="user" && event["value"]=="hello"{heard=true;break;}
+        }assert!(heard && confirmed);
         provider.request("voice.feed",json!({"id":"local-call","pcm":B64.encode(vec![0;6400])})).await.unwrap();let packet=audio_rx.recv().await.unwrap();assert_eq!(opus::Decoder::new().unwrap().decode(Some(&packet),false,5760).unwrap().len(),960);
         let text="Проверка голоса. ".repeat(40);provider.request("voice.say",json!({"id":"local-call","text":text})).await.unwrap();
         let mut spoken=String::new();while spoken.len()<text.len(){if let Some(DataChannelEvent::OnMessage(message))=channel.poll().await{let event:Value=serde_json::from_slice(&message.data).unwrap();assert_eq!(event["type"],"session.context.append");assert_eq!(event["channel"],"speakable");let part=event["content"][0]["text"].as_str().unwrap();assert!(part.len()<=500);spoken.push_str(part);}}assert_eq!(spoken,text);

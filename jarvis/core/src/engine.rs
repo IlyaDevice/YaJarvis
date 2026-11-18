@@ -490,27 +490,25 @@ impl Engine {
         )
     }
 
-    /// Чем память сжимает старые реплики: текстовая модель подписки ChatGPT (Gemini и OpenAI — когда
-    /// появятся их плагины). Выбор — как в Go: выбранный в «Памяти» или первый доступный.
+    /// Выбранная текстовая модель памяти или очередь подключённых провайдеров в режиме автовыбора.
     pub fn summarizer(&self) -> crate::memory::Summarizer {
-        let (host, store) = (self.host.clone(), self.store.clone());
+        let (host, store, tools) = (self.host.clone(), self.store.clone(), self.tools.clone());
         Arc::new(move |instructions: String, text: String| {
-            let (host, store) = (host.clone(), store.clone());
+            let (host, store, tools) = (host.clone(), store.clone(), tools.clone());
             Box::pin(async move {
                 let s = store.get();
-                let m = &s.memory;
-                let chatgpt = chatgpt::signed_in(&s.chatgpt) && host.provider("chatgpt").is_ok();
-                if m.off || m.provider == "none" || !chatgpt {
-                    return Err(crate::memory::NO_SUMMARIZER.to_string());
+                let mut error = crate::memory::NO_SUMMARIZER.to_string();
+                for provider in crate::llm::memory_candidates(&host, &s) {
+                    let profile = Profile {
+                        engine: provider.into(), backend_model: crate::llm::memory_model(&s, provider).into(),
+                        effort: "low".into(), web_search: false, ..Default::default()
+                    };
+                    match crate::llm::ask(&host, &s, &profile, &instructions, &text, &tools, vec![]).await {
+                        Ok(summary) => return Ok(summary),
+                        Err(why) => error = why,
+                    }
                 }
-                let model = if m.provider == "chatgpt" && crate::settings::BACKEND_MODELS.contains(&m.model.as_str()) {
-                    m.model.clone()
-                } else {
-                    crate::settings::BACKEND_MODELS[0].to_string()
-                };
-                let p = Profile { backend_model: model, effort: "low".into(), ..Default::default() };
-                let auth = host.provider("chatgpt")?.request("auth.token", serde_json::Value::Null, Duration::from_secs(20)).await?;
-                chatgpt::ask_codex(&host, auth, &p, &instructions, &text, None, vec![]).await
+                Err(error)
             })
         })
     }
@@ -561,7 +559,7 @@ impl Engine {
                 let mut st = self.st.lock().unwrap();
                 // The wake word has already been detected. Avoid replaying seconds of
                 // old audio into the subscription call before the first real question.
-                let before = if p.engine == "chatgpt" { preroll.len().saturating_sub(RATE * 5 / 4) } else { 0 };
+                let before = if p.engine == "chatgpt" { preroll.len().saturating_sub(RATE * 4 / 5) } else { 0 };
                 let mut first = preroll[before..].to_vec();
                 first.extend_from_slice(&st.hold);
                 x.feed(&boost(&first, s.mic_boost_db));
