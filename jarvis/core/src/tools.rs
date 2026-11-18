@@ -289,13 +289,21 @@ impl Tools {
             if cmd.is_empty() {
                 return "Не понял команду для Алисы.".into();
             }
+            let schedule = fastcmd::alice_schedule(&cmd);
+            if schedule == fastcmd::AliceSchedule::Pending {
+                return fastcmd::ALICE_TIME_QUESTION.into();
+            }
             let c2 = cmd.clone();
-            // беззвучно: результат озвучит сам Джарвис
-            return match tokio::task::spawn_blocking(move || crate::alice::text(&c2, true)).await.unwrap_or_else(|e| Err(e.to_string())) {
+            let is_schedule = schedule == fastcmd::AliceSchedule::Ready;
+            return match tokio::task::spawn_blocking(move || crate::alice::text(&c2, !is_schedule)).await.unwrap_or_else(|e| Err(e.to_string())) {
                 Err(e) => format!("Алиса недоступна: {e}"),
                 Ok(()) => {
                     log::info!("инструмент: «{cmd}» → Алисе");
-                    format!("Передал Алисе: «{cmd}». Она выполняет — скажи коротко, что сделано.")
+                    if is_schedule {
+                        "Команда передана. Алиса ответит своим голосом. Не утверждай, что команда выполнена.".into()
+                    } else {
+                        format!("Передал Алисе: «{cmd}». Она выполняет — скажи коротко, что сделано.")
+                    }
                 }
             };
         }

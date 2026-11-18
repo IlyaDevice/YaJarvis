@@ -56,6 +56,10 @@ impl Classic {
             let answer=control(command.to_string()).await;
             if let Some(answer)=answer{self.dialog.on_bot(&answer);self.speak(context,&answer,generation).await?;self.dialog.finish_turn("");return Ok(());}
         }
+        if crate::fastcmd::alice_schedule(command)==crate::fastcmd::AliceSchedule::Pending {
+            let question=crate::fastcmd::ALICE_TIME_QUESTION;
+            self.dialog.annotate("уточнение",question);self.speak(context,question,generation).await?;self.dialog.finish_turn("");return Ok(());
+        }
         if let Some(command)=crate::fastcmd::alice_skill_for(command,context.settings.use_home("yandexmusic")) {
             tokio::task::spawn_blocking(move||crate::alice::text(&command,false)).await.map_err(|e|e.to_string())??;
             self.dialog.on_bot("Передал Алисе");self.dialog.finish_turn("");return Ok(());

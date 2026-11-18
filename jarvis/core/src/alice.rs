@@ -52,6 +52,9 @@ fn frame(text: &str, silent: bool) -> Vec<u8> {
 
 /// Отправить Алисе текстовый запрос. silent=false — она ответит голосом, как обычно. Блокирует ~0,2 с.
 pub fn text(text: &str, silent: bool) -> Result<(), String> {
+    if crate::fastcmd::alice_schedule(text) == crate::fastcmd::AliceSchedule::Pending {
+        return Err(crate::fastcmd::ALICE_TIME_QUESTION.into());
+    }
     let addr = "127.0.0.1:9875".parse().unwrap();
     let mut c = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).map_err(|e| format!("Алиса недоступна: {e}"))?;
     let _ = c.set_write_timeout(Some(Duration::from_secs(2)));

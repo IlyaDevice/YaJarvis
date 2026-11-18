@@ -34,6 +34,42 @@ re!(ALICE_THINGS, r"(таймер|будильник|напомни|напоми
 re!(MUSIC_PLAY, r"^(?:включи|поставь|заведи|запусти)(?:\s|$)");
 re!(MUSIC_WORDS, r"(музык|песн|трек|плейлист|радио|подкаст|альбом)");
 re!(NOT_MUSIC, r"(таймер|будильник|напомни|напоминани|разбуди|засеки|громкост|громче|потише|тише|пауз|блютуз|bluetooth)");
+re!(ALICE_SCHEDULE, r"^(?:(?:разбуди|напомни|засеки)(?:\s|$)|(?:(?:поставь|заведи|запусти|включи|установи|создай)\s+)?(?:будильник|таймер|напоминание)(?:\s|$))");
+re!(DURATION_WORD, r"^(?:(?:секунд|минут|час|день|дня|дней|недел|месяц|полминут|полчас)[а-я]*|сутки|суток)$");
+
+pub const ALICE_TIME_QUESTION: &str = "Повтори команду целиком и укажи, когда или через сколько.";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AliceSchedule {
+    None,
+    Pending,
+    Ready,
+}
+
+pub fn alice_schedule(text: &str) -> AliceSchedule {
+    let bare = strip_lead(&norm_text(text));
+    classify_schedule(&bare)
+}
+
+fn classify_schedule(bare: &str) -> AliceSchedule {
+    if !ALICE_SCHEDULE.is_match(bare) {
+        return AliceSchedule::None;
+    }
+    let bare = bare.strip_suffix(" пожалуйста").unwrap_or(bare);
+    let last = bare.split_whitespace().next_back().unwrap_or_default();
+    if matches!(last, "через" | "спустя" | "на" | "в" | "к" | "до" | "после" | "перед" | "около" | "и")
+        || matches!(bare, "разбуди" | "разбуди меня" | "напомни" | "напомни мне" | "поставь таймер" | "поставь будильник" | "таймер" | "будильник")
+    {
+        return AliceSchedule::Pending;
+    }
+    let timer = bare.split_whitespace().take(2).any(|word| word == "таймер");
+    let mut words = bare.split_whitespace();
+    let relative = words.any(|word| matches!(word, "через" | "спустя") || (timer && word == "на"));
+    if relative && !words.any(|word| DURATION_WORD.is_match(word)) {
+        return AliceSchedule::Pending;
+    }
+    AliceSchedule::Ready
+}
 
 /// Нижний регистр, ё → е, без знаков препинания, одиночные пробелы.
 pub fn norm_text(s: &str) -> String {
@@ -91,7 +127,11 @@ pub fn alice_skill(text: &str) -> Option<String> {
     if n == 0 || n > 12 {
         return None;
     }
-    (bare == "дальше" || (ALICE_VERBS.is_match(&bare) && ALICE_THINGS.is_match(&bare))).then_some(bare)
+    match classify_schedule(&bare) {
+        AliceSchedule::Pending => None,
+        AliceSchedule::Ready => Some(bare),
+        AliceSchedule::None => (bare == "дальше" || (ALICE_VERBS.is_match(&bare) && ALICE_THINGS.is_match(&bare))).then_some(bare),
+    }
 }
 
 /// Как alice_skill, но если Яндекс Музыка выключена, музыку Алисе не отдаём: Джарвис включит с YouTube.
@@ -221,6 +261,24 @@ mod tests {
         assert!(alice_skill("расскажи анекдот").is_none());
         assert_eq!(home_command_local("Джарвис, выключи свет на кухне").as_deref(), Some("выключи свет на кухне"));
         assert!(home_command_local("сделай лампу синей").is_some());
+    }
+
+    #[test]
+    fn alice_only_gets_the_complete_relative_time() {
+        for partial in [
+            "Джарвис, разбуди меня через", "разбуди меня через пять",
+            "поставь таймер на 5", "напомни через два", "будильник на",
+        ] {
+            assert_eq!(alice_schedule(partial), AliceSchedule::Pending, "{partial}");
+            assert!(alice_skill(partial).is_none(), "{partial}");
+        }
+        for complete in [
+            "разбуди меня через 5 минут", "разбуди меня через полчаса",
+            "напомни через пять минут проверить духовку", "поставь таймер на 5 минут",
+            "будильник на семь утра", "отмени будильник",
+        ] {
+            assert_eq!(alice_skill(complete).as_deref(), Some(complete));
+        }
     }
 
     #[test]

@@ -89,6 +89,16 @@ fn short(e: &str) -> String {
     if e.chars().count() > 160 { format!("{}…", e.chars().take(160).collect::<String>()) } else { e.into() }
 }
 
+fn command_settled(schedule: fastcmd::AliceSchedule, since: Duration, quiet_for: Duration) -> bool {
+    match schedule {
+        fastcmd::AliceSchedule::None => since >= Duration::from_millis(350),
+        fastcmd::AliceSchedule::Ready => since >= Duration::from_millis(750)
+            && (quiet_for >= Duration::from_millis(550) || since >= Duration::from_millis(2200)),
+        fastcmd::AliceSchedule::Pending => since >= Duration::from_millis(2200)
+            && quiet_for >= Duration::from_millis(750),
+    }
+}
+
 fn lang_name(l: &str) -> &'static str {
     match l {
         "ru" => "русском",
@@ -638,10 +648,23 @@ impl Engine {
                 return close(&sess);
             }
             let (id, text, since) = x.dialog().utterance();
-            if id != 0 && id != checked && since >= Duration::from_millis(350) {
-                checked = id;
-                if !x.handles_commands() && self.handle(&x, &text, "модель") {
-                    return close(&sess);
+            if id != 0 && id != checked && !x.handles_commands() {
+                let command = fastcmd::command_for_phrase(&text, &self.listener.phrase());
+                let schedule = fastcmd::alice_schedule(&command);
+                let quiet_for = self.st.lock().unwrap().last_loud.map(|time| time.elapsed()).unwrap_or(Duration::MAX);
+                if command_settled(schedule, since, quiet_for) {
+                    checked = id;
+                    if schedule == fastcmd::AliceSchedule::Pending {
+                        let question = fastcmd::ALICE_TIME_QUESTION;
+                        x.dialog().annotate("уточнение", question);
+                        x.dialog().finish_turn("");
+                        x.dialog().unmute();
+                        if let Err(error) = x.say(question) {
+                            log::info!("уточнение времени: {error}");
+                        }
+                    } else if self.handle(&x, &text, "модель") {
+                        return close(&sess);
+                    }
                 }
             }
             if x.dialog().idle(idle) {
@@ -713,6 +736,7 @@ impl Engine {
         }
         // таймеры, будильники, напоминания, музыка — умеет только штатная Алиса; команды умного дома
         // отдаём ей, если так выбрано в настройках
+        let schedule = fastcmd::alice_schedule(&cmd);
         let mut to_alice = fastcmd::alice_skill_for(&cmd, self.store.with(|s| s.use_home("yandexmusic")));
         if to_alice.is_none() && self.store.with(|s| s.use_home("alice")) {
             to_alice = rt.block_on(self.tools.home_command(&cmd));
@@ -724,6 +748,12 @@ impl Engine {
                     log::info!("Джарвис: «{a}» → Алисе ({from}, {:.2} с)", t0.elapsed().as_secs_f64());
                     note("умный дом → Алиса", &format!("передал Алисе: «{a}»"));
                     return true;
+                }
+                Err(e) if schedule == fastcmd::AliceSchedule::Ready => {
+                    note("уточнение", &format!("Не удалось передать Алисе: {e}"));
+                    x.dialog().unmute();
+                    let _ = x.say("Не удалось передать команду Алисе.");
+                    return false;
                 }
                 Err(e) => log::info!("Алиса: {e} — выполняю сам"),
             }
@@ -927,6 +957,17 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn waits_for_the_duration_after_a_transcript_pause() {
+        use super::{Duration, command_settled, fastcmd::AliceSchedule::{Pending, Ready}};
+        let pause = Duration::from_millis;
+        assert!(!command_settled(Pending, pause(400), pause(400)));
+        assert!(!command_settled(Pending, pause(1800), pause(1100)));
+        assert!(!command_settled(Ready, pause(750), pause(100)));
+        assert!(command_settled(Ready, pause(800), pause(650)));
+        assert!(command_settled(Pending, pause(2300), pause(800)));
+    }
+
     #[test]
     fn helpers() {
         assert!(super::loud(&[0, 700]) && !super::loud(&[600, -600]));

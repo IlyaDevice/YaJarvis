@@ -21,6 +21,7 @@ impl Engine {
             if let Some(answer)=self.music.control(&self.host,command).await{return Ok(answer);}
             if let Some(answer)=self.tools.ha_vacuum(command).await{return Ok(answer);}
             if let Some(answer)=self.tools.smartlife_fast(command).await{return Ok(answer);}
+            if fastcmd::alice_schedule(command)==fastcmd::AliceSchedule::Pending{return Ok(fastcmd::ALICE_TIME_QUESTION.into());}
             if let Some(command)=fastcmd::alice_skill_for(command,s.use_home("yandexmusic")){
                 let answer=format!("Передал Алисе: {command}");tokio::task::spawn_blocking(move||alice::text(&command,false)).await.map_err(|e|e.to_string())??;return Ok(answer);
             }
