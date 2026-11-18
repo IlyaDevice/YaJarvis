@@ -121,6 +121,7 @@ function draw() {
     configuration,
     () => `<div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Готово</h1>
       <p>Если настроили голосовой плагин, скажите <b>«Джарвис, привет»</b>. Добавить и удалить плагины можно в «Подключениях».</p>
+      <a class="btn" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">${icon("ext")}Поставить звезду на GitHub</a>
       <p class="muted">Мастер можно открыть снова в разделе «Безопасность».</p></div>`,
   ];
   card.innerHTML = `<div class="wz-top"><nav class="wz-dots">${STEPS.map((name, i) => `<span class="wz-dot${step === i ? " on" : i < step ? " done" : ""}"${step === i ? ' aria-current="step"' : ""}><i></i><span>${name}</span></span>`).join("")}</nav>

@@ -19,7 +19,9 @@ export function viewSecurity() {
   ${sec("Что открыто на колонке", "Служебные входы, через которые в колонку можно попасть из домашней сети",
     `<div class="checks">${S.security.map((c) => `<div class="check"><div class="body"><b>${esc(c.title)}</b><small>${esc(c.hint)}</small></div><span class="st ${c.open ? "warn" : "ok"}">${c.open ? "открыт" : "закрыт"}</span></div>`).join("") || `<p class="note">Проверять нечего</p>`}</div>`)}
   ${sec("Обновления", "", `<div id="upd"><p class="note">…</p></div>`)}
-  ${sec("Знакомство", "Что такое Джарвис, что он умеет, кто думает и какие плагины поставить", `<div><button class="btn" id="wiz-again">${icon("right")}Показать знакомство</button></div>`)}`;
+  ${sec("Знакомство", "Что такое Джарвис, что он умеет, кто думает и какие плагины поставить",
+    `<div class="row"><button class="btn" id="wiz-again">${icon("right")}Показать знакомство</button>
+      <a class="btn ghost" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">${icon("ext")}Поставить звезду на GitHub</a></div>`)}`;
   drawUpdate();
   $("#wiz-again").addEventListener("click", () => wizOpen(0));
   $("#view").oninput = $("#view").onchange = $("#view").onclick = null;

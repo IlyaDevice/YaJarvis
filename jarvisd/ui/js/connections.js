@@ -91,11 +91,11 @@ export function elevenKeysHtml() {
 
 export function connDefs() {
   const k = S.keys, v = S.vless, cg = S.chatgpt, lg = cg.login || {}, yt = S.youtube || {}, ya = yt.account || {};
-  const keyBody = (id, place, how, label) => `<div class="f"><label for="k-${id}">${label ? label[0] : k[id] ? "Новый ключ" : "Ключ"}</label><div class="row"><input type="password" id="k-${id}" placeholder="${place}" autocomplete="off"><button class="btn primary" data-key="${id}">${label ? label[1] : k[id] ? "Заменить" : "Сохранить"}</button></div></div>
-    ${how ? `<details${k[id] ? "" : " open"}><summary>Где его взять</summary><ol class="how">${how}</ol></details>` : ""}`;
+  const keyBody = (id, place, how, label, helpTitle) => `<div class="f"><label for="k-${id}">${label ? label[0] : k[id] ? "Новый ключ" : "Ключ"}</label><div class="row"><input type="password" id="k-${id}" placeholder="${place}" autocomplete="off"><button class="btn primary" data-key="${id}">${label ? label[1] : k[id] ? "Заменить" : "Сохранить"}</button></div></div>
+    ${how ? `<details${k[id] ? "" : " open"}><summary>${helpTitle || "Где его взять"}</summary><ol class="how">${how}</ol></details>` : ""}`;
   const key = (id, o) => ({ id, group: o.group, plugin: o.plugin || id, mono: o.mono, name: o.name, about: o.about, more: o.more,
     on: !!k[id], need: !k[id] && !o.optional, state: k[id] ? `ключ ${esc(String(k[id]).replace(/^задан,?\s*/, ""))}` : o.optional ? "не подключено" : "нужен ключ",
-    body: (o.top || "") + keyBody(id, o.place, o.how, o.label) + (o.vpn ? vpnRow(o.vpn) : ""), drop: k[id] ? `<button class="btn ghost danger" data-clear="${id}">${o.dropText || "Убрать ключ"}</button>` : "" });
+    body: (o.top || "") + keyBody(id, o.place, o.how, o.label, o.helpTitle) + (o.vpn ? vpnRow(o.vpn) : ""), drop: k[id] ? `<button class="btn ghost danger" data-clear="${id}">${o.dropText || "Убрать ключ"}</button>` : "" });
   return [
     { id:"homeassistant", group:"home", plugin:servicePlugin("homeassistant"), mono:"HA", name:"Home Assistant", about:"Устройства дома, Xiaomi Home и уборка выбранных комнат",
       on:!!S.home_assistant?.configured, state:S.home_assistant?.configured?"подключено":"не подключено",
@@ -132,7 +132,14 @@ export function connDefs() {
       dropText: (S.eleven_keys || []).length > 1 ? "Убрать все ключи" : "Убрать ключ", group: "voice", mono: "11", name: "ElevenLabs", place: "sk_…", optional: true, about: "Распознавание речи и голоса классического режима. Выбирается в настройках ассистента → Мозг" }),
     key("yandex", { vpn: "yandex", group: "home", plugin: servicePlugin("yandex"), mono: "Я", name: "Яндекс Умный дом", place: "y0_…", about: "Джарвис сам управляет светом, пылесосом и сценариями",
       more: "В режиме «через Алису» можно обойтись без него.",
-      how: "<li>Нужен OAuth-токен Яндекса с правами iot:view и iot:control.</li><li>Его выдаёт приложение, зарегистрированное на oauth.yandex.ru (тип «Веб-сервисы», права «Умный дом»).</li><li>Вставьте токен (начинается с y0_).</li>" }),
+      label: ["OAuth-токен Яндекс ID", k.yandex ? "Заменить" : "Сохранить"], helpTitle: "Как получить токен",
+      top: `<div><b>Выдайте OAuth-приложению два разрешения</b><ul class="how">
+        <li><code>iot:view</code> · видеть устройства и их состояние.</li>
+        <li><code>iot:control</code> · управлять устройствами, группами и сценариями.</li>
+      </ul></div>`,
+      how: `<li>В <a href="https://oauth.yandex.ru/client/new/" target="_blank" rel="noopener">Яндекс OAuth</a> создайте приложение «Для доступа к API или отладки». В разделе «Доступы» добавьте оба разрешения.</li>
+        <li>Укажите Redirect URI <code>https://oauth.yandex.ru/verification_code</code> и сохраните приложение.</li>
+        <li>Войдите в тот Яндекс ID, где добавлены устройства, и <a href="https://yandex.ru/dev/id/doc/ru/tokens/debug-token" target="_blank" rel="noopener">получите токен вручную</a>. Вставьте сюда значение <code>access_token</code>.</li>` }),
     smartLifeConn(),
     xiaomiConn(),
     { id: "youtube", group: "media", plugin: "youtube", mono: "YT", name: "YouTube", about: "Музыка и видео голосом. Вход — для ваших рекомендаций и видео 18+", more: "Там, где YouTube заблокирован (Россия), включите «Через VPN»",
