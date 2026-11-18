@@ -3,12 +3,22 @@ use crate::wake_profiles;
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
+    middleware::Next,
     response::Response,
 };
 use serde::Deserialize;
 use serde_json::json;
+
+pub const DISABLED: &str = "Включите плагин «Обучение слова»";
+
+pub async fn require_plugin(State(app): State<App>, request: Request, next: Next) -> Response {
+    if !app.plugins.wake_training() {
+        return reply(StatusCode::FORBIDDEN, json!({"error": DISABLED}));
+    }
+    next.run(request).await
+}
 
 #[derive(Deserialize)]
 pub struct NamedModel {
@@ -44,8 +54,10 @@ pub async fn upload(
     let guard = app.wake_update.clone().lock_owned().await;
     let path = app.data_dir.clone();
     let store = app.store.clone();
+    let plugins = app.plugins.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
+        if !plugins.wake_training() { return Err(DISABLED.into()); }
         wake_profiles::save(&path, &input.phrase, &body, &store)
     })
     .await;
@@ -67,8 +79,10 @@ pub async fn select(State(app): State<App>, Json(input): Json<Selection>) -> Res
     let path = app.data_dir.clone();
     let store = app.store.clone();
     let listener = app.engine.listener.clone();
+    let plugins = app.plugins.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
+        if !plugins.wake_training() { return Err(DISABLED.into()); }
         wake_profiles::select(&path, &input.id, &store)?;
         listener.request_reload();
         Ok::<(), String>(())
@@ -85,8 +99,10 @@ pub async fn remove(State(app): State<App>, Path(id): Path<String>) -> Response 
     let guard = app.wake_update.clone().lock_owned().await;
     let path = app.data_dir.clone();
     let store = app.store.clone();
+    let plugins = app.plugins.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
+        if !plugins.wake_training() { return Err(DISABLED.into()); }
         wake_profiles::remove(&path, &id, &store)
     })
     .await;
@@ -115,6 +131,9 @@ pub async fn capture(State(app): State<App>) -> Response {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
         let mut samples = Vec::with_capacity(SAMPLES * 2);
         let result = loop {
+            if !engine.host.wake_training() {
+                break Err(DISABLED);
+            }
             if engine.talking() || engine.player.playing() || engine.music.state().playing {
                 break Err("Остановите разговор или музыку и запишите ещё раз");
             }
@@ -160,10 +179,12 @@ pub async fn train(
     };
     let data = app.data_dir.clone();
     let store = app.store.clone();
+    let plugins = app.plugins.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
         let features = wake_profiles::features(&data)?;
         let head = jarvis_wake_train::train(&features, &body)?;
+        if !plugins.wake_training() { return Err(DISABLED.into()); }
         wake_profiles::save(&data, &phrase, &head, &store)
     })
     .await;

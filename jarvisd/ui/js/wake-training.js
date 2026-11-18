@@ -1,4 +1,4 @@
-import { $, act, api, esc, sec, toast, upload } from "./core.js";
+import { act, api, sec, toast, upload } from "./core.js";
 import { reload, route, showGate } from "./main.js";
 
 const PROFILES = "/api/train/wake/profiles";
@@ -70,12 +70,7 @@ function previewAudio(pcm) {
   return { audio, dispose: () => { audio.pause(); URL.revokeObjectURL(url); } };
 }
 
-export function viewWakeTraining() {
-  $("#view").innerHTML = '<header class="ph"><h1>Обучение слова</h1><p><a href="#speaker">Настройки колонки</a></p></header><div id="wake-training"></div>';
-  void draw($("#wake-training"));
-}
-
-async function draw(panel) {
+export async function drawWakeTraining(panel) {
   let state;
   try { state = await api("GET", PROFILES); } catch (error) {
     if (panel.isConnected) panel.textContent = error.message;
@@ -84,8 +79,8 @@ async function draw(panel) {
   if (!panel.isConnected) return;
   panel.innerHTML = [
     sec("Сохранённые фразы", "", '<div id="wake-saved" class="stack"></div>'),
-    sec("Новая фраза", state.training ? "Пробное обучение по вашим записям. Проверьте модель перед выбором." : "",
-      '<div class="f"><label for="wake-phrase">Слово или фраза</label><input type="text" id="wake-phrase" maxlength="48" placeholder="Например, Орион" autocomplete="off"></div>' +
+    sec("Обучить фразу", state.training ? "Оставьте «Джарвис», чтобы дообучить его на своём голосе, или введите свою фразу. Проверьте модель перед включением." : "Загрузите модель для «Джарвиса» или другой фразы.",
+      '<div class="f"><label for="wake-phrase">Слово или фраза</label><input type="text" id="wake-phrase" maxlength="48" value="Джарвис" autocomplete="off"></div>' +
       (state.training ? '<div id="wake-record"></div>' : '') +
       '<div class="f"><label for="wake-model">Загрузить готовую модель</label><input type="file" id="wake-model" accept=".bin,application/octet-stream"></div>'),
   ].join("");
@@ -132,7 +127,7 @@ async function draw(panel) {
         if (!confirm("Удалить модель «" + profile.phrase + "»?")) return;
         return act(remove, async () => {
           await api("DELETE", PROFILES + "/" + profile.id);
-          if (panel.isConnected) await draw(panel);
+          if (panel.isConnected) await drawWakeTraining(panel);
         });
       };
       row.append(remove);
@@ -147,7 +142,7 @@ async function draw(panel) {
     void act(file, async () => {
       try {
         await upload("PUT", PROFILES + "?phrase=" + encodeURIComponent(name.value.trim()), file.files[0]);
-        if (panel.isConnected) await draw(panel);
+        if (panel.isConnected) await drawWakeTraining(panel);
       } finally {
         file.value = "";
       }
@@ -232,7 +227,7 @@ function bindRecorder(panel, recorder, name, file) {
       await upload("POST", "/api/train/wake/train?phrase=" + encodeURIComponent(name.value.trim()), new Blob(clips));
       if (panel.isConnected) {
         resetPreview();
-        await draw(panel);
+        await drawWakeTraining(panel);
         toast("Модель сохранена. Выберите её в списке.");
       }
     } catch (error) {

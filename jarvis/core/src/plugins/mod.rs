@@ -528,6 +528,18 @@ impl Host {
         self.inner.lock().unwrap().plugins.values().filter_map(|p| p.rt.clone()).collect()
     }
 
+    pub fn wake_training(&self) -> bool {
+        let g = self.inner.lock().unwrap();
+        g.state.get("training").is_some_and(|s| s.enabled)
+            && g.plugins.get("training").is_some_and(|p| {
+                p.manifest.provides("training") && match &p.rt {
+                    Some(Runtime::Module(_)) => true,
+                    Some(Runtime::Native(native)) => native.serves_http(),
+                    _ => false,
+                }
+            })
+    }
+
     pub fn tools(&self) -> Vec<Value> {
         let mut seen = std::collections::HashSet::new();
         let mut out = vec![];

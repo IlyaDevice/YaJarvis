@@ -168,6 +168,8 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         }
     }
     let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let wake_training = app.plugins.wake_training();
+    let wake_word = if wake_training { app.engine.listener.phrase() } else { crate::wake_profiles::DEFAULT_PHRASE.into() };
     let mut out = json!({
         "version": version(),
         "home_plugin": match app.plugins.provider("homeassistant") {
@@ -192,7 +194,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "plugin_pages": app.plugins.pages(),
         "speaker": {"model": model.name, "model_id": model.id, "mic": app.engine.mic.online(), "mic_why": "", "leds": app.engine.leds.available(),
                     "wake_model": app.engine.listener.ready.load(std::sync::atomic::Ordering::Relaxed), "talking": app.engine.talking(), "uptime_s": app.started.elapsed().as_secs(), "volume": tokio::task::spawn_blocking(super::vol).await.unwrap_or(-1)},
-        "settings": {"wake_enabled": s.wake_enabled, "wake_word": app.engine.listener.phrase(), "wake_profile":s.wake_profile, "wake_sensitivity": s.wake_sensitivity, "mic_boost_db": s.mic_boost_db,
+        "settings": {"wake_enabled": s.wake_enabled, "wake_word": wake_word, "wake_training": wake_training, "wake_profile": if wake_training { &s.wake_profile } else { "" }, "wake_sensitivity": s.wake_sensitivity, "mic_boost_db": s.mic_boost_db,
                      "mic_gain_db": s.mic_gain_db, "wake_check": s.wake_check, "follow_up_s": s.follow_up_s, "city": s.city,
                      "timezone": s.timezone, "volume": s.volume, "lan_only": s.lan_only, "home_via": s.home_via,
                      "home_use": s.home_use_state(), "speaker_room": s.speaker_room, "led": s.led, "train_mode": s.train_mode,

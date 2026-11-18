@@ -250,7 +250,7 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
     }
     #[cfg(unix)]
     alice::watch_mic(mic.clone());
-    let (listener, det) = wake::Listener::new(&f.data, &store);
+    let (listener, det) = wake::Listener::new(&f.data, &store, host.wake_training());
     let player = {
         let st = store.clone();
         audio::Player::new(Box::new(move || st.with(|s| s.voice_volume())), Box::new(|| speakervol::voice_trim(speakervol::speaker_level())))

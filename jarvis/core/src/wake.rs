@@ -24,16 +24,24 @@ pub struct Loaded {
     pub phrase: String,
 }
 
-pub fn load(data: &Path, store: &Store) -> Loaded {
+fn load(data: &Path, store: &Store, training: bool) -> Loaded {
     use crate::wake_profiles::{self, DEFAULT_PHRASE};
-    let selected = store.with(|s| s.wake_profile.clone());
-    if !selected.is_empty() {
-        let custom = wake_profiles::get(data, &selected).and_then(|(phrase, bytes)| {
-            Ok(Loaded { det: wake_profiles::model(data, &bytes, store)?, ready: true, phrase })
-        });
-        match custom {
-            Ok(loaded) => return loaded,
-            Err(error) => log::warn!("Слово активации: {error}. Загружаю штатную модель"),
+    if training {
+        let selected = store.with(|s| s.wake_profile.clone());
+        if !selected.is_empty() {
+            let custom = wake_profiles::get(data, &selected).and_then(|(phrase, bytes)| {
+                Ok(Loaded { det: wake_profiles::model(data, &bytes, store)?, ready: true, phrase })
+            });
+            match custom {
+                Ok(loaded) => return loaded,
+                Err(error) => log::warn!("Слово активации: {error}. Загружаю штатную модель"),
+            }
+        }
+        if let Ok(bin) = std::fs::read(data.join(wake_profiles::TUNED_MODEL)) {
+            match wake_profiles::model(data, &bin, store) {
+                Ok(det) => return Loaded { det, ready: true, phrase: DEFAULT_PHRASE.into() },
+                Err(error) => log::warn!("Дообученное слово активации: {error}"),
+            }
         }
     }
     let sens = |store: &Store| {
@@ -76,7 +84,7 @@ pub fn check_file(data: &Path, wav: &Path, store: &Store) -> Result<(), String> 
     } else {
         raw.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
     };
-    let mut w = load(data, store);
+    let mut w = load(data, store, true);
     let t0 = std::time::Instant::now();
     let mut hits = vec![];
     let mut peak = 0f32;
@@ -105,19 +113,21 @@ pub struct Listener {
     pub ready: std::sync::atomic::AtomicBool,
     pub last_prob: std::sync::atomic::AtomicU32,
     reload:std::sync::atomic::AtomicBool,
+    training: std::sync::atomic::AtomicBool,
     phrase: std::sync::RwLock<String>,
 }
 
 impl Listener {
-    pub fn new(data: &Path, store: &Store) -> (std::sync::Arc<Listener>, Box<dyn Wake>) {
-        let w = load(data, store);
-        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into(),reload:false.into(),phrase:w.phrase.into() });
+    pub fn new(data: &Path, store: &Store, training: bool) -> (std::sync::Arc<Listener>, Box<dyn Wake>) {
+        let w = load(data, store, training);
+        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into(),reload:false.into(),training:training.into(),phrase:w.phrase.into() });
         (me, w.det)
     }
     pub fn phrase(&self) -> String { self.phrase.read().unwrap().clone() }
     pub fn request_reload(&self){self.reload.store(true,std::sync::atomic::Ordering::Release);}
-    pub fn take_reload(&self,data:&Path,store:&Store)->Option<Box<dyn Wake>>{
-        if !self.reload.swap(false,std::sync::atomic::Ordering::AcqRel){return None;}
-        let loaded=load(data,store);*self.phrase.write().unwrap() = loaded.phrase; self.ready.store(loaded.ready,std::sync::atomic::Ordering::Release);self.last_prob.store(0,std::sync::atomic::Ordering::Relaxed);Some(loaded.det)
+    pub fn take_reload(&self,data:&Path,store:&Store,training:bool)->Option<Box<dyn Wake>>{
+        let changed = self.training.swap(training, std::sync::atomic::Ordering::Relaxed) != training;
+        if !self.reload.swap(false,std::sync::atomic::Ordering::AcqRel) && !changed {return None;}
+        let loaded=load(data,store,training);*self.phrase.write().unwrap() = loaded.phrase; self.ready.store(loaded.ready,std::sync::atomic::Ordering::Release);self.last_prob.store(0,std::sync::atomic::Ordering::Relaxed);Some(loaded.det)
     }
 }

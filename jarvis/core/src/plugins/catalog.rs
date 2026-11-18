@@ -147,7 +147,7 @@ impl Host {
                     if g.plugins.get(module).is_some_and(|p|p.manifest.kind=="module") || g.state.get(module).is_some_and(|s|s.removed) {selected.remove(field);}
                 }
             }
-            if !valid_id(id) || id == "js" || !auto_needed(it.get("auto").unwrap_or(&Value::Null), &selected, from) {
+            if !valid_id(id) || matches!(id, "js" | "training") || !auto_needed(it.get("auto").unwrap_or(&Value::Null), &selected, from) {
                 continue;
             }
             let skip = {

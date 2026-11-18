@@ -41,6 +41,8 @@ pub fn manifests() -> Vec<Manifest> {
     );
     #[cfg(feature = "youtube")]
     out.push(serde_json::from_str(include_str!("../../../../plugins/youtube/plugin.json")).expect("manifest youtube"));
+    #[cfg(feature = "wake-training")]
+    out.push(serde_json::from_str(include_str!("../../../../plugins/training/plugin.json")).expect("manifest training"));
     out.shrink_to_fit();
     out
 }
@@ -82,7 +84,9 @@ enum Implementation {
     Vpn(jarvis_vpn::Vpn),
     #[cfg(feature = "youtube")]
     Youtube(std::sync::Arc<jarvis_youtube::Youtube>),
-    #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "smartlife", feature = "xiaomi", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt",feature="youtube")))]
+    #[cfg(feature = "wake-training")]
+    Training,
+    #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "smartlife", feature = "xiaomi", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt",feature="youtube",feature="wake-training")))]
     Unavailable,
 }
 
@@ -212,6 +216,23 @@ mod tests {
         host.stop_all().await;
         cleanup(dir);
     }
+    #[cfg(feature = "wake-training")]
+    #[tokio::test]
+    async fn training_module_requires_installation_and_can_be_disabled() {
+        let dir = std::env::temp_dir().join(format!("jarvis-module-{}", crate::settings::rand_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let host = Host::new(dir.clone(), Hooks::default(), None);
+        assert!(!host.wake_training());
+        host.install_module("training").await.unwrap();
+        assert!(host.wake_training());
+        host.set_enabled("training", false).await.unwrap();
+        assert!(!host.wake_training());
+        host.set_enabled("training", true).await.unwrap();
+        assert!(host.wake_training());
+        host.uninstall("training").await.unwrap();
+        assert!(!host.wake_training());
+        cleanup(dir);
+    }
     #[cfg(feature = "homeassistant")]
     #[tokio::test]
     async fn disabling_module_cancels_in_flight_request() {
@@ -285,6 +306,13 @@ impl Module {
             );
         }
         match m.main.as_str() {
+            #[cfg(feature = "wake-training")]
+            "training" => Ok(Self {
+                host,
+                stopped: AtomicBool::new(false),
+                cancel: tokio::sync::watch::channel(false).0,
+                implementation: Implementation::Training,
+            }),
             #[cfg(feature = "youtube")]
             "youtube" => {
                 let weak = host.clone();

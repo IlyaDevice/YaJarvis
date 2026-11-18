@@ -335,11 +335,14 @@ export function connBody(key) {
     } else {
       const fields = p.settings || [];
       const svcs = connDefs().filter((c) => c.plugin === p.id);
-      card.innerHTML = head(plIcon(p.icon), p.name, st) + `<p class="cn-about">${esc(p.description || "")}</p>
+      const training = p.id === "training" && S.settings.wake_training !== undefined;
+      const description = training ? "Меняет фразу активации или дообучает «Джарвис» по вашим записям." : p.description;
+      card.innerHTML = head(plIcon(p.icon), p.name, st) + `<p class="cn-about">${esc(description || "")}</p>
         ${fields.length ? `<div class="cn-body plg-form">${fields.map((s) => plField(p, s)).join("")}</div>
           <div class="row"><span class="spacer"></span><button class="btn primary" type="button" data-pl-save="${esc(p.id)}">Сохранить</button></div>` : ""}
         ${svcs.length ? `<div class="cx-links"><b>${svcs.length > 1 ? "Входы и ключи этого плагина" : "Вход и настройки"}</b>${svcs.map((c) => `<button class="cx-link" type="button" data-goto="svc:${esc(c.id)}">
             <span class="char-av cn-av">${c.icon ? icon(c.icon) : esc(c.mono)}</span><span>${esc(c.name)}<small>${esc(c.state.replace(/<[^>]+>/g, ""))}</small></span>${icon("right")}</button>`).join("")}</div>`
+          : training ? (S.settings.wake_training ? '<div><a class="btn primary" href="#training">Открыть обучение</a></div>' : "")
           : fields.length ? "" : `<p class="note">У этого плагина нет настроек: он просто работает. Выключить или удалить его можно ниже.</p>`}
         ${pluginBlock(p, plCatItem(p), true)}`;
     }

@@ -166,7 +166,7 @@ impl Engine {
             .spawn(move || {
                 let (_, rx) = e.mic.subscribe(256);
                 for raw in rx {
-                    if let Some(replacement)=e.listener.take_reload(&e.data,&e.store){det=replacement;}
+                    if let Some(replacement)=e.listener.take_reload(&e.data,&e.store,e.host.wake_training()){det=replacement;}
                     let (live, busy) = {
                         let mut st = e.st.lock().unwrap();
                         // последние 3 с; буфер растёт до 6 с и сдвигается на месте — без лишних копий

@@ -12,6 +12,8 @@ use std::{
 };
 
 pub const DEFAULT_PHRASE: &str = "Джарвис";
+pub const TUNED_MODEL: &str = "wake.bin.tuned";
+pub const TUNED_PREV: &str = "wake.bin.tuned.prev";
 pub const MAX_MODEL: usize = 4 << 20;
 const MAGIC: &[u8; 4] = b"JWP1";
 
@@ -206,12 +208,22 @@ mod tests {
         let first = save(&root, " Привет   Орион ", builtin, &store).unwrap();
         assert!(save(&root, "Привет Орион", b"bad model", &store).is_err());
         assert!(select(&root, "../wake", &store).is_err());
-        assert_eq!(crate::wake::load(&root, &store).phrase, DEFAULT_PHRASE);
+        let (listener, _) = crate::wake::Listener::new(&root, &store, false);
+        assert_eq!(listener.phrase(), DEFAULT_PHRASE);
         select(&root, &first.id, &store).unwrap();
-        assert_eq!(crate::wake::load(&root, &store).phrase, "Привет Орион");
+        let (after_restart, _) = crate::wake::Listener::new(&root, &store, false);
+        assert_eq!(after_restart.phrase(), DEFAULT_PHRASE);
+        assert!(listener.take_reload(&root, &store, true).is_some());
+        assert_eq!(listener.phrase(), "Привет Орион");
+        assert!(listener.take_reload(&root, &store, false).is_some());
+        assert_eq!(listener.phrase(), DEFAULT_PHRASE);
+        assert!(listener.take_reload(&root, &store, true).is_some());
+        assert_eq!(listener.phrase(), "Привет Орион");
         assert!(remove(&root, &first.id, &store).is_err());
         select(&root, "", &store).unwrap();
-        assert_eq!(crate::wake::load(&root, &store).phrase, DEFAULT_PHRASE);
+        listener.request_reload();
+        assert!(listener.take_reload(&root, &store, true).is_some());
+        assert_eq!(listener.phrase(), DEFAULT_PHRASE);
         remove(&root, &first.id, &store).unwrap();
         assert_eq!(list(&root).len(), 1);
         assert_eq!(fs::read(root.join("wake.bin")).unwrap(), builtin);

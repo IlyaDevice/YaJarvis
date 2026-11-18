@@ -469,6 +469,10 @@ impl Native {
         self.st.lock().unwrap().http.clone()
     }
 
+    pub fn serves_http(&self) -> bool {
+        self.st.lock().unwrap().http.is_some()
+    }
+
     pub fn bundled(&self) -> bool {
         self.bundled
     }

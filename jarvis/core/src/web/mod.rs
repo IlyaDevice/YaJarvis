@@ -105,16 +105,18 @@ pub fn router(app: App) -> Router {
         .route("/api/train/wake/capture", post(wake_profiles::capture))
         .route("/api/train/wake/train", post(wake_profiles::train).layer(DefaultBodyLimit::max(jarvis_wake_train::BODY_BYTES)))
         .route("/api/train/wake/test/{id}", post(wake_profiles::test));
-    let api = api
+    let training = api
         .route("/api/train/wake/profiles", get(wake_profiles::list).put(wake_profiles::upload).layer(DefaultBodyLimit::max(crate::wake_profiles::MAX_MODEL)))
         .route("/api/train/wake/active", put(wake_profiles::select))
         .route("/api/train/wake/profiles/{id}", delete(wake_profiles::remove))
+        .route("/api/train/model", put(device::model).layer(DefaultBodyLimit::max(4<<20)))
+        .route("/api/train/model/restore", post(device::restore))
+        .route_layer(middleware::from_fn_with_state(app.clone(), wake_profiles::require_plugin));
+    let api = Router::new().merge(training)
         .route("/api/state", get(state::state))
         .route("/api/stats", get(diagnostics::stats))
         .route("/api/logs", get(diagnostics::logs))
         .route("/api/leds/preview", post(device::leds))
-        .route("/api/train/model", put(device::model).layer(DefaultBodyLimit::max(4<<20)))
-        .route("/api/train/model/restore", post(device::restore))
         .route("/api/password", put(auth::change_password))
         .route("/api/settings", put(config::settings))
         .route("/api/keys", put(keys::put))

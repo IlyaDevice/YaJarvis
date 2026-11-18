@@ -1,0 +1,15 @@
+{
+  "id": "training",
+  "name": "Обучение слова",
+  "version": "1.1.0",
+  "description": "Заменяет фразу активации или дообучает «Джарвис» по вашим записям. Фразу можно проверить перед включением.",
+  "kind": "module",
+  "main": "training",
+  "api": 1,
+  "min_core": "0.9.81",
+  "category": "system",
+  "icon": "mic",
+  "provides": ["training"],
+  "author": "YaJavis",
+  "homepage": "https://github.com/newfpv/YaJavis"
+}

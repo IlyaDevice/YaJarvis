@@ -24,7 +24,10 @@ export async function plCatalog(fresh) {
 
 export function plInstalled(id) { return (PL.data?.installed || []).find((p) => p.id === id); }
 // plCatItem — запись каталога для установленного плагина (официальный — по id, сторонний — по репозиторию)
-export function plCatItem(p) { return (PL.list || []).find((c) => c.id === p.id && (p.official ? c.official : c.repo === p.source)); }
+export function plCatItem(p) {
+  return (PL.list || []).find((c) => c.id === p.id && (p.official ? c.official : c.repo === p.source)
+    && !(p.id === "training" && p.kind === "native" && c.kind === "module"));
+}
 export function plOfficial(id) { return (PL.list || []).find((c) => c.official && c.id === id); }
 export const plRepo = () => PL.data?.repo || S.repo || "newfpv/YaJavis";
 
