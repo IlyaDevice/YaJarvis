@@ -3,11 +3,14 @@
   "name": "YouTube",
   "version": "1.0.0",
   "description": "Поиск и воспроизведение YouTube, очередь, история и вход в аккаунт.",
-  "kind": "module",
-  "main": "youtube",
+  "kind": "rust",
+  "main": "plugin",
   "api": 1,
   "category": "media",
   "icon": "music",
-  "provides": ["youtube"],
-  "author": "YaJarvis"
+  "provides": [
+    "youtube"
+  ],
+  "author": "YaJarvis",
+  "min_core": "0.10.0"
 }

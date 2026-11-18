@@ -169,10 +169,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
     }
     let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let wake_training = app.plugins.wake_training();
-    #[cfg(feature = "wake-training")]
-    let training_records = app.plugins.training_records().is_some();
-    #[cfg(not(feature = "wake-training"))]
-    let training_records = false;
+    let training_records = wake_training;
     let wake_word = if wake_training { app.engine.listener.phrase() } else { crate::wake_profiles::DEFAULT_PHRASE.into() };
     let mut out = json!({
         "version": version(),

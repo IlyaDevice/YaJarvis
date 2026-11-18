@@ -3,11 +3,14 @@
   "name": "Smart Life",
   "version": "1.0.0",
   "description": "Устройства и команды Smart Life (Tuya) через облако и домашнюю сеть.",
-  "kind": "module",
-  "main": "smartlife",
+  "kind": "rust",
+  "main": "plugin",
   "api": 1,
   "category": "home",
   "icon": "home",
-  "provides": ["smartlife"],
-  "author": "YaJarvis"
+  "provides": [
+    "smartlife"
+  ],
+  "author": "YaJarvis",
+  "min_core": "0.10.0"
 }

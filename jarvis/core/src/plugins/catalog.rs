@@ -68,7 +68,7 @@ impl Host {
                     if !o.get("id").and_then(Value::as_str).is_some_and(valid_id) {
                         continue;
                     }
-                    if o.get("kind").and_then(Value::as_str) != Some("module")
+                    if o.get("kind").and_then(Value::as_str) != Some("rust")
                         && !(cfg!(feature = "lua") && o.get("kind").and_then(Value::as_str) == Some("lua")) {
                         continue;
                     }

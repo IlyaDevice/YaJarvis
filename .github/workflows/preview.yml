@@ -1,0 +1,31 @@
+name: Preview installer
+on:
+  push:
+    branches: ['preview-build/**']
+permissions:
+  contents: read
+jobs:
+  station:
+    strategy:
+      matrix:
+        arch: [arm64, armv7]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable
+      - run: rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
+      - run: sudo apt-get install -y libclang-dev
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - run: sh build.sh
+        env:
+          VERSION: 0.10.0
+          REPO: ${{ github.repository }}
+          STATION_ARCHES: ${{ matrix.arch }}
+          JARVIS_PLUGIN_ASSETS: https://raw.githubusercontent.com/${{ github.repository }}/preview-assets-0.10.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-${{ matrix.arch }}
+          path: build/release/
+          if-no-files-found: error

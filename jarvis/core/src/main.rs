@@ -1,5 +1,5 @@
 //! jarvis — голосовой ассистент «Джарвис» целиком на Яндекс Станции: без своего сервера.
-//! Ядро на Rust; модули (голосовые движки, YouTube, дом…) вшиваются при сборке, лёгкие плагины — на Lua.
+//! Голосовые движки, YouTube и подключения устанавливаются отдельными пакетами.
 #![recursion_limit = "256"]
 
 mod alice;
@@ -20,9 +20,7 @@ mod journal;
 mod led;
 mod llm;
 mod gemini;
-#[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
 mod cloud_voice;
-#[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
 mod classic_voice;
 mod net;
 mod plugins;
@@ -35,10 +33,7 @@ mod telemetry;
 mod vpn;
 mod wake;
 mod wake_profiles;
-#[cfg(feature = "wake-training")]
-mod training_records;
-#[cfg(feature = "wake-training")]
-mod training_background;
+mod training_io;
 mod web;
 
 use serde_json::{Value, json};
@@ -206,7 +201,7 @@ async fn run(f: Flags, store: settings::Store) {
                 let music = music.clone();
                 let engine = engine_cell.clone();
                 Box::new(move |manifest, name, data| {
-                    if manifest.id=="chatgpt" && manifest.kind=="module" && name=="voice.event"{chatgpt::module_voice_event(data.clone());}
+                    if manifest.id=="chatgpt" && name=="voice.event"{chatgpt::module_voice_event(data.clone());}
                     if manifest.provides("youtube") {
                         let was_playing = music.state().playing;
                         let next = (name == "music.related_end").then(|| data.as_str().map(str::to_owned)).flatten();

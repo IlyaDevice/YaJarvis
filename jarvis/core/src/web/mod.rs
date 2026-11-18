@@ -13,7 +13,6 @@ mod config;
 mod diagnostics;
 mod device;
 mod wake_profiles;
-#[cfg(feature = "wake-training")]
 mod training;
 mod homeassistant;
 mod home_vendor;
@@ -104,14 +103,11 @@ pub fn ok() -> Response {
 }
 
 pub fn router(app: App) -> Router {
-    let api = Router::new();
-    #[cfg(feature = "wake-training")]
-    let api = api
+    let training = Router::new()
         .merge(training::routes())
         .route("/api/train/wake/capture", post(wake_profiles::capture))
-        .route("/api/train/wake/train", post(wake_profiles::train).layer(DefaultBodyLimit::max(jarvis_wake_train::BODY_BYTES)))
-        .route("/api/train/wake/test/{id}", post(wake_profiles::test));
-    let training = api
+        .route("/api/train/wake/train", post(wake_profiles::train).layer(DefaultBodyLimit::max(crate::training_io::BODY_BYTES)))
+        .route("/api/train/wake/test/{id}", post(wake_profiles::test))
         .route("/api/train/wake/profiles", get(wake_profiles::list).put(wake_profiles::upload).layer(DefaultBodyLimit::max(crate::wake_profiles::MAX_MODEL)))
         .route("/api/train/wake/active", put(wake_profiles::select))
         .route("/api/train/wake/profiles/{id}", delete(wake_profiles::remove))

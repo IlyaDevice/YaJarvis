@@ -1,6 +1,6 @@
 //! The optional training plugin owns the recording buffer and local dataset.
 use crate::{
-    settings::{rand_hex, write_atomic},
+    storage::{rand_hex, write_atomic},
     training_background::Recorder,
 };
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
@@ -175,7 +175,14 @@ impl Records {
         let _lock = self.files.lock().unwrap();
         let clips = self.list();
         let counts = KINDS.map(|kind| (kind, clips.iter().filter(|c| c.kind == kind).count()));
-        let used = |storage| clips.iter().filter(|c| c.storage == storage).map(|c| c.size).sum::<u64>() >> 10;
+        let used = |storage| {
+            clips
+                .iter()
+                .filter(|c| c.storage == storage)
+                .map(|c| c.size)
+                .sum::<u64>()
+                >> 10
+        };
         json!({"mode":mode,"limit_mb":limit.clamp(1,MAX_LIMIT_MB),"prev_model":previous,
             "used_kb":used(CLIPS),"legacy_kb":used(OLD_CLIPS),"local":clips.len(),
             "counts":counts.into_iter().collect::<std::collections::BTreeMap<_,_>>(),"clips":clips.iter().take(400).collect::<Vec<_>>()})
@@ -188,7 +195,11 @@ impl Records {
         }
         let wav = pcm_wav(pcm);
         let compressed = compress(&wav).map_err(|e| e.to_string())?;
-        let data = if compressed.len() < wav.len() { compressed } else { wav };
+        let data = if compressed.len() < wav.len() {
+            compressed
+        } else {
+            wav
+        };
         let limit = (limit_mb.clamp(1, MAX_LIMIT_MB) as u64) << 20;
         let name = format!(
             "{}-{}_p{}.wav",
@@ -198,7 +209,7 @@ impl Records {
         );
         let path = self.path(CLIPS, kind, &name)?;
         fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        if cfg!(unix) && crate::plugins::install::free_mb(&self.root) < 4 {
+        if cfg!(unix) && crate::storage::free_mb(&self.root) < 4 {
             return Err("на колонке осталось меньше 4 МБ".into());
         }
         let mut clips = self.list_dir(CLIPS);
@@ -254,7 +265,8 @@ impl Records {
     pub fn clear(&self) -> Result<(), String> {
         let _lock = self.files.lock().unwrap();
         for clip in self.list() {
-            fs::remove_file(self.path(clip.storage, &clip.kind, &clip.name)?).map_err(|e| e.to_string())?;
+            fs::remove_file(self.path(clip.storage, &clip.kind, &clip.name)?)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -269,14 +281,24 @@ impl Records {
         let mut saved = 0;
         for clip in clips {
             let _lock = self.files.lock().unwrap();
-            if self.stopped.load(Ordering::Acquire) { break; }
+            if self.stopped.load(Ordering::Acquire) {
+                break;
+            }
             let path = self.path(clip.storage, &clip.kind, &clip.name)?;
-            let Ok(meta) = path.symlink_metadata() else { continue };
-            if !meta.is_file() || meta.len() > MAX_CLIP { continue; }
+            let Ok(meta) = path.symlink_metadata() else {
+                continue;
+            };
+            if !meta.is_file() || meta.len() > MAX_CLIP {
+                continue;
+            }
             let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-            if bytes.starts_with(GZIP) || !bytes.starts_with(b"RIFF") { continue; }
+            if bytes.starts_with(GZIP) || !bytes.starts_with(b"RIFF") {
+                continue;
+            }
             let smaller = compress(&bytes).map_err(|e| e.to_string())?;
-            if smaller.len() >= bytes.len() { continue; }
+            if smaller.len() >= bytes.len() {
+                continue;
+            }
             write_atomic(&path, &smaller, 0o600).map_err(|e| e.to_string())?;
             if let (Ok(file), Ok(time)) = (fs::File::open(&path), meta.modified()) {
                 let _ = file.set_modified(time);
@@ -299,7 +321,7 @@ impl Records {
             zip.start_file(name, options)?;
             Ok(zip.write_all(data)?)
         };
-        let model = fs::read(data_dir.join(crate::wake_profiles::TUNED_MODEL))
+        let model = fs::read(self.root.join("wake.bin.tuned"))
             .or_else(|_| fs::read(data_dir.join("wake.bin")))
             .map_err(|e| e.to_string())?;
         add("wake.bin", &model).map_err(|e| e.to_string())?;
@@ -351,7 +373,9 @@ fn read_clip(path: &Path) -> Result<Vec<u8>, String> {
     if bytes.len() as u64 > MAX_CLIP {
         return Err("Запись слишком большая".into());
     }
-    if !bytes.starts_with(GZIP) { return Ok(bytes); }
+    if !bytes.starts_with(GZIP) {
+        return Ok(bytes);
+    }
     let mut wav = Vec::new();
     GzDecoder::new(bytes.as_slice())
         .take(MAX_CLIP + 1)

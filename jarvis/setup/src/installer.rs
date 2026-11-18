@@ -84,10 +84,6 @@ struct Install {
     #[serde(default)]
     password: String,
     #[serde(default)]
-    openai: String,
-    #[serde(default)]
-    vless: String,
-    #[serde(default)]
     timezone: String,
 }
 
@@ -433,7 +429,9 @@ async fn payload(arch: &str) -> Result<Vec<u8>, String> {
             .await
             .map_err(|e| e.to_string());
     }
-    let url = if VERSION == "dev" {
+    let url = if let Some(url) = option_env!("JARVIS_SETUP_ASSETS") {
+        url.to_owned()
+    } else if VERSION == "dev" {
         format!("https://github.com/{REPO}/releases/latest/download")
     } else {
         format!("https://github.com/{REPO}/releases/download/v{VERSION}")
@@ -448,7 +446,7 @@ async fn payload(arch: &str) -> Result<Vec<u8>, String> {
         .await
         .map_err(|e| e.to_string())?
         .error_for_status()
-        .map_err(|_| "Пакет колонки отсутствует в релизе")?;
+        .map_err(|_| "Пакет для вашей колонки недоступен")?;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
         if bytes.len() + chunk.len() > 40 << 20 {
@@ -462,7 +460,7 @@ async fn payload(arch: &str) -> Result<Vec<u8>, String> {
         .await
         .map_err(|e| e.to_string())?
         .error_for_status()
-        .map_err(|_| "Контрольные суммы релиза недоступны")?
+        .map_err(|_| "Контрольные суммы пакета недоступны")?
         .text()
         .await
         .map_err(|e| e.to_string())?;
@@ -523,10 +521,7 @@ async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
     {
         return Err("Пароль панели должен содержать от 6 до 72 байт".into());
     }
-    if !input.vless.is_empty() && !input.vless.starts_with("vless://") {
-        return Err("Нужна ссылка vless://".into());
-    }
-    app.log("Определена архитектура колонки. Загружаю пакет Rust…");
+    app.log("Определена архитектура колонки. Загружаю прошивку…");
     let temp = Scratch::new()?;
     let sums = unpack(payload(&sp.arch).await?, &temp.0)?;
     let stage = format!("{STAGE}-{}", token()?);
@@ -577,17 +572,9 @@ async fn stage_install(
                 .filter_map(|m| m["id"].as_str().map(str::to_owned)),
         );
     }
-    for (id, requested) in [
-        ("openai", !input.openai.is_empty()),
-        ("vpn", !input.vless.is_empty()),
-    ] {
-        if requested {
-            required.insert(id.into());
-        }
-    }
     let shipped: std::collections::BTreeSet<_> = image.modules.iter().cloned().collect();
     if !required.is_subset(&shipped) || (!sp.installed.is_empty() && required != shipped) {
-        return Err("В пакете нужен точный набор выбранных Rust-модулей".into());
+        return Err("Для этого пакета сначала удалите прежнюю версию. Затем поставьте нужные плагины в панели.".into());
     }
     for id in &image.modules {
         if !(2..=32).contains(&id.len())
@@ -613,7 +600,7 @@ async fn stage_install(
         bcrypt::hash(input.password, 10).map_err(|e| e.to_string())?
     };
     let seed = temp.join("seed.json");
-    jarvis_station::atomic(&seed, json!({"password_hash":password_hash,"openai_key":input.openai,"vless":input.vless,"timezone":input.timezone}).to_string().as_bytes()).map_err(|e| e.to_string())?;
+    jarvis_station::atomic(&seed, json!({"password_hash":password_hash,"timezone":input.timezone}).to_string().as_bytes()).map_err(|e| e.to_string())?;
     app.push(ip, &seed, &format!("{stage}/seed.json")).await?;
     app.shell(
         ip,

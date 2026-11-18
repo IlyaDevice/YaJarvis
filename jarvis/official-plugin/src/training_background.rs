@@ -1,7 +1,7 @@
 //! One audio buffer and one upload, with no background audio written to flash.
 use crate::{
-    net,
-    settings::{rand_hex, write_atomic},
+    storage as net,
+    storage::{rand_hex, write_atomic},
     training_records::pcm_wav,
 };
 use reqwest::{Method, StatusCode, Url};

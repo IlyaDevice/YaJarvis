@@ -1,121 +1,201 @@
-// Знакомство: мастер первой настройки.
+// Мастер первого запуска. Он предлагает только пакеты из официального каталога.
 import { connOpen } from "./connections.js";
-import { $, act, api, esc, icon } from "./core.js";
+import { $, api, esc, icon, toast } from "./core.js";
 import { S, go, reload } from "./main.js";
-import { PL, plCatalog, plIcon } from "./plugins.js";
+import { PL, plCatalog, plIcon, plLoad } from "./plugins.js";
 
-// ---------------------------------------------------------------- знакомство
-// Показывается один раз после установки (и по кнопке на странице «Безопасность»): что такое Джарвис,
-// что он умеет, кто будет думать, какие плагины поставить. Можно уйти настраивать и вернуться.
-export const WIZ = { step: 0, picked: null, away: false };
-export const WIZ_STEPS = ["Привет", "Что умею", "Кто думает", "Плагины", "Готово"];
+const STEPS = ["Начало", "Плагины", "Настройка", "Готово"];
+const groups = [
+  ["assistant", "Голосовые ассистенты"],
+  ["home", "Умный дом"],
+  ["media", "Музыка"],
+  ["system", "Колонка и сеть"],
+  ["info", "Справки"],
+  ["fun", "Игры"],
+];
+const voiceIds = ["chatgpt", "gemini", "openai", "grok"];
+const serviceIds = { yandexhome: "yandex" };
+const hasService = new Set([...voiceIds, "elevenlabs", "vpn", "youtube", "yandexhome", "homeassistant", "smartlife", "xiaomi"]);
+const picked = new Set();
+const failed = new Map();
+let step = 0, busy = false, installing = "", error = "";
 
-export function wizOpen(step = 0) {
-  WIZ.step = step; WIZ.away = false;
+function installed() {
+  return new Map((PL.data?.installed || []).map((p) => [p.id, p]));
+}
+
+function ready(id) {
+  if (id === "chatgpt") return S.chatgpt?.signed_in;
+  return !!S.keys?.[id];
+}
+
+export function wizOpen(at = 0) {
+  step = at;
   $("#wiz-pill")?.remove();
   let w = $("#wiz");
   if (!w) {
     w = document.createElement("div");
-    w.id = "wiz"; w.className = "wiz"; w.setAttribute("role", "dialog"); w.setAttribute("aria-modal", "true");
+    w.id = "wiz";
+    w.className = "wiz";
+    w.setAttribute("role", "dialog");
+    w.setAttribute("aria-modal", "true");
     document.body.append(w);
-    w.addEventListener("click", wizClick);
+    w.addEventListener("click", click);
+    w.addEventListener("change", (event) => {
+      const id = event.target.dataset.wzPick;
+      if (id) {
+        picked[event.target.checked ? "add" : "delete"](id);
+        failed.delete(id);
+        draw();
+      }
+    });
   }
   w.classList.remove("hidden");
-  wizDraw();
+  draw();
 }
 
-export function wizAI() {
-  return [
-    { id: "chatgpt", on: !!S.chatgpt.signed_in, name: "Подписка ChatGPT", text: "Если у вас есть ChatGPT Plus: живой голос GPT, вход кодом, без ключей и оплаты сверху." },
-    { id: "gemini", on: !!S.keys.gemini, name: "Google Gemini", text: "Бесплатный ключ из AI Studio за минуту. Хороший выбор, чтобы просто начать." },
-    { id: "openai", on: !!S.keys.openai, name: "OpenAI", text: "Ключ API с оплатой по факту: самый быстрый живой голос." },
-    { id: "grok", on: !!S.keys.grok, name: "xAI Grok", text: "Ключ xAI: голос Grok с поиском по X и интернету." },
-  ];
+async function refreshCatalog(fresh = false) {
+  await Promise.all([plCatalog(fresh), plLoad()]);
+  if (step === 1) draw();
 }
 
-export function wizDraw() {
+function options() {
+  const have = installed();
+  const catalog = (PL.list || []).filter((item) => item.official);
+  if (PL.loading) return '<p role="status">Загружаем официальный каталог…</p>';
+  if (!catalog.length) return '<p role="alert">Каталог пока недоступен. Проверьте, есть ли у колонки интернет.</p><button class="btn" type="button" data-wz-retry>Обновить каталог</button>';
+  return groups.map(([category, name]) => {
+    const items = catalog.filter((item) => item.category === category);
+    if (!items.length) return "";
+    return `<h3>${name}</h3><div class="wz-list">${items.map((item) => {
+      const current = have.get(item.id);
+      const status = current?.running ? "установлен" : current ? "выключен" : installing === item.id ? "устанавливается…" : "";
+      const why = failed.get(item.id);
+      return `<label class="wz-ai${current ? " on" : ""}">${plIcon(item.icon)}<div><b>${esc(item.name)}</b><span>${esc(item.description)}</span>
+        ${why ? `<span class="err" role="alert">${esc(why)}</span>` : ""}</div>
+        ${current || status ? `<span class="st">${status}</span>` : `<span class="sw"><input type="checkbox" data-wz-pick="${esc(item.id)}" ${picked.has(item.id) ? "checked" : ""} ${busy ? "disabled" : ""} aria-label="${esc(item.name)}"><span class="tr"></span></span>`}</label>`;
+    }).join("")}</div>`;
+  }).join("");
+}
+
+function configuration() {
+  const have = [...installed().values()].filter((p) => p.official && (hasService.has(p.id) || p.id === "training"));
+  have.sort((a, b) => Number(b.id === "vpn") - Number(a.id === "vpn"));
+  const configured = have.filter((p) => p.running && voiceIds.includes(p.id) && ready(p.id));
+  const current = S.profiles?.find((p) => p.id === S.active)?.engine;
+  const selected = configured.find((p) => p.id === current)?.id || configured[0]?.id;
+  return `<h1>Настройте подключения</h1><p>Откройте нужный плагин и следуйте инструкции в его настройках. Если потребуется VPN, начните с него.</p>
+    ${have.length ? `<div class="wz-list">${have.map((p) => `<div class="wz-ai">${plIcon(p.icon)}<div><b>${esc(p.name)}</b><span>${esc(p.description)}</span></div>
+      <button class="btn sm" type="button" data-wz-conn="${esc(p.id)}">${ready(p.id) ? "Открыть" : "Настроить"}</button></div>`).join("")}</div>`
+      : '<p class="muted">Подключения можно добавить позже. Чтобы Джарвис отвечал голосом, выберите и настройте голосового ассистента.</p>'}
+    ${configured.length ? `<div class="f"><label for="wz-voice">Кто будет отвечать</label><select id="wz-voice">${configured.map((p) => `<option value="${esc(p.id)}"${p.id === selected ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>` : ""}`;
+}
+
+function draw() {
   const w = $("#wiz");
-  if (!w) return;
-  const st = WIZ.step, last = WIZ_STEPS.length - 1;
-  const dots = WIZ_STEPS.map((n, i) => `<button type="button" class="wz-dot${i === st ? " on" : i < st ? " done" : ""}" data-wz-go="${i}" aria-label="${n}"><i></i><span>${n}</span></button>`).join("");
-  let body = "";
-  if (st === 0) body = `<div class="wz-hero"><span class="orb big" data-s="speaking"><i></i></span>
-      <h1>Привет! Я Джарвис</h1>
-      <p>Голосовой ассистент, который живёт прямо на вашей Яндекс Станции. Скажите <b>«Джарвис, …»</b> — и я отвечу голосом живой нейросети:
-        ChatGPT, Gemini, Grok или OpenAI, как вы выберете. Алиса никуда не девается: на «Алиса» она отвечает как раньше, а умный дом, таймеры и музыку я могу поручать ей.</p>
-      <p class="muted">Всё работает на самой колонке: без сервера и без облака автора. Ключи и разговоры хранятся только у вас.</p></div>`;
-  if (st === 1) body = `<h1>Что я умею</h1><div class="wz-grid">${[
-      ["mic", "Живой разговор", "Перебивайте, переспрашивайте, говорите как с человеком. Разговор держится, пока вы говорите."],
-      ["voice", "Голоса и характеры", "Десятки голосов и свои характеры: строгий дворецкий, весёлый друг, учитель английского."],
-      ["home", "Умный дом", "Яндекс, Home Assistant, Xiaomi, Smart Life — «Джарвис, выключи свет на кухне»."],
-      ["music", "Музыка", "YouTube на колонке, очередь, радио похожих, плеер в панели."],
-      ["read", "Долгая память", "Помню, что вы рассказывали неделю назад, и сам вспоминаю к месту. «Забудь» — забываю."],
-      ["puzzle", "Плагины", "Погода, курсы валют и что угодно ещё. Ставятся в один клик, написать свой — вечер."],
-    ].map(([i, h, t]) => `<div class="wz-f">${icon(i)}<b>${h}</b><span>${t}</span></div>`).join("")}</div>
-    <p class="muted">Настройки — здесь, в панели: слева «Ассистенты» (голос, модель, характер), «Колонка» (слово «Джарвис», громкость, подсветка), «Память» (что Джарвис знает о вас), «Подключения» (ключи, сервисы и плагины).</p>`;
-  if (st === 2) {
-    const ai = wizAI(), any = ai.some((a) => a.on);
-    body = `<h1>Кто будет думать</h1><p>Мне нужна нейросеть — хотя бы одна. ${any ? `<b class="ok">Уже подключено — можно идти дальше.</b>` : "Выберите, что вам удобнее, и подключите в «Подключениях» — я подожду здесь."}</p>
-      <div class="wz-list">${ai.map((a) => `<div class="wz-ai${a.on ? " on" : ""}">${icon(a.on ? "done" : "todo")}<div><b>${a.name}</b><span>${a.text}</span></div>
-        ${a.on ? `<span class="st ok">подключено</span>` : `<button class="btn sm" type="button" data-wz-conn="${a.id}">Подключить</button>`}</div>`).join("")}</div>
-      <p class="muted">Из России и Беларуси OpenAI, Gemini и Grok работают только через VPN: ссылку VLESS можно добавить там же, в «Подключениях».</p>`;
-  }
-  if (st === 3) {
-    const cat = (PL.list || []).filter((c) => c.official);
-    if (!PL.list && !PL.loading) plCatalog(false).then(() => WIZ.step === 3 && wizDraw());
-    if (!WIZ.picked) WIZ.picked = new Set(); // ничего не отмечено: ставится только то, что человек выбрал сам
-    const have = new Set((S.plugins?.installed) || []);
-    body = `<h1>Плагины</h1><p>Отметьте, что пригодится, — поставлю сразу. Потом всё можно поменять в «Подключениях»: там же плагины от других людей и установка из файла.</p>
-      <div class="wz-list">${cat.length ? cat.map((c) => `<label class="wz-ai${have.has(c.id) ? " on" : ""}">${plIcon(c.icon)}<div><b>${esc(c.name)}</b><span>${esc(c.description)}</span></div>
-        ${have.has(c.id) ? `<span class="st ok">стоит</span>` : `<span class="sw"><input type="checkbox" data-wz-pick="${esc(c.id)}"${WIZ.picked.has(c.id) ? " checked" : ""}><span class="tr"></span></span>`}</label>`).join("")
-        : `<p class="muted">${PL.loading ? "Загружаю каталог…" : "Каталог не загрузился — колонке нужен интернет. Плагины можно поставить потом."}</p>`}</div>`;
-  }
-  if (st === 4) body = `<div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Готово</h1>
-      <p>Скажите <b>«Джарвис, привет»</b> — и поговорим. Пара идей для начала:</p>
-      <ul class="wz-tips"><li>«Джарвис, какая погода завтра?»</li><li>«Джарвис, включи что-нибудь спокойное с ютуба»</li><li>«Джарвис, запомни: я не ем мясо»</li><li>«Джарвис, выключи свет в спальне»</li></ul>
-      <p class="muted">Это знакомство можно открыть снова на странице «Безопасность».</p></div>`;
-  w.innerHTML = `<div class="wiz-card"><div class="wz-top"><nav class="wz-dots">${dots}</nav><button class="btn ghost sm" type="button" data-wz-skip>Пропустить</button></div>
-    <div class="wz-body">${body}</div>
-    <div class="wz-foot">${st > 0 ? `<button class="btn ghost" type="button" data-wz-go="${st - 1}">Назад</button>` : ""}<span class="spacer"></span>
-      ${st === 3 ? `<button class="btn primary" type="button" data-wz-install>Поставить и дальше</button>`
-        : st === last ? `<button class="btn primary" type="button" data-wz-done>Начать</button>` : `<button class="btn primary" type="button" data-wz-go="${st + 1}">Дальше</button>`}</div></div>`;
+  if (!w || w.classList.contains("hidden")) return;
+  const none = [...picked].every((id) => installed().has(id));
+  const view = [
+    () => `<div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Привет! Я Джарвис</h1>
+      <p>Сейчас на колонке только базовые функции. Выберите, чем будете пользоваться: голосом, музыкой, умным домом или своими командами.</p></div>`,
+    () => `<h1>Выберите плагины</h1><p>Поставьте один голосовой плагин, если хотите разговаривать с Джарвисом. Всё остальное можно добавить или удалить позже в «Подключениях».</p>${options()}`,
+    configuration,
+    () => `<div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Готово</h1>
+      <p>Если настроили голосовой плагин, скажите <b>«Джарвис, привет»</b>. Добавить и удалить плагины можно в «Подключениях».</p>
+      <p class="muted">Мастер можно открыть снова в разделе «Безопасность».</p></div>`,
+  ];
+  w.innerHTML = `<div class="wiz-card">
+    <div class="wz-top"><nav class="wz-dots">${STEPS.map((name, i) => `<span class="wz-dot${step === i ? " on" : i < step ? " done" : ""}"${step === i ? ' aria-current="step"' : ""}><i></i><span>${name}</span></span>`).join("")}</nav>
+      <button class="btn ghost sm" type="button" data-wz-skip ${busy ? "disabled" : ""}>Пропустить</button></div>
+    <div class="wz-body">${view[step]()}${error ? `<p class="err" role="alert">${esc(error)}</p>` : ""}</div>
+    <div class="wz-foot">${step > 0 ? `<button class="btn ghost" type="button" data-wz-back ${busy ? "disabled" : ""}>Назад</button>` : ""}<span class="spacer"></span>
+      ${step === 1 && !none && !busy ? '<button class="btn ghost" type="button" data-wz-later>Продолжить без них</button>' : ""}
+      <button class="btn primary" type="button" data-wz-next ${busy ? "disabled" : ""}>${busy ? "Устанавливаем…" : step === 3 ? "Начать" : step === 1 && !none ? "Установить выбранные" : "Дальше"}</button>
+    </div></div>`;
 }
 
-export async function wizDone() {
-  await api("POST", "/api/onboarded").catch(() => {});
+async function install() {
+  const have = installed();
+  const catalog = new Map((PL.list || []).filter((item) => item.official).map((item) => [item.id, item]));
+  const selected = [...picked].filter((id) => !have.has(id) && catalog.has(id));
+  if (!selected.length) return true;
+  for (const id of selected) {
+    failed.delete(id);
+    installing = id;
+    const content = $(".wz-body");
+    const top = content.scrollTop;
+    draw();
+    $(".wz-body").scrollTop = top;
+    try {
+      await api("POST", "/api/plugins/install", { repo: catalog.get(id).repo || S.repo, id });
+      picked.delete(id);
+    } catch (err) {
+      failed.set(id, err.message);
+    }
+  }
+  installing = "";
+  await Promise.all([reload(), plLoad()]);
+  return !selected.some((id) => failed.has(id));
+}
+
+async function finish() {
+  await api("POST", "/api/onboarded");
   S.settings.onboarded = true;
   $("#wiz")?.classList.add("hidden");
   $("#wiz-pill")?.remove();
 }
 
-export async function wizClick(e) {
-  const t = e.target.closest("button, input");
-  if (!t) return;
-  if (t.dataset.wzPick != null) { WIZ.picked[t.checked ? "add" : "delete"](t.dataset.wzPick); return; }
-  if (t.dataset.wzGo != null) { WIZ.step = Number(t.dataset.wzGo); wizDraw(); return; }
-  if (t.dataset.wzSkip != null || t.dataset.wzDone != null) { wizDone(); return; }
-  if (t.dataset.wzConn) { // уйти подключать, а знакомство свернуть в плашку
-    WIZ.away = true;
-    $("#wiz").classList.add("hidden");
-    const pill = document.createElement("button");
-    pill.id = "wiz-pill"; pill.className = "btn primary wiz-pill"; pill.type = "button";
-    pill.innerHTML = `${icon("right")}Вернуться к знакомству`;
-    pill.onclick = async () => { await reload(); wizOpen(2); };
-    document.body.append(pill);
+function openConnection(id) {
+  $("#wiz").classList.add("hidden");
+  const pill = document.createElement("button");
+  pill.id = "wiz-pill";
+  pill.className = "btn primary wiz-pill";
+  pill.type = "button";
+  pill.innerHTML = `${icon("right")}Вернуться к настройке`;
+  pill.onclick = async () => {
+    try {
+      await Promise.all([reload(), plLoad()]);
+      wizOpen(2);
+    } catch (err) { toast(err.message, true); }
+  };
+  document.body.append(pill);
+  if (id === "training") go("#training");
+  else {
     go("#connections");
-    setTimeout(() => connOpen(t.dataset.wzConn), 120);
-    return;
-  }
-  if (t.dataset.wzInstall != null) {
-    const ids = [...(WIZ.picked || [])].filter((id) => !(S.plugins?.installed || []).includes(id));
-    await act(t, async () => {
-      for (const id of ids) {
-        t.textContent = `Ставлю «${(PL.list || []).find((c) => c.id === id)?.name || id}»…`;
-        await api("POST", "/api/plugins/install", { repo: S.repo || "newfpv/YaJavis", id });
-      }
-      await reload();
-    }, ids.length ? `Поставлено плагинов: ${ids.length}` : "");
-    WIZ.step = 4; wizDraw();
+    setTimeout(() => connOpen(serviceIds[id] || id), 120);
   }
 }
 
+async function click(event) {
+  const button = event.target.closest("button");
+  if (!button || busy) return;
+  const d = button.dataset;
+  error = "";
+  try {
+    if ("wzConn" in d) return openConnection(d.wzConn);
+    if ("wzSkip" in d || ("wzNext" in d && step === 3)) return await finish();
+    if ("wzBack" in d) { step--; return draw(); }
+    if ("wzLater" in d) { step++; return draw(); }
+    if ("wzRetry" in d) { const pending = refreshCatalog(true); draw(); return await pending; }
+    if (!("wzNext" in d)) return;
+    if (step === 1) {
+      busy = true;
+      if (!await install()) { error = "Часть плагинов не установилась. Можно повторить или продолжить с теми, что уже поставлены."; return; }
+    }
+    if (step === 2) {
+      const chosen = $("#wz-voice")?.value;
+      const profile = S.profiles?.find((p) => p.id === S.active);
+      if (chosen && profile && profile.engine !== chosen) {
+        await api("PUT", "/api/profile", { ...profile, engine: chosen, mode: "live", voice: "", live_model: "" });
+        await reload();
+      }
+    }
+    step++;
+    if (step === 1 && !PL.list) void refreshCatalog();
+  } catch (err) {
+    error = err.message;
+  } finally {
+    busy = false;
+    draw();
+  }
+}

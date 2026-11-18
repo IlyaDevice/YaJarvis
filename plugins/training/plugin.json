@@ -2,14 +2,16 @@
   "id": "training",
   "name": "Обучение слова",
   "version": "1.2.0",
-  "description": "Обучение фразы, разметка и архив записей «Джарвис», запись фона в облако.",
-  "kind": "module",
-  "main": "training",
+  "description": "????? ????? ?????????, ???????? ?? ????? ??????? ? ??????? ????????.",
+  "kind": "rust",
+  "main": "plugin",
   "api": 1,
-  "min_core": "0.9.82",
+  "min_core": "0.10.0",
   "category": "system",
   "icon": "mic",
-  "provides": ["training"],
+  "provides": [
+    "training"
+  ],
   "author": "YaJavis",
   "homepage": "https://github.com/newfpv/YaJavis"
 }

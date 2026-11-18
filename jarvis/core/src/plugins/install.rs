@@ -87,8 +87,10 @@ impl Host {
         if m.kind == "module" && !(official && source == "core") {
             return Err("Rust-модуль выбирается из официального каталога".into());
         }
-        if m.kind == "rust" && (super::modules::built_in(&m.id) || super::modules::manifests().iter().any(|item| item.id == m.id)) {
-            return Err("Этот идентификатор занят встроенным модулем".into());
+        if m.kind != "module" && super::modules::built_in(&m.id)
+            && !(m.kind == "rust" && official && source == crate::DEFAULT_REPO && m.provides == [m.id.clone()])
+        {
+            return Err("Этот идентификатор зарезервирован для официального плагина".into());
         }
         let later = m.needs_newer_core();
         if later {
@@ -111,7 +113,11 @@ impl Host {
                 return Err(e.to_string());
             }
         }
-        let had = self.inner.lock().unwrap().plugins.contains_key(&m.id);
+        let (previous, previous_state) = {
+            let state = self.inner.lock().unwrap();
+            (state.plugins.get(&m.id).map(|p| (p.manifest.clone(), p.err.clone())), state.state.get(&m.id).cloned())
+        };
+        let had = previous.is_some();
         let bak = self.dir().join(format!("{}.old", m.id));
         if bak.exists() {
             std::fs::remove_dir_all(&bak).map_err(|e| e.to_string())?;
@@ -125,14 +131,13 @@ impl Host {
             }
             return Err(error.to_string());
         }
-        let _ = std::fs::remove_dir_all(&bak);
         let enabled = {
             let mut g = self.inner.lock().unwrap();
             g.plugins.insert(
                 m.id.clone(),
                 super::Plugin {
                     manifest: m.clone(),
-                    dir: dst,
+                    dir: dst.clone(),
                     rt: None,
                     err: if later { format!("заработает после обновления Джарвиса до {}", m.min_core) } else { String::new() },
                 },
@@ -152,6 +157,39 @@ impl Host {
         if enabled && !later {
             self.start(&m.id).await;
         }
+        if m.kind == "rust" && enabled {
+            let error = self.inner.lock().unwrap().plugins.get(&m.id)
+                .filter(|p| !p.rt.as_ref().is_some_and(super::Runtime::running))
+                .map(|p| p.err.clone());
+            if let Some(error) = error {
+                self.stop(&m.id).await;
+                if bak.exists() {
+                    replace_package(&bak, &dst, &tmp).map_err(|e| e.to_string())?;
+                    let _ = std::fs::remove_dir_all(&tmp);
+                } else {
+                    std::fs::remove_dir_all(&dst).map_err(|e| e.to_string())?;
+                }
+                let restart = previous_state.as_ref().is_some_and(|state| state.enabled);
+                {
+                    let mut state = self.inner.lock().unwrap();
+                    state.plugins.remove(&m.id);
+                    if let Some((manifest, err)) = previous {
+                        state.plugins.insert(m.id.clone(), super::Plugin { manifest, dir: dst, rt: None, err });
+                    }
+                    if let Some(prior) = previous_state {
+                        state.state.insert(m.id.clone(), prior);
+                    } else {
+                        state.state.remove(&m.id);
+                    }
+                    self.save(&state);
+                }
+                if restart {
+                    self.start(&m.id).await;
+                }
+                return Err(if error.is_empty() { "Процесс плагина завершился".into() } else { error });
+            }
+        }
+        let _ = std::fs::remove_dir_all(&bak);
         log::info!("плагины: установлен {} {} ({source})", m.id, m.version);
         Ok(m)
     }
@@ -164,6 +202,10 @@ impl Host {
             return Err("репозиторий — вида owner/name".into());
         }
         let official = repo.eq_ignore_ascii_case(crate::DEFAULT_REPO);
+        if official && super::modules::built_in(id) {
+            let raw = download_official_rust(id, tag).await?;
+            return self.install(&raw, crate::DEFAULT_REPO, true).await;
+        }
         #[cfg(feature = "lua")]
         if official && tag.is_empty() {
             let raw = download_official_lua(id).await?;
@@ -201,6 +243,30 @@ impl Host {
         }
         self.install(&raw, repo, official).await
     }
+}
+
+async fn download_official_rust(id: &str, tag: &str) -> Result<Vec<u8>, String> {
+    let asset = format!("plugin-{id}-{}.zip", super::arch());
+    let base = if let Some(base) = option_env!("JARVIS_PLUGIN_ASSETS") {
+        base.to_owned()
+    } else {
+        let tag = if tag.is_empty() { format!("v{}", crate::version()) } else { tag.to_owned() };
+        format!("https://github.com/{}/releases/download/{tag}", crate::DEFAULT_REPO)
+    };
+    let sums = crate::net::download(&format!("{base}/SHA256SUMS"), 64 << 10).await
+        .map_err(|error| format!("Пакеты для этой версии недоступны: {error}"))?;
+    let sums = std::str::from_utf8(&sums).map_err(|_| "Неверный список контрольных сумм")?;
+    let expected = jarvis_station::checksum(sums, &asset).ok_or("Для этой архитектуры нет официального пакета")?;
+    let raw = crate::net::download(&format!("{base}/{asset}"), ZIP_MAX).await?;
+    use sha2::{Digest, Sha256};
+    if hex::encode(Sha256::digest(&raw)) != expected {
+        return Err("Контрольная сумма официального пакета не совпала".into());
+    }
+    let (_, manifest) = unpack(&raw)?;
+    if manifest.id != id || manifest.kind != "rust" {
+        return Err("В архиве другой плагин".into());
+    }
+    Ok(raw)
 }
 
 fn replace_package(tmp: &Path, dst: &Path, backup: &Path) -> std::io::Result<()> {

@@ -196,12 +196,7 @@ fn vpn_provider(host: &Host) -> Result<crate::plugins::Runtime, String> {
         });
     };
     p.rt.as_ref()
-        .filter(|r| {
-            matches!(
-                r,
-                crate::plugins::Runtime::Module(_)
-            )
-        })
+        .filter(|runtime| runtime.is_service())
         .cloned()
         .ok_or_else(|| "плагин VPN запускается".into())
 }

@@ -12,8 +12,8 @@ use std::{
 };
 
 pub const DEFAULT_PHRASE: &str = "Джарвис";
-pub const TUNED_MODEL: &str = "wake.bin.tuned";
-pub const TUNED_PREV: &str = "wake.bin.tuned.prev";
+pub const TUNED_MODEL: &str = "plugins/training/data/wake.bin.tuned";
+pub const TUNED_PREV: &str = "plugins/training/data/wake.bin.tuned.prev";
 pub const MAX_MODEL: usize = 4 << 20;
 const MAGIC: &[u8; 4] = b"JWP1";
 
@@ -24,7 +24,7 @@ pub struct Profile {
 }
 
 fn dir(data: &Path) -> PathBuf {
-    data.join("wake-profiles")
+    data.join("plugins/training/data/wake-profiles")
 }
 
 pub fn phrase(input: &str) -> Result<String, String> {

@@ -1,1 +1,16 @@
-{"id":"chatgpt","name":"ChatGPT по подписке","version":"0.2.0","kind":"module","main":"chatgpt","api":1,"category":"system","icon":"bolt","provides":["chatgpt"],"description":"Вход по подписке, Codex и голос WebRTC/Opus через выбранный VPN. Rust.","author":"YaJarvis"}
+{
+  "id": "chatgpt",
+  "name": "ChatGPT по подписке",
+  "version": "0.2.0",
+  "kind": "rust",
+  "main": "plugin",
+  "api": 1,
+  "category": "assistant",
+  "icon": "bolt",
+  "provides": [
+    "chatgpt"
+  ],
+  "description": "???? ? ChatGPT ?? ???????? ? ????????? ????????. ????? ?????????? VPN.",
+  "author": "YaJarvis",
+  "min_core": "0.10.0"
+}

@@ -123,11 +123,9 @@ $("#install").addEventListener("click", async () => {
   $("#s3-err").textContent = "";
   if (!speaker.installed && pw.length < 6) { $("#s3-err").textContent = "Придумайте пароль — минимум 6 символов"; return; }
   if (pw && pw !== $("#pw2").value) { $("#s3-err").textContent = "Пароли не совпадают"; return; }
-  const v = $("#vless").value.trim();
-  if (v && !v.startsWith("vless://")) { $("#s3-err").textContent = "Ссылка должна начинаться с vless://"; return; }
   try {
-    await api("POST", "/api/install", { ip: speaker.ip, password: pw, openai: $("#openai").value.trim(), vless: v, timezone: $("#tz").value });
-    $("#pw").value = $("#pw2").value = $("#openai").value = "";
+    await api("POST", "/api/install", { ip: speaker.ip, password: pw, timezone: $("#tz").value });
+    $("#pw").value = $("#pw2").value = "";
     run("Устанавливаю…");
   } catch (err) { $("#s3-err").textContent = err.message; }
 });

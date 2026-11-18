@@ -2,7 +2,6 @@ use crate::{plugins::{Host,Runtime},session::{Dialog,Session,queue_mic,take_mic}
 use std::{sync::{Arc,Mutex,atomic::{AtomicBool,Ordering},mpsc::{Receiver,SyncSender,sync_channel}},time::Duration};
 use serde_json::{Value,json};
 use base64::{Engine as _,engine::general_purpose::STANDARD as B64};
-use futures_util::{SinkExt,StreamExt};
 
 pub struct Voice {
     id:String,dialog:Dialog,rt:tokio::runtime::Handle,pending:Mutex<Vec<i16>>,
@@ -22,12 +21,12 @@ impl Voice {
         });me
     }
     async fn run(&self,host:Arc<Host>,tools:Arc<Tools>,settings:Settings,p:Profile,instructions:String,ready:SyncSender<Result<(),String>>,mut commands:tokio::sync::mpsc::Receiver<String>)->Result<(),String>{
-        let Runtime::Module(module)=host.provider(&self.id)?else{return Err("Выбранный голосовой провайдер должен быть Rust-модулем".into());};
+        let provider=host.provider(&self.id)?;
         let key=match self.id.as_str(){"openai"=>&settings.openai_key,"gemini"=>&settings.gemini_key,"grok"=>&settings.grok_key,"elevenlabs"=>&settings.elevenlabs_key,_=>return Err("Этот движок требует классический режим".into())};
-        let ((context,defs),(mut socket,mut stop))=if self.id=="elevenlabs"{
+        let ((context,defs),mut socket)=if self.id=="elevenlabs"{
             let (context,defs)=tools.prepare().await;let session=eleven_session(&p,&format!("{instructions}\n{context}"),&defs);
-            let socket=module.cloud_socket_config(key,Some(session)).await?;((context,defs),socket)
-        }else{tokio::try_join!(async{Ok::<_,String>(tools.prepare().await)},module.cloud_socket(key))?};
+            let socket=Link::open(provider,key,session).await?;((context,defs),socket)
+        }else{tokio::try_join!(async{Ok::<_,String>(tools.prepare().await)},Link::open(provider,key,Value::Null))?};
         let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
         let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
         let start=match self.id.as_str(){
@@ -43,7 +42,6 @@ impl Voice {
         loop {
             tokio::select!{
                 biased;
-                _=stop.changed()=>return Err("Голосовой модуль остановлен".into()),
                 result=tasks.join_next(),if !tasks.is_empty()=>{
                     self.dialog.working(-1);
                     let value=match result.ok_or("Вызов инструмента завершился")? {Ok(value)=>value,Err(e) if e.is_cancelled()=>continue,Err(e)=>return Err(e.to_string())};
@@ -60,17 +58,16 @@ impl Voice {
                     let data=B64.encode(pcm.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>());
                     let value=match self.id.as_str(){"gemini"=>json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":data}}}),"grok"|"elevenlabs"=>json!({"type":"input_audio_buffer.append","audio":data}),_=>json!({"type":"session.input_audio.append","audio":data})};send(&mut socket,value).await?;
                 },
-                message=socket.next()=>{
-                    let Some(message)=message else{return Ok(());};let message=message.map_err(|_|"Обрыв голосового соединения")?;
-                    if let jarvis_cloud::Message::Close(close) = &message {
+                message=socket.events.recv()=>{
+                    let Some(message)=message else{return Ok(());};let mut message=message?;
+                    if let Some(close) = message["close"].as_str() {
                         if !started {
-                            let detail = close.as_ref().map(|frame| frame.reason.replace(key,"***").chars().take(220).collect::<String>()).unwrap_or_default();
+                            let detail = close.replace(key,"***").chars().take(220).collect::<String>();
                             return Err(if detail.is_empty() { format!("{} закрыл голосовое соединение до начала разговора", self.id) } else { format!("{}: {detail}",self.id) });
                         }
                         return Ok(());
                     }
-                    if !message.is_text() && !message.is_binary(){continue;}
-                    let event:Value=serde_json::from_slice(&message.into_data()).map_err(|_|"Неверное голосовое событие")?;
+                    let event=message["event"].take();
                     for id in event.pointer("/toolCallCancellation/ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str){if let Some(handle)=handles.remove(id){handle.abort();}}
                     let kind=event["type"].as_str().unwrap_or("");
                     if event.get("setupComplete").is_some() || ["session.started","session.updated","session.created"].contains(&kind){if !started{started=true;let _=ready.try_send(Ok(()));}continue;}
@@ -130,8 +127,49 @@ fn eleven_session(profile:&Profile,instructions:&str,tools:&[Value])->Value{
     use super::*;
     #[test]fn eleven_config_preserves_voice_instructions_and_tools(){let p=Profile{live_model:"eleven_realtime_v1_max".into(),tts_voice:"custom-voice".into(),..Default::default()};let config=eleven_session(&p,"Jarvis",&[json!({"type":"function","name":"test"})]);assert_eq!(config["model"],p.live_model);assert_eq!(config["audio"]["output"]["voice"],p.tts_voice);assert_eq!(config["audio"]["input"]["format"]["rate"],24000);assert_eq!(config["tools"][0]["name"],"test");assert_eq!(config["instructions"],"Jarvis");}
 }
-async fn send(socket:&mut jarvis_cloud::Socket,value:Value)->Result<(),String>{
-    tokio::time::timeout(Duration::from_secs(5),socket.send(value.to_string().into())).await.map_err(|_|"Голосовое соединение не принимает данные")?.map_err(|_|"Обрыв голосового соединения".into())
+struct Link {
+    provider: Runtime,
+    id: Value,
+    events: tokio::sync::mpsc::Receiver<Result<Value, String>>,
+    receiver: tokio::task::JoinHandle<()>,
+}
+
+impl Link {
+    async fn open(provider: Runtime, key: &str, session: Value) -> Result<Self, String> {
+        let opened = provider.request("live.open", json!({"key":key,"session":session}), Duration::from_secs(20)).await?;
+        let id = opened["id"].clone();
+        let (tx, events) = tokio::sync::mpsc::channel(12);
+        let receiver = tokio::spawn({
+            let provider = provider.clone();
+            let id = id.clone();
+            async move {
+                loop {
+                    let reply = provider.request("live.recv", json!({"id":id}), Duration::from_secs(15)).await;
+                    match reply {
+                        Ok(value) if value.is_null() => break,
+                        Ok(value) if value["idle"] == true => continue,
+                        _ => {}
+                    }
+                    let end = reply.is_err();
+                    if tx.send(reply).await.is_err() || end { break; }
+                }
+            }
+        });
+        Ok(Self { provider, id, events, receiver })
+    }
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        self.receiver.abort();
+        let provider = self.provider.clone();
+        let id = self.id.clone();
+        tokio::spawn(async move { let _ = provider.notify("live.close", json!({"id":id})).await; });
+    }
+}
+
+async fn send(socket:&Link,value:Value)->Result<(),String>{
+    socket.provider.request("live.send", json!({"id":socket.id,"event":value}), Duration::from_secs(5)).await.map(|_| ())
 }
 impl Session for Voice {
     fn out_boost(&self)->f64{if self.id=="elevenlabs"{0.35}else{1.0}}

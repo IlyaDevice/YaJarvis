@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod coresvc;
 pub mod install;
 mod process;
+mod official;
 pub(crate) mod modules;
 #[cfg(feature = "native-plugins")]
 mod native_addon;
@@ -160,11 +161,10 @@ impl Manifest {
             let ids: Vec<_> = CATEGORIES.iter().map(|c| c.0).collect();
             return Err(format!("category плагина — одна из: {}", ids.join(", ")));
         }
-        if self.provides("vpn") && self.kind != "module" {
-            return Err("провайдер VPN должен быть модулем Rust".into());
-        }
-        if self.kind != "module" && integ.iter().any(|c| self.provides(c)) {
-            return Err("провайдер интеграции должен быть модулем Rust".into());
+        if self.kind != "module" && (self.provides("vpn") || integ.iter().any(|c| self.provides(c)))
+            && !(self.kind == "rust" && modules::built_in(&self.id) && self.provides == [self.id.clone()])
+        {
+            return Err("Для этого подключения требуется официальный Rust-плагин".into());
         }
         if self.main.is_empty() || self.main.contains("..") || self.main.starts_with('/') || self.main.contains('\\') {
             return Err("main плагина — имя файла внутри архива".into());
@@ -258,7 +258,7 @@ impl Default for Hooks {
 
 #[derive(Clone)]
 pub enum Runtime {
-    Module(Arc<modules::Module>),
+    Official(Arc<official::Official>),
     Process(Arc<process::Process>),
     #[cfg(feature = "native-plugins")]
     Native(Arc<native_addon::Native>),
@@ -269,7 +269,7 @@ pub enum Runtime {
 impl Runtime {
     pub fn tools(&self) -> Vec<Value> {
         match self {
-            Runtime::Module(_) => vec![],
+            Runtime::Official(_) => vec![],
             Runtime::Process(n) => n.tools(),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.tools(),
@@ -279,7 +279,7 @@ impl Runtime {
     }
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         match self {
-            Runtime::Module(_) => None,
+            Runtime::Official(_) => None,
             Runtime::Process(n) => n.call_tool(name, args).await,
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.call_tool(name, args).await,
@@ -289,7 +289,7 @@ impl Runtime {
     }
     pub async fn command(&self, text: &str) -> Option<String> {
         match self {
-            Runtime::Module(_) => None,
+            Runtime::Official(_) => None,
             Runtime::Process(n) => n.request("command", command_text(text).into(), Duration::from_secs(2))
                 .await.ok().and_then(|value| value.as_str().map(str::to_owned)),
             #[cfg(feature = "native-plugins")]
@@ -301,7 +301,7 @@ impl Runtime {
     }
     pub fn configure(&self, settings: Map<String, Value>) {
         match self {
-            Runtime::Module(_) => {},
+            Runtime::Official(_) => {},
             Runtime::Process(n) => n.configure(settings),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.configure(settings),
@@ -311,7 +311,7 @@ impl Runtime {
     }
     pub fn status(&self) -> String {
         match self {
-            Runtime::Module(_) => "Встроенный модуль Rust".into(),
+            Runtime::Official(n) => if n.running() { "Официальный Rust-плагин".into() } else { "Процесс Rust-плагина завершился".into() },
             Runtime::Process(n) => if n.running() { "Rust-пакет".into() } else { "Процесс Rust-пакета завершился".into() },
             #[cfg(feature = "native-plugins")]
             Runtime::Native(_) => "Нативное расширение Rust".into(),
@@ -321,7 +321,7 @@ impl Runtime {
     }
     pub async fn stop(&self) {
         match self {
-            Runtime::Module(n) => n.stop().await,
+            Runtime::Official(n) => n.stop().await,
             Runtime::Process(n) => n.stop().await,
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.stop(),
@@ -331,7 +331,7 @@ impl Runtime {
     }
     pub async fn request(&self, method:&str, params:Value, timeout:Duration)->Result<Value,String> {
         match self {
-            Self::Module(n)=>n.request(method,params,timeout).await,
+            Self::Official(n)=>n.request(method,params,timeout).await,
             Self::Process(n)=>n.request(method,params,timeout).await,
             #[cfg(feature = "native-plugins")]
             Self::Native(n)=>n.request(method,params,timeout).await,
@@ -359,8 +359,13 @@ impl Runtime {
     fn running(&self) -> bool {
         match self {
             Runtime::Process(n) => n.running(),
+            Runtime::Official(n) => n.running(),
             _ => true,
         }
+    }
+
+    pub fn is_service(&self) -> bool {
+        matches!(self, Self::Official(_)) && self.running()
     }
 }
 
@@ -530,6 +535,13 @@ impl Host {
             (m, dir, settings)
         };
         let res: Result<Runtime, String> = match m.kind.as_str() {
+            "rust" if modules::built_in(&m.id) => {
+                if self.official(id) {
+                    official::Official::start(m.clone(), &dir, Arc::downgrade(self)).await.map(Runtime::Official)
+                } else {
+                    Err("Это имя зарезервировано для официального плагина".into())
+                }
+            }
             "rust" => process::Process::start(&m, &dir, (self.hooks.info)(), settings).await.map(Runtime::Process),
             "module" => {
                 #[cfg(feature = "native-plugins")]
@@ -538,10 +550,10 @@ impl Host {
                 if let Some(entry) = custom {
                     native_addon::Native::start(entry, self, id, dir, settings).map(|n| Runtime::Native(Arc::new(n)))
                 } else {
-                    modules::Module::start(&m, Arc::downgrade(self)).map(|n| Runtime::Module(Arc::new(n)))
+                    Err("?????????? ????? ?? ???????????? ????????".into())
                 }
                 #[cfg(not(feature = "native-plugins"))]
-                modules::Module::start(&m, Arc::downgrade(self)).map(|n| Runtime::Module(Arc::new(n)))
+                Err("?????????? ????? ?? ???????????? ????????".into())
             },
             #[cfg(feature = "lua")]
             "lua" => lua::Script::start(self.clone(), m.clone(), dir, settings).await.map(Runtime::Lua),
@@ -589,10 +601,7 @@ impl Host {
         let g = self.inner.lock().unwrap();
         g.state.get("training").is_some_and(|s| s.enabled)
             && g.plugins.get("training").is_some_and(|p| {
-                p.manifest.provides("training") && match &p.rt {
-                    Some(Runtime::Module(_)) => true,
-                    _ => false,
-                }
+                p.manifest.provides("training") && p.rt.as_ref().is_some_and(Runtime::is_service)
             })
     }
 
@@ -618,16 +627,6 @@ impl Host {
             _ => return Err("Плагин не поддерживает текстовые запросы".into()),
         };
         result.map_err(|error| clip(&error, 300))
-    }
-
-    #[cfg(feature = "wake-training")]
-    pub fn training_records(&self) -> Option<Arc<crate::training_records::Records>> {
-        let g = self.inner.lock().unwrap();
-        if !g.state.get("training").is_some_and(|s| s.enabled) { return None; }
-        match g.plugins.get("training")?.rt.as_ref()? {
-            Runtime::Module(module) => module.records(),
-            _ => None,
-        }
     }
 
     pub fn tools(&self) -> Vec<Value> {
@@ -679,7 +678,7 @@ impl Host {
             if !p.manifest.provides(cap) {
                 continue;
             }
-            if let Some(rt) = p.rt.as_ref().filter(|r|matches!(r,Runtime::Module(_))) {
+            if let Some(rt) = p.rt.as_ref().filter(|r| r.is_service()) {
                 let current=(p.manifest.id==cap,p.manifest.kind=="module",g.state.get(&p.manifest.id).is_some_and(|s|s.official));
                 if rank.is_none_or(|r|current>r) {
                     rank=Some(current);

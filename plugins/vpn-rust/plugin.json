@@ -1,13 +1,16 @@
 {
   "id": "vpn",
-  "name": "VPN (Rust)",
+  "name": "VPN",
   "version": "0.3.0",
-  "description": "VLESS TCP/WebSocket, TLS, REALITY с Chrome 133, Vision и UDP для голоса на Rust.",
-  "kind": "module",
-  "main": "vpn",
+  "description": "??????????? ?? ?????? VLESS ??? ????????? ????????.",
+  "kind": "rust",
+  "main": "plugin",
   "api": 1,
   "category": "system",
   "icon": "shield",
-  "provides": ["vpn"],
-  "author": "YaJarvis"
+  "provides": [
+    "vpn"
+  ],
+  "author": "YaJarvis",
+  "min_core": "0.10.0"
 }

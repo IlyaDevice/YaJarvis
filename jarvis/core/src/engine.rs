@@ -57,8 +57,8 @@ pub struct Engine {
     rt: tokio::runtime::Handle,
     st: Mutex<St>,
     reset_wake: AtomicBool,
-    #[cfg(feature = "wake-training")]
     recording_word: AtomicBool,
+    training_until: Mutex<Option<Instant>>,
     speech_epoch: AtomicU64,
     saying: AtomicBool,
     cmds: std::sync::OnceLock<crate::cmdspot::CmdSpotter>,
@@ -99,22 +99,28 @@ fn lang_name(l: &str) -> &'static str {
 }
 
 /// Чего не хватает, чтобы говорить выбранным движком ("" — всё на месте).
-pub fn key_missing(s: &Settings, engine: &str) -> String {
+pub fn key_missing(host: &Host, s: &Settings, engine: &str) -> String {
+    let id = match engine {
+        "" | "live" => "openai",
+        "eleven_realtime" => "elevenlabs",
+        id => id,
+    };
+    if host.provider(id).is_err() {
+        return format!("Установите и включите плагин «{id}» в «Подключениях»");
+    }
     match engine {
         "chatgpt" if !chatgpt::signed_in(&s.chatgpt) => "не выполнен вход в ChatGPT — войдите в «Подключениях»".into(),
         "chatgpt" => chatgpt::voice_limit().unwrap_or_default(),
-        "" | "live" | "openai" => if !cfg!(feature="openai"){"Модуль OpenAI не включён в сборку".into()}else if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
-        "gemini" => if !cfg!(feature="gemini"){"Модуль Gemini не включён в сборку".into()}else if s.gemini_key.is_empty(){"Добавьте ключ Gemini в «Подключениях»".into()}else{String::new()},
-        "grok" => if !cfg!(feature="grok"){"Модуль Grok не включён в сборку".into()}else if s.grok_key.is_empty(){"Добавьте ключ Grok в «Подключениях»".into()}else{String::new()},
-        "elevenlabs"|"eleven_realtime"=>if !cfg!(feature="elevenlabs"){"Модуль ElevenLabs не включён в сборку".into()}else if s.elevenlabs_key.is_empty(){"Добавьте ключ ElevenLabs в «Подключениях»".into()}else{String::new()},
+        "" | "live" | "openai" => if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
+        "gemini" => if s.gemini_key.is_empty(){"Добавьте ключ Gemini в «Подключениях»".into()}else{String::new()},
+        "grok" => if s.grok_key.is_empty(){"Добавьте ключ Grok в «Подключениях»".into()}else{String::new()},
+        "elevenlabs"|"eleven_realtime"=>if s.elevenlabs_key.is_empty(){"Добавьте ключ ElevenLabs в «Подключениях»".into()}else{String::new()},
         other => format!("движок «{other}» ещё не перенесён в новое ядро — выберите ассистента на ChatGPT"),
     }
 }
 
-#[cfg(feature = "wake-training")]
 pub struct WakeRecording(Arc<Engine>);
 
-#[cfg(feature = "wake-training")]
 impl Drop for WakeRecording {
     fn drop(&mut self) {
         self.0.reset_wake.store(true, Ordering::Release);
@@ -123,10 +129,13 @@ impl Drop for WakeRecording {
 }
 
 impl Engine {
-    #[cfg(feature = "wake-training")]
     pub fn recording_word(self: &Arc<Self>) -> WakeRecording {
         self.recording_word.store(true, Ordering::Release);
         WakeRecording(self.clone())
+    }
+
+    pub fn set_background_training(&self, minutes: Option<u32>) {
+        *self.training_until.lock().unwrap() = minutes.map(|mins| Instant::now() + Duration::from_secs(u64::from(mins) * 60 + 1));
     }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -143,7 +152,7 @@ impl Engine {
         music: Arc<crate::music::Music>,
     ) -> Arc<Engine> {
         Arc::new(Engine { store, host, mic, player, leds, journal, tools, music, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false),
-            #[cfg(feature = "wake-training")] recording_word: AtomicBool::new(false),
+            recording_word: AtomicBool::new(false), training_until: Mutex::new(None),
             speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), cmds: Default::default() })
     }
 
@@ -161,12 +170,15 @@ impl Engine {
             let _ = self.cmds.set(c);
         }
         let e = self.clone();
+        let training = crate::training_io::AudioBatch::channel(&self.rt, self.host.clone());
         std::thread::Builder::new()
             .name("engine".into())
             .spawn(move || {
                 let (_, rx) = e.mic.subscribe(256);
+                let mut batch = crate::training_io::AudioBatch::default();
                 for raw in rx {
-                    if let Some(replacement)=e.listener.take_reload(&e.data,&e.store,e.host.wake_training()){det=replacement;}
+                    let training_enabled = e.host.wake_training();
+                    if let Some(replacement)=e.listener.take_reload(&e.data,&e.store,training_enabled){det=replacement;}
                     let (live, busy) = {
                         let mut st = e.st.lock().unwrap();
                         // последние 3 с; буфер растёт до 6 с и сдвигается на месте — без лишних копий
@@ -198,24 +210,24 @@ impl Engine {
                     }
                     let (enabled, boost_db) = e.store.with(|s| (s.wake_enabled, s.mic_boost_db));
                     let ready = e.listener.ready.load(Ordering::Relaxed);
-                    #[cfg(feature = "wake-training")]
                     let enabled = enabled && !e.recording_word.load(Ordering::Acquire);
                     let hit = ready && enabled && det.feed(&raw); // поток признаков непрерывный, и во время разговора
                     let prob = det.last_prob();
                     e.listener.last_prob.store(prob.to_bits(), Ordering::Relaxed);
-                    #[cfg(feature = "wake-training")]
-                    if let Some(records) = e.host.training_records() {
-                        let conversation = busy || live.is_some() || e.saying.load(Ordering::Relaxed) || e.player.playing();
-                        records.background.frame(&e.rt, &raw, conversation || hit || !ready || !enabled);
-                        if !conversation && ready && enabled {
-                            let (collect, limit) = e.store.with(|s| (s.train_mode, s.train_limit_mb));
-                            if collect && e.listener.phrase() == crate::wake_profiles::DEFAULT_PHRASE
-                                && let Some(kind) = records.sample_kind(hit, prob, loud(&raw)) {
-                                let st = e.st.lock().unwrap();
-                                let clip = &st.ring[st.ring.len().saturating_sub(3 * RATE)..];
-                                if clip.len() >= RATE { records.save_soon(&e.rt, kind, clip.to_vec(), prob, limit); }
+                    if training_enabled {
+                        let (collect, limit) = e.store.with(|s| (s.train_mode, s.train_limit_mb));
+                        let collect = collect && e.listener.phrase() == crate::wake_profiles::DEFAULT_PHRASE;
+                        let background = e.training_until.lock().unwrap().is_some_and(|until| until > Instant::now());
+                        if collect || background {
+                            let discard = busy || live.is_some() || e.saying.load(Ordering::Relaxed) || e.player.playing() || !ready || !enabled;
+                            if let Some(frame) = batch.push(&raw, hit, discard, prob, collect, limit) {
+                                let _ = training.try_send(frame);
                             }
+                        } else {
+                            batch.reset();
                         }
+                    } else {
+                        batch.reset();
                     }
                     if let Some(live) = live {
                         live.feed(&if boost_db > 0 { boost(&raw, boost_db) } else { raw.to_vec() });
@@ -312,7 +324,6 @@ impl Engine {
 
     /// Начать разговор (по слову, по кнопке в настройках).
     pub fn trigger(self: &Arc<Self>, source: &str, prob: f32) {
-        #[cfg(feature = "wake-training")]
         if source == "слово" && self.recording_word.load(Ordering::Acquire) { return; }
         let clip = {
             let mut st = self.st.lock().unwrap();
@@ -450,9 +461,7 @@ impl Engine {
 
     /// Открыть разговор с моделью тем движком, который выбран у ассистента.
     fn new_session(&self, s: &Settings, p: &Profile) -> Arc<dyn Session> {
-        #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
         if p.is_classic(){return crate::classic_voice::Classic::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p),self.listener.phrase());}
-        #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
         if ["","live","openai","gemini","grok","eleven_realtime"].contains(&p.engine.as_str()) {
             return crate::cloud_voice::Voice::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));
         }
@@ -512,7 +521,7 @@ impl Engine {
     fn converse(self: &Arc<Self>, by_word: bool, sure: bool, preroll: Vec<i16>, clip: Vec<i16>) {
         let s = self.store.get();
         let p = s.active_profile();
-        let missing = key_missing(&s, &p.engine);
+        let missing = key_missing(&self.host, &s, &p.engine);
         if !missing.is_empty() {
             self.journal.fail(&missing);
             return;
@@ -776,7 +785,7 @@ impl Engine {
         let epoch = self.speech_epoch.load(Ordering::SeqCst);
         let s = self.store.get();
         let p = s.active_profile();
-        let missing = key_missing(&s, &p.engine);
+        let missing = key_missing(&self.host, &s, &p.engine);
         if !missing.is_empty() {
             return Err(missing);
         }

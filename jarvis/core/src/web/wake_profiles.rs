@@ -1,5 +1,6 @@
 use super::{App, bad, ok, reply};
-use crate::wake_profiles;
+use crate::{training_io, wake_profiles};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use axum::{
     Json,
     body::Bytes,
@@ -39,7 +40,7 @@ pub async fn list(State(app): State<App>) -> Response {
             json!({
                 "profiles":profiles, "selected":app.store.with(|s| s.wake_profile.clone()),
                 "phrase":app.engine.listener.phrase(),
-                "training":cfg!(feature="wake-training")
+                "training":true
             }),
         ),
         Err(_) => bad("Не удалось прочитать профили слова"),
@@ -113,9 +114,8 @@ pub async fn remove(State(app): State<App>, Path(id): Path<String>) -> Response 
     }
 }
 
-#[cfg(feature = "wake-training")]
 pub async fn capture(State(app): State<App>) -> Response {
-    const SAMPLES: usize = jarvis_wake_train::SAMPLES;
+    use training_io::SAMPLES;
     let Ok(guard) = app.wake_update.clone().try_lock_owned() else {
         return bad("Идёт другая запись или обучение");
     };
@@ -164,7 +164,6 @@ pub async fn capture(State(app): State<App>) -> Response {
     }
 }
 
-#[cfg(feature = "wake-training")]
 pub async fn train(
     State(app): State<App>,
     Query(input): Query<NamedModel>,
@@ -177,13 +176,26 @@ pub async fn train(
         Ok(value) => value,
         Err(error) => return bad(error),
     };
+    if body.len() != training_io::BODY_BYTES {
+        return bad("Нужны 10 записей фразы и 3 записи фона");
+    }
+    let transfer = match training_io::Transfer::new() {
+        Ok(transfer) => transfer,
+        Err(error) => return bad(error),
+    };
+    if let Err(error) = tokio::fs::write(transfer.path(), &body).await {
+        return bad(error.to_string());
+    }
+    let trained = training_io::call(&app.plugins, "training.train", json!({"file":transfer.path()}), std::time::Duration::from_secs(180)).await;
+    let head = match trained.and_then(|value| B64.decode(value.as_str().unwrap_or_default()).map_err(|error| error.to_string())) {
+        Ok(head) => head,
+        Err(error) => return bad(error),
+    };
     let data = app.data_dir.clone();
     let store = app.store.clone();
     let plugins = app.plugins.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        let features = wake_profiles::features(&data)?;
-        let head = jarvis_wake_train::train(&features, &body)?;
         if !plugins.wake_training() { return Err(DISABLED.into()); }
         wake_profiles::save(&data, &phrase, &head, &store)
     })
@@ -191,9 +203,8 @@ pub async fn train(
     respond_profile(result)
 }
 
-#[cfg(feature = "wake-training")]
 pub async fn test(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> Response {
-    if body.len() != jarvis_wake_train::SAMPLES * 2 {
+    if body.len() != training_io::SAMPLES * 2 {
         return bad("Нужна одна запись фразы");
     }
     let Ok(guard) = app.wake_update.clone().try_lock_owned() else {

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["core", "dsp", "station-runtime", "setup", "plugin-sdk", "native-plugins", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt", "modules/home-common", "modules/smartlife", "modules/xiaomi", "modules/youtube", "modules/wake-train"]
+members = ["core", "dsp", "station-runtime", "setup", "plugin-sdk", "native-plugins", "official-plugin", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt", "modules/home-common", "modules/smartlife", "modules/xiaomi", "modules/youtube", "modules/wake-train"]
 default-members = ["core", "dsp"]
 exclude = ["vendor/reality-tls"]
 
 [workspace.package]
-version = "0.9.71"
+version = "0.10.0"
 edition = "2024"
 license = "MIT"
 

@@ -1,4 +1,5 @@
 //! Framed JSON for independently installed Rust executables.
+pub mod rpc;
 use super::{Map, Plugin, Value, json};
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

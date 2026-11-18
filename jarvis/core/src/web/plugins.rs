@@ -39,15 +39,6 @@ pub async fn install(State(app): State<App>, body: Bytes) -> Response {
         if crate::plugins::compiled_modules().iter().any(|module| module == id) {
             return match app.plugins.install_module(id).await {Ok(m)=>reply(StatusCode::OK,json!({"ok":true,"plugin":m})),Err(e)=>bad(e)};
         }
-        if crate::plugins::modules::built_in(id) {
-            if app.engine.talking() || app.engine.music.playing() {
-                return bad("Остановите разговор и музыку, чтобы установить модуль");
-            }
-            return match app.updater.install_build(Some(id)).await {
-                Ok(()) => reply(StatusCode::OK, json!({"ok":true,"restarting":true})),
-                Err(error) => bad(error),
-            };
-        }
     }
     match app.plugins.install_repo(repo, id, "").await {
         Ok(m) => reply(StatusCode::OK, json!({"ok": true, "plugin": m})),
@@ -66,7 +57,10 @@ pub async fn enable(State(app): State<App>, Path(id): Path<String>, body: Bytes)
     let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let on = field(&req, "on").and_then(Value::as_bool).unwrap_or(false);
     match app.plugins.set_enabled(&id, on).await {
-        Ok(()) => ok(),
+        Ok(()) => {
+            if id == "training" && !on { app.engine.set_background_training(None); }
+            ok()
+        },
         Err(e) => bad(e),
     }
 }
@@ -82,6 +76,7 @@ pub async fn settings(State(app): State<App>, Path(id): Path<String>, body: Byte
 pub async fn remove(State(app): State<App>, Path(id): Path<String>) -> Response {
     match app.plugins.uninstall(&id).await {
         Ok(()) => {
+            if id == "training" { app.engine.set_background_training(None); }
             app.updater.invalidate();
             ok()
         },

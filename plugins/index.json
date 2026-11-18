@@ -31,112 +31,123 @@
     },
     {
       "id": "chatgpt",
-      "kind": "module",
-      "category": "system",
+      "kind": "rust",
+      "category": "assistant",
       "name": "ChatGPT по подписке",
       "version": "0.2.0",
       "icon": "bolt",
-      "description": "Вход по подписке, Codex и голос WebRTC/Opus через выбранный VPN. Rust."
+      "description": "???? ? ChatGPT ?? ???????? ? ????????? ????????. ????? ?????????? VPN.",
+      "min_core": "0.10.0"
     },
     {
       "id": "openai",
-      "kind": "module",
-      "category": "system",
+      "kind": "rust",
+      "category": "assistant",
       "name": "OpenAI",
       "version": "0.1.0",
       "icon": "bolt",
-      "description": "API OpenAI: текстовые запросы, распознавание и синтез речи. Rust."
+      "description": "????????? ???????, ????? ?????, ????????????? ? ?????? ???? ????? OpenAI.",
+      "min_core": "0.10.0"
     },
     {
       "id": "gemini",
-      "kind": "module",
-      "category": "system",
+      "kind": "rust",
+      "category": "assistant",
       "name": "Gemini",
       "version": "0.1.0",
       "icon": "bolt",
-      "description": "Gemini API: текстовые запросы и модели. Rust."
+      "description": "????????? ??????? ? ????? ????? ????? Gemini API.",
+      "min_core": "0.10.0"
     },
     {
       "id": "grok",
-      "kind": "module",
-      "category": "system",
+      "kind": "rust",
+      "category": "assistant",
       "name": "Grok",
       "version": "0.1.0",
       "icon": "bolt",
-      "description": "xAI API: текстовые запросы и модели. Rust."
+      "description": "????????? ??????? ? ????? ????? ????? xAI.",
+      "min_core": "0.10.0"
     },
     {
       "id": "elevenlabs",
-      "kind": "module",
-      "category": "system",
+      "kind": "rust",
+      "category": "assistant",
       "name": "ElevenLabs",
       "version": "0.1.0",
       "icon": "bolt",
-      "description": "ElevenLabs API: голоса, распознавание и синтез речи. Rust."
+      "description": "??????, ????????????? ? ?????? ???? ????? ElevenLabs.",
+      "min_core": "0.10.0"
     },
     {
       "id": "homeassistant",
-      "kind": "module",
+      "kind": "rust",
       "category": "home",
       "name": "Home Assistant",
       "version": "1.0.0",
       "icon": "home",
-      "description": "Устройства Home Assistant и уборка выбранных комнат. Модуль на Rust."
+      "description": "?????????? ???????????? Home Assistant ? ?????? ????????? ??????.",
+      "min_core": "0.10.0"
     },
     {
       "id": "yandexhome",
-      "kind": "module",
+      "kind": "rust",
       "category": "home",
       "name": "Яндекс Умный дом",
       "version": "1.0.0",
       "icon": "home",
-      "description": "Устройства, группы и сценарии Яндекс Умного дома. Модуль на Rust."
+      "description": "?????????? ????????????, ???????? ? ?????????? ?????? ?????? ????.",
+      "min_core": "0.10.0"
     },
     {
       "id": "smartlife",
-      "kind": "module",
+      "kind": "rust",
       "category": "home",
       "name": "Smart Life",
       "version": "1.0.0",
       "icon": "home",
-      "description": "Устройства и команды Smart Life (Tuya) через облако и домашнюю сеть."
+      "description": "Устройства и команды Smart Life (Tuya) через облако и домашнюю сеть.",
+      "min_core": "0.10.0"
     },
     {
       "id": "xiaomi",
-      "kind": "module",
+      "kind": "rust",
       "category": "home",
       "name": "Xiaomi Home",
       "version": "1.0.0",
       "icon": "home",
-      "description": "Устройства Xiaomi Home, свойства и действия MIoT."
+      "description": "Устройства Xiaomi Home, свойства и действия MIoT.",
+      "min_core": "0.10.0"
     },
     {
       "id": "vpn",
-      "kind": "module",
+      "kind": "rust",
       "category": "system",
-      "name": "VPN (Rust)",
+      "name": "VPN",
       "version": "0.3.0",
       "icon": "shield",
-      "description": "VLESS TCP/WebSocket, TLS, REALITY с Chrome 133, Vision и UDP для голоса на Rust."
+      "description": "??????????? ?? ?????? VLESS ??? ????????? ????????.",
+      "min_core": "0.10.0"
     },
     {
       "id": "youtube",
-      "kind": "module",
+      "kind": "rust",
       "category": "media",
       "name": "YouTube",
       "version": "1.0.0",
       "icon": "music",
-      "description": "Поиск и воспроизведение YouTube, очередь, история и вход в аккаунт."
+      "description": "Поиск и воспроизведение YouTube, очередь, история и вход в аккаунт.",
+      "min_core": "0.10.0"
     },
     {
       "id": "training",
-      "kind": "module",
+      "kind": "rust",
       "category": "system",
       "name": "Обучение слова",
       "version": "1.2.0",
       "icon": "mic",
-      "description": "Обучение фразы, разметка и архив записей «Джарвис», запись фона в облако.",
-      "min_core": "0.9.82"
+      "description": "????? ????? ?????????, ???????? ?? ????? ??????? ? ??????? ????????.",
+      "min_core": "0.10.0"
     }
   ]
 }

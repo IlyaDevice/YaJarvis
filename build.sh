@@ -6,23 +6,6 @@ cd "$(dirname "$0")"
 VERSION=${VERSION#v}
 export JARVIS_VERSION="$VERSION" JARVIS_UI="$PWD/jarvisd/ui" JARVIS_REPO="$REPO"
 export JARVIS_PLUGIN_REF="${JARVIS_PLUGIN_REF:-$(git rev-parse HEAD)}"
-features=lua
-modules='['
-sep=
-for id in $(printf '%s' "${STATION_MODULES:-}" | tr ',' ' '); do
-    case "$id" in
-        training) feature=wake-training ;;
-        chatgpt|openai|gemini|grok|elevenlabs|homeassistant|yandexhome|smartlife|xiaomi|vpn|youtube) feature=$id ;;
-        *) echo "Unknown Rust module: $id" >&2; exit 1 ;;
-    esac
-    case ",$features," in
-        *,"$feature",*) echo "Duplicate Rust module: $id" >&2; exit 1 ;;
-    esac
-    modules="$modules$sep\"$id\""
-    features="$features,$feature"
-    sep=,
-done
-modules="$modules]"
 out="$PWD/build/release"
 tools="$PWD/build/station-build"
 mkdir -p "$out" "$tools"
@@ -71,7 +54,7 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     export "CC_$env_target=$tools/cc" "AR_$env_target=$tools/ar"
     export "CMAKE_TOOLCHAIN_FILE_$env_target=$PWD/scripts/aarch64-musl.cmake" "CMAKE_GENERATOR_$env_target=Ninja"
     export JARVIS_CMAKE_CC="$tools/cc" JARVIS_CMAKE_AR="$tools/ar"
-    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis --no-default-features --features "$features" &&
+    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis &&
         cargo build --locked --release --target "$target" -p jarvis-station)
     release="${CARGO_TARGET_DIR:-$PWD/jarvis/target}/$target/release"
     stage="$tools/$arch"
@@ -85,7 +68,8 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     cp "$stage/jarvisd" "$out/jarvisd-$arch"
     core_assets="$core_assets jarvisd-$arch"
     bytes=$(wc -c < "$stage/jarvisd" | tr -d '[:space:]')
-    printf '%s{"arch":"%s","asset":"jarvisd-%s","modules":%s,"bytes":%s}' "$comma" "$arch" "$arch" "$modules" "$bytes" >> "$manifest"
+    printf '%s{"arch":"%s","asset":"jarvisd-%s","modules":[],"bytes":%s}' "$comma" "$arch" "$arch" "$bytes" >> "$manifest"
+    sh scripts/pack-official.sh "$out" "$arch" "$target" "$release"
     comma=,
 done
 printf ']}\n' >> "$manifest"
