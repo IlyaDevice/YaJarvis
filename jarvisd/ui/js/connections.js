@@ -4,7 +4,7 @@
 // Сервису, который живёт в плагине (YouTube, умный дом, VPN), окно предлагает поставить плагин и показывает его.
 import { $, $$, act, api, esc, icon, plural, tip, toast } from "./core.js";
 import { S, page, reload } from "./main.js";
-import { PL, PL_KIND, plBadge, plCatItem, plCatalog, plEnable, plField, plIcon, plInstall, plInstalled, plItems, plLoad, plMarkWarned,
+import { PL, PL_KIND, plBadge, plCatItem, plCatalog, plEnable, plField, plIcon, plInstall, plInstalled, plItems, plLoad, plMarkWarned, plOfficialItems,
   plOfficial, plRemove, plRepo, plSave, plSize, plState, plUpdate, plUpload, plValues, plWarnHtml, plWarned } from "./plugins.js";
 
 // ---------------------------------------------------------------- характеры
@@ -194,8 +194,7 @@ export function viewConnections(openKey = "") {
     const t = e.target.closest("[data-item]");
     if (t && e.target === t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); connOpen(t.dataset.item); }
     if (e.key === "Escape" && CONN.open) connClose();
-    if (e.key === "Enter" && e.target.matches("input[id^='k-']")) $(`[data-key="${e.target.id.slice(2)}"]`)?.click();
-    if (e.key === "Enter" && e.target.id === "sl-code") $("#sl-in")?.click();
+    serviceKeydown(e, modal);
   };
   const refresh = () => {
     if (page !== "connections" || $("#cn-modal") !== modal) return;
@@ -204,7 +203,8 @@ export function viewConnections(openKey = "") {
   };
   refresh();
   plLoad().then(refresh);
-  if (!PL.list) plCatalog(false).then(refresh);
+  plCatalog(false).then(refresh);
+  plCatalog(false, "community").then(refresh);
 }
 
 function tileState(it) {
@@ -261,19 +261,22 @@ function plHtml(items) {
   const have = new Set(inst.map((it) => it.id));
   const offer = items.filter((it) => !it.x.inst && it.x.official && !have.has(it.id));
   const comm = items.filter((it) => !it.x.inst && !it.x.official);
-  const wait = `<p class="note">${PL.loading || !PL.list ? "Загружаю каталог…" : ""}</p>`;
+  const offerMessage = plOfficialItems().length ? "Все официальные плагины уже стоят."
+    : PL.official.error && !PL.official.request ? "Официальный каталог пока недоступен." : "Загружаю каталог…";
   return `<section class="cn-group"><div class="cn-gh"><h2>Установлены</h2></div>
       ${inst.length ? `<div class="card cx-rows">${inst.map(plRow).join("")}</div>`
         : `<div class="card plg-empty">${icon("puzzle")}<p class="muted">Пока ни одного плагина. Ядро Джарвиса лёгкое: нужные умения ставятся отдельно — выберите ниже.</p></div>`}</section>
     <section class="cn-group"><div class="cn-gh"><h2>Можно поставить</h2><span class="meta">официальные, от автора YaJarvis</span></div>
-      ${offer.length ? `<div class="card cx-rows">${offer.map(plRow).join("")}</div>` : PL.list && !PL.loading && !PL.catErr ? `<p class="note">Все официальные плагины уже стоят.</p>` : PL.catErr ? "" : wait}</section>
+      ${offer.length ? `<div class="card cx-rows">${offer.map(plRow).join("")}</div>` : `<p class="note">${offerMessage}</p>`}
+      ${PL.official.error && !PL.official.request ? `<p class="note bad" role="status">Не удалось обновить официальный каталог: ${esc(PL.official.error)}</p>` : ""}</section>
     <section class="cn-group"><div class="cn-gh"><h2>От сообщества</h2><span class="meta">их пишут другие люди</span></div>
       <p class="note cx-warn">${icon("shield")}<span>Автор YaJarvis сторонние плагины не проверяет: ставьте то, чему доверяете. Хотите сделать свой — <a class="lnk" href="https://github.com/${esc(plRepo())}/blob/main/docs/PLUGINS.md" target="_blank" rel="noopener">инструкция</a>.</span></p>
-      ${comm.length ? `<div class="card cx-rows">${comm.map(plRow).join("")}</div>` : PL.list && !PL.loading ? `<p class="note">Пока никто не опубликовал свой плагин.</p>` : ""}</section>
-    ${PL.catErr && !PL.loading ? `<p class="note bad">Каталог плагинов загрузился не полностью: ${esc(PL.catErr)}</p>` : ""}
+      ${comm.length ? `<div class="card cx-rows">${comm.map(plRow).join("")}</div>`
+        : PL.community.items && !PL.community.request && !PL.community.error ? `<p class="note">Пока никто не опубликовал свой плагин.</p>` : ""}
+      ${PL.community.error && !PL.community.request ? `<p class="note bad" role="status">Не удалось обновить каталог сообщества: ${esc(PL.community.error)}</p>` : ""}</section>
     <div class="cx-foot"><span>${PL.data?.free_mb ? `Свободно на колонке ${PL.data.free_mb} МБ` : ""}</span><span class="spacer"></span>
       <label class="btn sm" data-tip="Архив плагина .zip — например, скачанный из его релиза">${icon("upload")}Плагин из файла<input type="file" id="pl-file" accept=".zip,application/zip" hidden></label>
-      <button class="btn sm ghost" type="button" id="pl-refresh"${PL.loading ? " disabled" : ""}>${icon("search")}Обновить каталог</button></div>`;
+      <button class="btn sm ghost" type="button" id="pl-refresh">${icon("search")}Обновить каталог</button></div>`;
 }
 
 export function drawConns() {
@@ -318,23 +321,68 @@ function head(av, name, st, extra = "") {
       <button class="ib" type="button" data-close aria-label="Закрыть">${icon("x")}</button></div>${extra}`;
 }
 
-export function connBody(key) {
-  const card = $("#cn-card");
-  const it = connItems().find((x) => x.key === key);
-  if (!card || !it) return false;
+function keepFields(card, html) {
   // поля, которые человек уже начал заполнять, перерисовка не стирает
   const keep = {};
   card.querySelectorAll("input:not([type=checkbox]), textarea").forEach((el) => { if (el.id && el.value) keep[el.id] = el.value; });
+  card.innerHTML = html;
+  for (const [id, val] of Object.entries(keep)) { const el = card.querySelector("#" + id); if (el) el.value = val; }
+}
+
+function serviceBody(it) {
+  return `<p class="cn-about">${it.about}${it.more ? `. ${it.more}` : ""}</p>
+    <div class="cn-body">${it.body}</div>
+    ${it.drop ? `<div class="row cn-foot"><span class="spacer"></span>${it.drop}</div>` : ""}`;
+}
+
+function serviceKeydown(event, root) {
+  if (event.key !== "Enter") return;
+  const target = event.target;
+  if (target.matches("input[id^='k-']")) root.querySelector(`[data-key="${target.id.slice(2)}"]`)?.click();
+  if (target.id === "sl-code") root.querySelector("#sl-in")?.click();
+}
+
+export function mountService(root, id) {
+  let active = true;
+  let timer;
+  const draw = () => {
+    clearTimeout(timer);
+    if (!active || !root.isConnected) return;
+    const it = connDefs().find((item) => item.id === id);
+    if (!it) {
+      root.textContent = "Настройки этого подключения недоступны.";
+      return;
+    }
+    const st = tileState({ ...it, kind: "svc" });
+    keepFields(root, `<h1 id="wz-service-title" tabindex="-1">${esc(it.name)}</h1>
+      <span class="st ${st.cls}">${esc(st.text)}</span>${serviceBody(it)}`);
+    if (it.wait) timer = setTimeout(async () => {
+      try { await redraw(); } catch (error) { if (active) toast(error.message, true); }
+    }, 3000);
+  };
+  const redraw = async () => { await reload(); draw(); };
+  root.onclick = (event) => {
+    event.stopPropagation();
+    void serviceClick(event.target, root, redraw, draw);
+  };
+  root.onkeydown = (event) => serviceKeydown(event, root);
+  draw();
+  return () => { active = false; clearTimeout(timer); };
+}
+
+function connBody(key) {
+  const card = $("#cn-card");
+  const it = connItems().find((x) => x.key === key);
+  if (!card || !it) return false;
   const st = tileState(it);
+  let html;
   if (it.kind === "svc") {
     const av = it.icon ? icon(it.icon) : esc(it.mono);
-    card.innerHTML = head(av, it.name, st) + `<p class="cn-about">${it.about}${it.more ? `. ${it.more}` : ""}</p>
-        <div class="cn-body">${it.body}</div>
-        ${it.drop ? `<div class="row cn-foot"><span class="spacer"></span>${it.drop}</div>` : ""}`;
+    html = head(av, it.name, st) + serviceBody(it);
   } else {
     const x = it.x, p = x.inst;
     if (!p) {
-      card.innerHTML = head(plIcon(x.icon), x.name, st) + `<p class="cn-about">${esc(x.description || "Без описания")}</p>
+      html = head(plIcon(x.icon), x.name, st) + `<p class="cn-about">${esc(x.description || "Без описания")}</p>
         <div class="plg-meta">${plBadge(x.official)}${[x.version && `v${x.version}`, PL_KIND[x.kind] || x.kind, x.size && plSize(x.size), x.author, x.stars ? `★ ${x.stars}` : ""].filter(Boolean).map((s) => `<span>${esc(s)}</span>`).join("")}
           ${x.url ? `<a class="lnk" href="${esc(x.url)}" target="_blank" rel="noopener">${icon("ext")}код</a>` : ""}</div>
         <div class="row cn-foot"><span class="spacer"></span><button class="btn primary" type="button" data-pl-install="${esc(x.repo)}" data-id="${esc(x.id)}" data-official="${x.official ? 1 : ""}">${icon("plus")}Установить</button></div>`;
@@ -343,7 +391,7 @@ export function connBody(key) {
       const svcs = connDefs().filter((c) => c.plugin === p.id);
       const training = p.id === "training" && S.settings.wake_training !== undefined;
       const description = training ? "Меняет фразу активации или дообучает «Джарвис» по вашим записям." : x.description;
-      card.innerHTML = head(plIcon(p.icon), p.name, st) + `<p class="cn-about">${esc(description || "")}</p>
+      html = head(plIcon(p.icon), p.name, st) + `<p class="cn-about">${esc(description || "")}</p>
         ${fields.length ? `<div class="cn-body plg-form">${fields.map((s) => plField(p, s)).join("")}</div>
           <div class="row"><span class="spacer"></span><button class="btn primary" type="button" data-pl-save="${esc(p.id)}">Сохранить</button></div>` : ""}
         ${svcs.length ? `<div class="cx-links"><b>${svcs.length > 1 ? "Входы и ключи этого плагина" : "Вход и настройки"}</b>${svcs.map((c) => `<button class="cx-link" type="button" data-goto="svc:${esc(c.id)}">
@@ -353,7 +401,7 @@ export function connBody(key) {
         ${pluginBlock(p, plCatItem(p), true)}`;
     }
   }
-  for (const [id, val] of Object.entries(keep)) { const el = card.querySelector("#" + id); if (el) el.value = val; }
+  keepFields(card, html);
   return true;
 }
 
@@ -409,15 +457,16 @@ export function connClose() {
   setTimeout(() => { if (m.classList.contains("out")) m.classList.add("hidden"); }, 260);
 }
 
-export async function connNetTest(btn) {
+export async function connNetTest(btn, root = document, draw = drawConns) {
+  const result = () => root.querySelector("#net-res");
   await act(btn, async () => {
-    if ($("#net-res")) $("#net-res").innerHTML = `<div class="nr"><span class="spin"></span>Проверяю…</div>`;
+    if (result()) result().innerHTML = `<div class="nr"><span class="spin"></span>Проверяю…</div>`;
     let r;
-    try { r = await api("POST", "/api/test/net"); } catch (err) { if ($("#net-res")) $("#net-res").innerHTML = ""; throw err; }
+    try { r = await api("POST", "/api/test/net"); } catch (err) { if (result()) result().innerHTML = ""; throw err; }
     CONN.net = {};
     for (const [name, x] of Object.entries(r)) CONN.net[name] = x;
-    drawConns();
-    if ($("#net-res")) $("#net-res").innerHTML = Object.entries(r).map(([name, x]) => `<div class="nr ${x.ok ? "ok" : "bad"}"><b>${NET_NAMES[name] || esc(name)}</b>${x.ok ? `работает · ${x.ms} мс` : esc(x.error || "нет связи")}</div>`).join("");
+    draw();
+    if (result()) result().innerHTML = Object.entries(r).map(([name, x]) => `<div class="nr ${x.ok ? "ok" : "bad"}"><b>${NET_NAMES[name] || esc(name)}</b>${x.ok ? `работает · ${x.ms} мс` : esc(x.error || "нет связи")}</div>`).join("");
     const bad = Object.entries(r).filter(([, x]) => !x.ok).map(([n]) => NET_NAMES[n] || n);
     if (!Object.keys(r).length) toast("Нечего проверять — нет ни одного ключа", true);
     else if (bad.length) toast(`Нет связи: ${bad.join(", ")}`, true);
@@ -428,8 +477,6 @@ export async function connNetTest(btn) {
 export async function connClick(e) {
   if (page !== "connections") return;
   const t = e.target;
-  const redraw = async () => { await reload(); drawConns(); };
-    if(t.closest("[data-ha-remove]")){t.closest("[data-ha-room]").remove();return;}
   if (t.closest("[data-close]")) return connClose();
   const tab = t.closest("#cx-tabs [data-tab]");
   if (tab) { CONN.tab = tab.dataset.tab; drawConns(); return; }
@@ -438,7 +485,11 @@ export async function connClick(e) {
   if (t.closest("[data-item] .sw")) return; // переключатель в строке плагина ловит connChange
   const plOpen = t.closest("[data-pl-open]");
   if (plOpen) return connOpen(plOpen.dataset.plOpen);
-  if (t.closest("#pl-refresh")) { const b = t.closest("#pl-refresh"); b.disabled = true; await plCatalog(true); drawConns(); return; }
+  const refresh = t.closest("#pl-refresh");
+  if (refresh) return act(refresh, () => Promise.all([
+    plCatalog(true).then(drawConns),
+    plCatalog(true, "community").then(drawConns),
+  ]));
   const after = async () => { await reload(); drawConns(); };
   const inst = t.closest("[data-pl-install]");
   if (inst) {
@@ -452,6 +503,16 @@ export async function connClick(e) {
   if (del) return plRemove(del, del.dataset.plDel, async () => { const svc = CONN.open.startsWith("svc:"); if (!svc) connClose(); await after(); });
   const save = t.closest("[data-pl-save]");
   if (save) return plSave(save, save.dataset.plSave, plValues($("#cn-card")), after);
+  const tile = t.closest("[data-item]");
+  if (tile) return connOpen(tile.dataset.item);
+  return serviceClick(t, $("#cn-card"), after, drawConns);
+}
+
+async function serviceClick(t, root, redraw, draw) {
+  const field = (selector) => root.querySelector(selector);
+  const fields = (selector) => $$(selector, root);
+  const removeRoom = t.closest("[data-ha-remove]");
+  if (removeRoom) { removeRoom.closest("[data-ha-room]").remove(); return; }
   if (t.matches("input[data-vpn]")) {
     const svc = t.dataset.vpn, on = t.checked;
     try { await api("PUT", "/api/settings", { vpn: { [svc]: on } }); delete CONN.net[svc]; await redraw(); toast(`${VPN_NAMES.find(([id]) => id === svc)?.[1] || svc}: ${on ? "через VPN" : "напрямую"}`); }
@@ -466,15 +527,13 @@ export async function connClick(e) {
     if (rm && !confirm(`Убрать ключ ${i + 1} с колонки?`)) return;
     return act(ek, async () => { await api("PUT", "/api/eleven-keys", rm ? { remove: i } : { reset: i }); await redraw(); }, rm ? "Ключ убран" : "Ключ снова в работе");
   }
-  const tile = t.closest("[data-item]");
-  if (tile) return connOpen(tile.dataset.item);
   const net = t.closest("[data-net]");
-  if (net) return connNetTest(net);
+  if (net) return connNetTest(net, root, draw);
   const b = t.closest("[data-key]"), c = t.closest("[data-clear]");
   if (b) {
-    const val = $("#k-" + b.dataset.key).value.trim();
+    const val = field("#k-" + b.dataset.key).value.trim();
     if (!val) return toast("Сначала вставьте ключ в поле", true);
-    return act(b, async () => { await api("PUT", "/api/keys", { [b.dataset.key]: val }); $("#k-" + b.dataset.key).value = ""; delete CONN.net[b.dataset.key]; await redraw(); }, (b.dataset.key === "elevenlabs" && (S.eleven_keys || []).length > 1) || (b.dataset.key === "gemini" && (S.gemini_keys || []).length > 1) ? "Ключ добавлен в запас" : "Ключ сохранён");
+    return act(b, async () => { await api("PUT", "/api/keys", { [b.dataset.key]: val }); field("#k-" + b.dataset.key).value = ""; delete CONN.net[b.dataset.key]; await redraw(); }, (b.dataset.key === "elevenlabs" && (S.eleven_keys || []).length > 1) || (b.dataset.key === "gemini" && (S.gemini_keys || []).length > 1) ? "Ключ добавлен в запас" : "Ключ сохранён");
   }
   if (c) { if (confirm(c.dataset.clear === "elevenlabs" && (S.eleven_keys || []).length > 1 ? "Убрать все ключи ElevenLabs с колонки?" : c.dataset.clear === "gemini" && (S.gemini_keys || []).length > 1 ? "Убрать все ключи Google с колонки?" : "Убрать этот ключ с колонки?")) act(c, async () => { await api("PUT", "/api/keys", { [c.dataset.clear]: "" }); delete CONN.net[c.dataset.clear]; await redraw(); }); return; }
   const btn = t.closest("button[id]");
@@ -484,25 +543,25 @@ export async function connClick(e) {
       const r=await api("POST","/api/home-assistant/rooms/discover",{});
       if(!r.rooms?.length){toast("Автоматическое определение комнат недоступно. Можно выбрать готовые сценарии уборки.",true);return;}
       const catalog=await api("GET","/api/home-assistant");CONN.haEntities=catalog.entities || [];
-      $("#ha-rooms").innerHTML=r.rooms.map(haRoomRow).join("");toast(`Найдено комнат: ${r.rooms.length}. Нажмите «Проверить и сохранить».`);
+      field("#ha-rooms").innerHTML=r.rooms.map(haRoomRow).join("");toast(`Найдено комнат: ${r.rooms.length}. Нажмите «Проверить и сохранить».`);
     });
-    case "ha-add-room": $("#ha-rooms").insertAdjacentHTML("beforeend",haRoomRow()); return;
+    case "ha-add-room": field("#ha-rooms").insertAdjacentHTML("beforeend",haRoomRow()); return;
     case "ha-load": return act(btn,async()=>{
       const r=await api("GET","/api/home-assistant");CONN.haEntities=r.entities || [];
-      const rooms=$$("[data-ha-room]").map(el=>({...JSON.parse(el.dataset.haBinding || "{}"),name:el.querySelector(".ha-name").value,vacuum:el.querySelector(".ha-vacuum").value,entity:el.querySelector(".ha-entity").value,room_ids:el.querySelector(".ha-ids").value}));
-      $("#ha-rooms").innerHTML=rooms.map(haRoomRow).join("");
+      const rooms=fields("[data-ha-room]").map(el=>({...JSON.parse(el.dataset.haBinding || "{}"),name:el.querySelector(".ha-name").value,vacuum:el.querySelector(".ha-vacuum").value,entity:el.querySelector(".ha-entity").value,room_ids:el.querySelector(".ha-ids").value}));
+      field("#ha-rooms").innerHTML=rooms.map(haRoomRow).join("");
       toast(`Получено устройств и действий: ${CONN.haEntities.length}`);
     });
     case "ha-save": return act(btn,async()=>{
-      const rooms=$$("[data-ha-room]").map(el=>({...JSON.parse(el.dataset.haBinding || "{}"),name:el.querySelector(".ha-name").value.trim(),vacuum:el.querySelector(".ha-vacuum").value,entity:el.querySelector(".ha-entity").value,room_ids:el.querySelector(".ha-ids").value.trim()}));
-      await api("PUT","/api/home-assistant",{url:$("#ha-url").value,token:$("#ha-token").value,rooms});
-      $("#ha-token").value="";await redraw();
+      const rooms=fields("[data-ha-room]").map(el=>({...JSON.parse(el.dataset.haBinding || "{}"),name:el.querySelector(".ha-name").value.trim(),vacuum:el.querySelector(".ha-vacuum").value,entity:el.querySelector(".ha-entity").value,room_ids:el.querySelector(".ha-ids").value.trim()}));
+      await api("PUT","/api/home-assistant",{url:field("#ha-url").value,token:field("#ha-token").value,rooms});
+      field("#ha-token").value="";await redraw();
     },"Home Assistant подключён");
     case "ha-disconnect": return act(btn,async()=>{await api("DELETE","/api/home-assistant");CONN.haEntities=[];await redraw();},"Home Assistant отключён");
     case "cg-in": return act(btn, async () => { await api("POST", "/api/chatgpt/login"); await redraw(); });
     case "cg-out": if (confirm("Выйти из ChatGPT на колонке?")) act(btn, async () => { await api("DELETE", "/api/chatgpt"); await redraw(); }); return;
     case "sl-in": {
-      const code = $("#sl-code").value.trim();
+      const code = field("#sl-code").value.trim();
       if (!code) return toast("Сначала вставьте код пользователя из Smart Life", true);
       return act(btn, async () => { await api("POST", "/api/smartlife/login", { user_code: code }); await redraw(); });
     }
@@ -514,12 +573,12 @@ export async function connClick(e) {
     case "ya-in": return act(btn, async () => { await api("POST", "/api/youtube/login"); await redraw(); });
     case "ya-out": if (confirm("Выйти из YouTube на колонке?")) act(btn, async () => { await api("DELETE", "/api/youtube/login"); await redraw(); }); return;
     case "yt-save": {
-      const txt = $("#yt-cookies").value.trim();
+      const txt = field("#yt-cookies").value.trim();
       if (!txt) return toast("Сначала вставьте текст файла cookies.txt", true);
-      return act(btn, async () => { await api("PUT", "/api/youtube", { cookies: txt }); $("#yt-cookies").value = ""; await redraw(); }, "YouTube принял вход");
+      return act(btn, async () => { await api("PUT", "/api/youtube", { cookies: txt }); field("#yt-cookies").value = ""; await redraw(); }, "YouTube принял вход");
     }
     case "yt-clear": if (confirm("Убрать вход в YouTube с колонки?")) act(btn, async () => { await api("DELETE", "/api/youtube"); await redraw(); }); return;
-    case "vless-save": return act(btn, async () => { await api("PUT", "/api/vless", { link: $("#vless").value }); $("#vless").value = ""; await redraw(); }, "Ссылка сохранена — проверьте связь");
+    case "vless-save": return act(btn, async () => { await api("PUT", "/api/vless", { link: field("#vless").value }); field("#vless").value = ""; await redraw(); }, "Ссылка сохранена — проверьте связь");
     case "vless-clear": if (confirm("Убрать VPN? Колонка пойдёт в интернет напрямую.")) act(btn, async () => { await api("PUT", "/api/vless", { link: "" }); await redraw(); }); return;
   }
 }

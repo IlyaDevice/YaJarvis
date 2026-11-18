@@ -1,8 +1,8 @@
 // Мастер первого запуска. Он предлагает только пакеты из официального каталога.
-import { connClose, connOpen } from "./connections.js";
+import { mountService } from "./connections.js";
 import { $, api, esc, icon, toast } from "./core.js";
 import { S, go, reload, voicePlugin } from "./main.js";
-import { PL, plCatalog, plDescription, plIcon, plLoad } from "./plugins.js";
+import { PL, plCatalog, plDescription, plIcon, plLoad, plOfficialItems } from "./plugins.js";
 
 const STEPS = ["Начало", "Плагины", "Настройка", "Готово"];
 const groups = [
@@ -19,6 +19,7 @@ const hasService = new Set([...voiceIds, "vpn", "youtube", "yandexhome", "homeas
 const picked = new Set();
 const failed = new Map();
 let step = 0, busy = false, error = "";
+let leaveService;
 
 function installed() {
   return new Map((PL.data?.installed || []).map((p) => [p.id, p]));
@@ -30,6 +31,7 @@ function ready(id) {
 }
 
 export function wizOpen(at = 0) {
+  leaveService?.();
   step = at;
   $("#wiz-pill")?.remove();
   let w = $("#wiz");
@@ -39,8 +41,12 @@ export function wizOpen(at = 0) {
     w.className = "wiz";
     w.setAttribute("role", "dialog");
     w.setAttribute("aria-modal", "true");
+    w.setAttribute("aria-label", "Первоначальная настройка");
     document.body.append(w);
     w.addEventListener("click", click);
+    w.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && leaveService) leaveService();
+    });
     w.addEventListener("change", (event) => {
       const id = event.target.dataset.wzPick;
       if (id) {
@@ -57,17 +63,19 @@ export function wizOpen(at = 0) {
 }
 
 async function refreshCatalog(fresh = false) {
-  await Promise.all([plCatalog(fresh), plLoad()]);
+  await Promise.all([plCatalog(fresh), PL.data || plLoad()]);
   if (step === 1) draw();
 }
 
 function options() {
   const have = installed();
-  const catalog = (PL.list || []).filter((item) => item.official);
-  if (PL.loading) return '<p role="status">Загружаем официальный каталог…</p>';
-  if (!catalog.length) return '<p role="alert">Каталог пока недоступен. Проверьте, есть ли у колонки интернет.</p><button class="btn" type="button" data-wz-retry>Обновить каталог</button>';
-  return groups.map(([category, name]) => {
-    const items = catalog.filter((item) => item.category === category);
+  const catalog = plOfficialItems();
+  if (!catalog.length && (PL.official.request || !PL.official.error)) return '<p role="status">Загружаем официальный каталог…</p>';
+  const retry = PL.official.error ? `<p role="status">Не удалось обновить каталог: ${esc(PL.official.error)}</p><button class="btn" type="button" data-wz-retry>Обновить каталог</button>` : "";
+  return retry + [...groups, ["other", "Другие плагины"]].map(([category, name]) => {
+    const items = catalog.filter((item) => category === "other"
+      ? !groups.some(([id]) => id === item.category)
+      : item.category === category);
     if (!items.length) return "";
     return `<h3>${name}</h3><div class="wz-list">${items.map((item) => {
       const current = have.get(item.id);
@@ -154,7 +162,7 @@ function updateRow(id, status, message = "", installed = false) {
 
 async function install() {
   const have = installed();
-  const catalog = new Map((PL.list || []).filter((item) => item.official).map((item) => [item.id, item]));
+  const catalog = new Map(plOfficialItems().map((item) => [item.id, item]));
   const selected = [...picked].filter((id) => !have.has(id) && catalog.has(id));
   if (!selected.length) return true;
   for (const id of selected) {
@@ -177,10 +185,45 @@ async function finish() {
   await api("POST", "/api/onboarded");
   S.settings.onboarded = true;
   $("#wiz")?.classList.add("hidden");
+  leaveService?.();
   $("#wiz-pill")?.remove();
 }
 
-function openConnection(id) {
+function openConnection(button) {
+  const id = button.dataset.wzConn;
+  if (id !== "training") {
+    const card = button.closest(".wiz-card");
+    const body = card.querySelector(".wz-body");
+    const foot = card.querySelector(".wz-foot");
+    const scroll = card.scrollTop;
+    const pane = document.createElement("section");
+    pane.className = "wz-body";
+    const nav = document.createElement("div");
+    nav.className = "wz-foot";
+    nav.innerHTML = '<button class="btn" type="button">К подключениям</button>';
+    body.classList.add("hidden");
+    foot.classList.add("hidden");
+    card.append(pane, nav);
+    const unmount = mountService(pane, serviceIds[id] || id);
+    leaveService = () => {
+      unmount();
+      pane.remove();
+      nav.remove();
+      body.classList.remove("hidden");
+      foot.classList.remove("hidden");
+      const voice = body.querySelector("#wz-voice")?.value;
+      body.innerHTML = configuration() + '<p class="err hidden" data-wz-error role="alert"></p>';
+      const select = body.querySelector("#wz-voice");
+      if (select && [...select.options].some((opt) => opt.value === voice)) select.value = voice;
+      card.scrollTop = scroll;
+      body.querySelector(`[data-wz-conn="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+      leaveService = undefined;
+    };
+    nav.firstElementChild.onclick = leaveService;
+    card.scrollTop = 0;
+    pane.querySelector("h1")?.focus({ preventScroll: true });
+    return;
+  }
   $("#wiz").classList.add("hidden");
   const pill = document.createElement("button");
   pill.id = "wiz-pill";
@@ -190,18 +233,11 @@ function openConnection(id) {
   pill.onclick = async () => {
     try {
       await Promise.all([reload(), plLoad()]);
-      connClose();
       wizOpen(2);
     } catch (err) { toast(err.message, true); }
   };
   document.body.append(pill);
-  if (id === "training") go("#training");
-  else {
-    const key = serviceIds[id] || id;
-    const hash = `#connections/${key}`;
-    if (location.hash === hash) connOpen(key);
-    else go(hash);
-  }
+  go("#training");
 }
 
 async function click(event) {
@@ -211,7 +247,7 @@ async function click(event) {
   const d = button.dataset;
   error = "";
   try {
-    if ("wzConn" in d) return openConnection(d.wzConn);
+    if ("wzConn" in d) return openConnection(button);
     if ("wzSkip" in d || ("wzNext" in d && step === 3)) {
       busy = true;
       updateControls();
@@ -237,7 +273,7 @@ async function click(event) {
       }
     }
     step++;
-    if (step === 1 && !PL.list) void refreshCatalog();
+    if (step === 1) void refreshCatalog();
   } catch (err) {
     error = err.message;
   } finally {

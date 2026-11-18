@@ -5,7 +5,6 @@ cd "$(dirname "$0")"
 : "${VERSION:=dev}" "${REPO:=newfpv/YaJavis}" "${ZIG:=zig}"
 VERSION=${VERSION#v}
 export JARVIS_VERSION="$VERSION" JARVIS_UI="$PWD/jarvisd/ui" JARVIS_REPO="$REPO"
-export JARVIS_PLUGIN_REF="${JARVIS_PLUGIN_REF:-$(git rev-parse HEAD)}"
 out="$PWD/build/release"
 tools="$PWD/build/station-build"
 mkdir -p "$out" "$tools"

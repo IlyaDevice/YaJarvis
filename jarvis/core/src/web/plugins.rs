@@ -22,7 +22,21 @@ pub async fn list(State(app): State<App>) -> Json<Value> {
 }
 
 pub async fn catalog(State(app): State<App>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
-    let (items, err) = app.plugins.catalog(q.get("fresh").is_some_and(|v| v == "1")).await;
+    let fresh = q.get("fresh").is_some_and(|v| v == "1");
+    let (items, err) = match q.get("scope").map(String::as_str) {
+        Some("official") => app.plugins.official_catalog(fresh).await,
+        Some("community") => app.plugins.community_catalog(fresh).await,
+        _ => {
+            let ((mut official, official_error), (community, community_error)) = tokio::join!(
+                app.plugins.official_catalog(fresh),
+                app.plugins.community_catalog(fresh),
+            );
+            official.extend(community);
+            let error = [official_error, community_error].into_iter()
+                .filter(|error| !error.is_empty()).collect::<Vec<_>>().join("; ");
+            (official, error)
+        }
+    };
     Json(json!({"items": items, "error": err}))
 }
 

@@ -3,7 +3,11 @@
 import { $$, ICONS, act, api, esc, icon, tip, toast, upload } from "./core.js";
 import { S } from "./main.js";
 
-export const PL = { data: null, list: null, catErr: "", loading: false };
+export const PL = {
+  data: null,
+  official: { items: null, error: "", request: null },
+  community: { items: null, error: "", request: null },
+};
 export const PL_KIND = { lua: "Lua", rust: "Плагин", module: "Расширение" };
 export const plIcon = (n) => icon(ICONS[n] ? n : "puzzle");
 export const plSize = (b) => (b < 1048576 ? `${Math.max(1, Math.round(b / 1024))} КБ` : `${(b / 1048576).toFixed(1).replace(".", ",")} МБ`);
@@ -14,30 +18,43 @@ export async function plLoad() {
   return PL.data;
 }
 
-export async function plCatalog(fresh) {
-  PL.loading = true;
-  try { const r = await api("GET", "/api/plugins/catalog" + (fresh ? "?fresh=1" : "")); PL.list = r.items || []; PL.catErr = r.error || ""; }
-  catch (e) { PL.catErr = e.message; PL.list = PL.list || []; }
-  PL.loading = false;
-  return PL.list;
+export function plCatalog(fresh, scope = "official") {
+  const catalog = PL[scope];
+  if (catalog.request) return catalog.request;
+  catalog.request = api("GET", `/api/plugins/catalog?scope=${scope}${fresh ? "&fresh=1" : ""}`).then((r) => {
+    if (!Array.isArray(r.items)) throw new Error("Колонка вернула неверный формат каталога.");
+    const items = r.items.filter((item) => item.official === (scope === "official"));
+    catalog.error = r.error || "";
+    if (scope === "official" && !items.length) {
+      catalog.error ||= "Колонка вернула пустой официальный каталог.";
+    } else if (!catalog.error || items.length) {
+      catalog.items = items;
+    }
+  }).catch((error) => {
+    catalog.error = error.message;
+  }).finally(() => {
+    catalog.request = null;
+  });
+  return catalog.request;
 }
 
+export const plOfficialItems = () => PL.official.items || [];
 export function plInstalled(id) { return (PL.data?.installed || []).find((p) => p.id === id); }
 // plCatItem — запись каталога для установленного плагина (официальный — по id, сторонний — по репозиторию)
 export function plCatItem(p) {
-  return (PL.list || []).find((c) => c.id === p.id && (p.official ? c.official : c.repo === p.source));
+  return p.official ? plOfficial(p.id) : PL.community.items?.find((c) => c.id === p.id && c.repo === p.source);
 }
 export function plDescription(p, catalog = plCatItem(p)) {
   const values = p.official ? [catalog?.description, p.description] : [p.description, catalog?.description];
   return values.find((value) => value && !/\?{3,}/.test(value)) || "";
 }
-export function plOfficial(id) { return (PL.list || []).find((c) => c.official && c.id === id); }
+export function plOfficial(id) { return plOfficialItems().find((c) => c.id === id); }
 export const plRepo = () => PL.data?.repo || S.repo || "newfpv/YaJavis";
 
 // plItems — всё, что можно показать: каталог плюс установленное, чего в каталоге нет (из файла, снятое с каталога).
 export function plItems() {
   const inst = PL.data?.installed || [];
-  const out = (PL.list || []).map((c) => {
+  const out = [...plOfficialItems(), ...(PL.community.items || [])].map((c) => {
     const p = inst.find((p) => p.id === c.id && (c.official ? p.official : p.source === c.repo));
     return { ...c, name: p?.name || c.name, description: p ? plDescription(p, c) : c.description, inst: p };
   });

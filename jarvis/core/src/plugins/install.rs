@@ -202,9 +202,18 @@ impl Host {
             return Err("репозиторий — вида owner/name".into());
         }
         let official = repo.eq_ignore_ascii_case(crate::DEFAULT_REPO);
-        if official && super::modules::built_in(id) {
-            let raw = download_official_rust(id, tag).await?;
-            return self.install(&raw, crate::DEFAULT_REPO, true).await;
+        if official {
+            if !valid_id(id) {
+                return Err("не указан плагин".into());
+            }
+            let native = super::modules::built_in(id) || {
+                let (items, _) = self.official_catalog(false).await;
+                items.iter().any(|item| item["id"] == id && item["kind"] == "rust")
+            };
+            if native {
+                let raw = download_official_rust(id, tag).await?;
+                return self.install(&raw, crate::DEFAULT_REPO, true).await;
+            }
         }
         #[cfg(feature = "lua")]
         if official && tag.is_empty() {
