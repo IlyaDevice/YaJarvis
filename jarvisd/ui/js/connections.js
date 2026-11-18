@@ -177,7 +177,7 @@ function connItems() {
   return [...svc, ...pls];
 }
 
-export function viewConnections() {
+export function viewConnections(openKey = "") {
   $("#view").innerHTML = `<header class="ph ph-row"><div><h1>Подключения</h1><p class="sub">Сервисы — ключи и входы в аккаунты. Плагины — умения, которые ставятся на колонку отдельно</p></div>
     <div class="actions"><button class="btn" data-net data-tip="Колонка достучится до облаков с вашими ключами и покажет время ответа">${icon("radio")}Проверить связь</button></div></header>
   <div class="seg cx-tabs" id="cx-tabs" role="tablist"><button type="button" role="tab" data-tab="svc">Сервисы<small id="cx-n-svc"></small></button><button type="button" role="tab" data-tab="pl">Плагины<small id="cx-n-pl"></small></button></div>
@@ -185,6 +185,7 @@ export function viewConnections() {
   <div class="modal hidden" id="cn-modal" role="dialog" aria-modal="true" aria-labelledby="cn-mt"><div class="modal-bg" data-close></div><div class="modal-card cn-card" id="cn-card"></div></div>`;
   CONN.open = "";
   const view = $("#view");
+  const modal = $("#cn-modal");
   view.oninput = null;
   view.onchange = connChange;
   view.onclick = connClick;
@@ -196,9 +197,14 @@ export function viewConnections() {
     if (e.key === "Enter" && e.target.matches("input[id^='k-']")) $(`[data-key="${e.target.id.slice(2)}"]`)?.click();
     if (e.key === "Enter" && e.target.id === "sl-code") $("#sl-in")?.click();
   };
-  drawConns();
-  plLoad().then(() => { if (page === "connections") drawConns(); });
-  if (!PL.list) plCatalog(false).then(() => { if (page === "connections") drawConns(); });
+  const refresh = () => {
+    if (page !== "connections" || $("#cn-modal") !== modal) return;
+    drawConns();
+    if (openKey && connOpen(openKey)) openKey = "";
+  };
+  refresh();
+  plLoad().then(refresh);
+  if (!PL.list) plCatalog(false).then(refresh);
 }
 
 function tileState(it) {
@@ -280,7 +286,7 @@ export function drawConns() {
   $("#cx-n-svc").textContent = nSvc ? String(nSvc) : "";
   $("#cx-n-pl").textContent = nPl ? String(nPl) : "";
   box.innerHTML = CONN.tab === "pl" ? plHtml(pls) : svcHtml(svc);
-  if (CONN.open) connBody(CONN.open);
+  if (CONN.open && !connBody(CONN.open)) connClose();
   // вход кодом: ждём, пока человек введёт код на сайте
   clearTimeout(drawConns.wait);
   if (svc.some((c) => c.wait)) drawConns.wait = setTimeout(async () => {
@@ -315,7 +321,7 @@ function head(av, name, st, extra = "") {
 export function connBody(key) {
   const card = $("#cn-card");
   const it = connItems().find((x) => x.key === key);
-  if (!card || !it) return;
+  if (!card || !it) return false;
   // поля, которые человек уже начал заполнять, перерисовка не стирает
   const keep = {};
   card.querySelectorAll("input:not([type=checkbox]), textarea").forEach((el) => { if (el.id && el.value) keep[el.id] = el.value; });
@@ -336,7 +342,7 @@ export function connBody(key) {
       const fields = p.settings || [];
       const svcs = connDefs().filter((c) => c.plugin === p.id);
       const training = p.id === "training" && S.settings.wake_training !== undefined;
-      const description = training ? "Меняет фразу активации или дообучает «Джарвис» по вашим записям." : p.description;
+      const description = training ? "Меняет фразу активации или дообучает «Джарвис» по вашим записям." : x.description;
       card.innerHTML = head(plIcon(p.icon), p.name, st) + `<p class="cn-about">${esc(description || "")}</p>
         ${fields.length ? `<div class="cn-body plg-form">${fields.map((s) => plField(p, s)).join("")}</div>
           <div class="row"><span class="spacer"></span><button class="btn primary" type="button" data-pl-save="${esc(p.id)}">Сохранить</button></div>` : ""}
@@ -348,6 +354,7 @@ export function connBody(key) {
     }
   }
   for (const [id, val] of Object.entries(keep)) { const el = card.querySelector("#" + id); if (el) el.value = val; }
+  return true;
 }
 
 function modalShow() {
@@ -358,16 +365,18 @@ function modalShow() {
 // connOpen — открыть окно: ключ «svc:youtube» / «pl:weather» или просто id сервиса (ссылки #connections/youtube).
 export function connOpen(key) {
   if (!key) return;
-  if (key === "plugins" || key === "services") { CONN.tab = key === "plugins" ? "pl" : "svc"; return drawConns(); }
-  if (!key.includes(":")) key = connDefs().some((c) => c.id === key) ? "svc:" + key : "pl:" + key;
-  if (!connItems().some((x) => x.key === key)) return;
+  if (key === "plugins" || key === "services") { CONN.tab = key === "plugins" ? "pl" : "svc"; drawConns(); return true; }
+  const items = connItems();
+  if (!key.includes(":")) key = items.find((item) => item.id === key)?.key;
+  if (!key || !items.some((x) => x.key === key)) return false;
   const tab = key.startsWith("pl:") ? "pl" : "svc";
   if (CONN.tab !== tab) { CONN.tab = tab; CONN.open = ""; drawConns(); }
+  if (!connBody(key)) return false;
   CONN.open = key;
-  connBody(key);
   modalShow();
   // на телефоне не фокусируем поле: иначе сразу выпрыгивает клавиатура и закрывает окно
   if (matchMedia("(hover: hover)").matches) setTimeout(() => $("#cn-card input:not([type=checkbox]), #cn-card textarea, #cn-card .btn.primary")?.focus(), 60);
+  return true;
 }
 
 // connWarn — предупреждение перед неофициальным плагином в том же окне; true — ставим.
@@ -395,6 +404,7 @@ function connWarn(name) {
 export function connClose() {
   const m = $("#cn-modal");
   CONN.open = "";
+  if (!m || m.classList.contains("hidden")) return;
   m.classList.remove("in"); m.classList.add("out");
   setTimeout(() => { if (m.classList.contains("out")) m.classList.add("hidden"); }, 260);
 }

@@ -1,7 +1,7 @@
 // Ассистент: голос, модель, характер.
 import { $, $$, act, api, esc, icon, sec, setDirty, tip, toast } from "./core.js";
 import { ledPickerBind, ledPickerHtml, paintLeds } from "./leds.js";
-import { S, avatar, go, reload, route } from "./main.js";
+import { S, avatar, go, reload, route, voiceEnabled } from "./main.js";
 
 export let previewSeq = 0;
 
@@ -10,10 +10,10 @@ export function viewProfile(id) {
   const isNew = id === "new";
   const base = S.profiles.find((x) => x.id === id);
   if (!isNew && !base) { go("#home"); return; }
-  const p = structuredClone(base || { id: "", name: "", color: (S.profiles.length % 6) + 1, mode: "live", voice: "cedar", backend_model: S.backend_models[0], effort: "low", priority: true, web_search: true, idle_s: 8, prompt: S.prompts[0]?.id || "" });
+  const p = structuredClone(base || { id: "", name: "", color: (S.profiles.length % 6) + 1, mode: "live", engine: "", voice: "", effort: "low", priority: true, web_search: true, idle_s: 8, prompt: S.prompts[0]?.id || "" });
   p.led ||= { ...(S.settings.led || {}) }; p.led.brightness ||= 45;
   p.volume ||= S.settings.volume || 40; p.city ??= S.settings.city || ""; p.timezone ||= S.settings.timezone || "UTC";
-  p.engine ||= "openai";
+  if (p.engine === "live") p.engine = "openai";
   if(p.mode==="classic")p.engine="elevenlabs";
   p.llm_model ||= p.backend_model;
   p.tts_model ||= "eleven_flash_v2_5";
@@ -23,13 +23,14 @@ export function viewProfile(id) {
   if (p.llm_plugin && !textPlugins.some((plugin) => plugin.id === p.llm_plugin)) {
     textPlugins.push({ id: p.llm_plugin, name: p.llm_plugin + " (отключён)" });
   }
-  $("#view").innerHTML = `<header class="ph who"><span id="pav" class="ringbox">${avatar(p, true)}</span><div><h1>${isNew ? "Новый ассистент" : esc(p.name)}</h1><p class="sub">${isNew ? "Свой голос, модель и характер" : active ? "Сейчас отвечает на «Джарвис»" : "Не активен"}</p></div></header>
+  $("#view").innerHTML = `<header class="ph who"><span id="pav" class="ringbox">${avatar(p, true)}</span><div><h1>${isNew ? "Новый ассистент" : esc(p.name)}</h1><p class="sub">${isNew ? "Свой голос, модель и характер" : active ? "Активный профиль" : "Не активен"}</p></div></header>
   ${sec("Основное", "Как ассистент выглядит в списке и кем он себя считает",
     `<div class="grid g2"><div class="f"><label>Имя ${tip("Как ассистент называется в списке слева. На слово активации не влияет.")}</label><input type="text" id="p-name" maxlength="40" value="${esc(p.name)}" placeholder="Например, Джарвис"></div>
       <div class="f"><label>Цвет</label><div class="colors" id="p-color">${[1, 2, 3, 4, 5, 6].map((c) => `<button class="av c${c}${p.color === c ? " on" : ""}" data-c="${c}" type="button" aria-label="Цвет ${c}"></button>`).join("")}</div></div></div>
     <div class="f"><label>Характер ${tip("Системный промпт: кто такой Джарвис и как он общается. Характеры редактируются в разделе «Характеры».")}</label><select id="p-prompt">${S.prompts.map((c) => `<option value="${esc(c.id)}"${c.id === p.prompt ? " selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>`)}
   ${sec("Мозг", "Выберите живой разговор или классическую цепочку: распознавание речи → текстовая модель → озвучка",
-    `<div class="choice" id="p-engine">
+    `<p class="note hidden" id="p-no-engine">Установите и включите голосовой плагин в <a href="#connections/plugins">«Подключениях»</a>.</p>
+    <div class="choice" id="p-engine">
       <button class="opt" data-engine="elevenlabs" type="button"><b>ElevenLabs — классический</b><small>Распознавание Scribe и голос ElevenLabs. Текстовая модель OpenAI думает и вызывает инструменты. Нужны ключи ElevenLabs и OpenAI</small></button>
       <button class="opt" data-engine="eleven_realtime" type="button"><b>ElevenLabs — живой разговор</b><small>Eleven Realtime Mini или Max: распознавание, мозг, голос и перебивания вместе. Нужен только ключ ElevenLabs</small></button>
       <button class="opt" data-engine="chatgpt" type="button"><b>GPT-Live по подписке</b><small>Ваш ChatGPT Plus или Pro: минуты не оплачиваются, есть лимиты подписки. Нужен вход в «Подключениях»</small></button>
@@ -109,9 +110,22 @@ export function viewProfile(id) {
   };
   // движок: свои модели и свои голоса
   const drawEngine = () => {
-    $$("#p-engine .opt").forEach((b) => b.classList.toggle("on", b.dataset.engine === p.engine));
-    $$(".eng").forEach((el) => el.classList.toggle("hidden", !el.dataset.for.split(" ").includes(p.engine)));
-    $("#v-custom").classList.toggle("hidden", p.engine !== "openai");
+    const options = $$("#p-engine .opt");
+    options.forEach((b) => {
+      const enabled = voiceEnabled(b.dataset.engine);
+      b.classList.toggle("hidden", !enabled);
+      b.classList.toggle("on", enabled && b.dataset.engine === p.engine);
+    });
+    const hasOptions = options.some((b) => !b.classList.contains("hidden"));
+    $("#p-engine").classList.toggle("hidden", !hasOptions);
+    $("#p-no-engine").classList.toggle("hidden", hasOptions);
+    const ready = voiceEnabled(p.engine);
+    $$(".eng").forEach((el) => el.classList.toggle("hidden", !ready || !el.dataset.for.split(" ").includes(p.engine)));
+    $("#v-custom").classList.toggle("hidden", !ready || p.engine !== "openai");
+    if (!ready) {
+      $("#voices").innerHTML = `<p class="note">${hasOptions ? "Выберите движок в разделе «Мозг»." : "Голос появится после настройки плагина."}</p>`;
+      return;
+    }
     if(["elevenlabs","eleven_realtime"].includes(p.engine)){drawVoices();loadElevenVoices();return;}
     const known = (({ gemini: S.gemini_voice_groups, chatgpt: S.chatgpt_voice_groups, grok: S.grok_voice_groups })[p.engine] || S.voice_groups).flatMap((g) => g.voices.map((v) => v.ID.toLowerCase()));
     const mine = S.live_voices.some((v) => v.id === p.voice);

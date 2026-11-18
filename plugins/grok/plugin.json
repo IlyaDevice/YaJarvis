@@ -1,7 +1,7 @@
 {
   "id": "grok",
   "name": "Grok",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "kind": "rust",
   "main": "plugin",
   "api": 1,
@@ -10,7 +10,7 @@
   "provides": [
     "grok"
   ],
-  "description": "????????? ??????? ? ????? ????? ????? xAI.",
+  "description": "Текстовые запросы и живой голос через xAI.",
   "author": "YaJarvis",
   "min_core": "0.10.0"
 }

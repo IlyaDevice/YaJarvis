@@ -81,6 +81,10 @@ def lifecycle(data, ids):
     state = request("/api/state")
     assert not state["settings"]["onboarded"] and not state["settings"]["wake_training"]
     assert not request("/api/plugins")["installed"]
+    profile, = state["profiles"]
+    assert profile["engine"] == "" and profile["voice"] == ""
+    assert request("/api/profile", "PUT", {**profile, "name": "Jarvis"})["ok"]
+    assert request("/api/state")["profiles"][0]["engine"] == ""
 
     for plugin_id in ids:
         row = request("/api/plugins/install", "POST", {"id": plugin_id})["plugin"]

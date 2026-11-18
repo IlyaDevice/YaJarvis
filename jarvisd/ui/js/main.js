@@ -2,7 +2,7 @@
 import { viewProfile } from "./assistant.js";
 import { viewCharacters } from "./characters.js";
 import { CH, ST, chartsData, navPill, statsData, viewCharts } from "./charts.js";
-import { connOpen, viewConnections } from "./connections.js";
+import { viewConnections } from "./connections.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
 import { HL, LOGS, homeLogs, logsData, viewLogs } from "./logs.js";
@@ -123,13 +123,16 @@ export function renderStatus() {
 // ---------------------------------------------------------------- сайдбар
 export const avatar = (p, big = false) => `<span class="av c${p.color || 1}${big ? " big" : ""}">${esc((p.name || "?").trim()[0] || "?")}</span>`;
 export const voiceName = (id) => (S.live_voices.find((v) => v.id === id)?.name) || id || "cedar";
-export const engineName = (p) => ({ gemini: "Gemini Live", chatgpt: "GPT-Live по подписке", grok: "Grok Voice" })[p.engine] || "GPT-Live";
+export const voicePlugin = (engine) => ({ live: "openai", eleven_realtime: "elevenlabs" })[engine] || engine;
+export const voiceEnabled = (engine) => !!engine && !!S.plugins?.enabled?.includes(voicePlugin(engine));
+export const engineName = (p) => !p.engine ? "Голос не настроен" : !voiceEnabled(p.engine) ? "Голосовой плагин выключен" :
+  ({ openai: "GPT-Live", live: "GPT-Live", gemini: "Gemini Live", chatgpt: "GPT-Live по подписке", grok: "Grok Voice", elevenlabs: "ElevenLabs", eleven_realtime: "ElevenLabs Live" })[p.engine] || "Голосовой плагин";
 
 export function renderSide() {
   $("#upd-dot")?.classList.toggle("hidden", !S.update_available);
   $("#profiles").innerHTML = S.profiles.map((p) => `<div class="prof${page === "p:" + p.id ? " on" : ""}" draggable="true" data-id="${esc(p.id)}">
-    ${avatar(p)}<div class="meta"><div class="n">${esc(p.name)}</div><div class="s">${engineName(p)} · ${esc(voiceName(p.voice))}</div></div>
-    ${p.id === S.active ? `<span class="act" title="Сейчас отвечает"></span>` : ""}</div>`).join("");
+    ${avatar(p)}<div class="meta"><div class="n">${esc(p.name)}</div><div class="s">${engineName(p)}${voiceEnabled(p.engine) && p.voice ? ` · ${esc(voiceName(p.voice))}` : ""}</div></div>
+    ${p.id === S.active ? `<span class="act" title="Активный профиль"></span>` : ""}</div>`).join("");
   $$("#profiles .prof").forEach((el) => {
     el.addEventListener("click", () => go("#p/" + el.dataset.id));
     el.addEventListener("dragstart", (e) => { el.classList.add("drag"); e.dataTransfer.setData("text/plain", el.dataset.id); });
@@ -169,7 +172,7 @@ export function route() {
   const h = location.hash.slice(1) || "home";
   const v0 = $("#view"); v0.oninput = v0.onchange = v0.onclick = null;   // обработчики прошлой страницы
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
-  else if (h.startsWith("connections/")) { page = "connections"; viewConnections(); connOpen(h.slice(12)); }
+  else if (h.startsWith("connections/")) { page = "connections"; viewConnections(h.slice(12)); }
   else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
   else if (h === "training") {
     page = "training";

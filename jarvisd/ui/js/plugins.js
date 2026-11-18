@@ -27,6 +27,10 @@ export function plInstalled(id) { return (PL.data?.installed || []).find((p) => 
 export function plCatItem(p) {
   return (PL.list || []).find((c) => c.id === p.id && (p.official ? c.official : c.repo === p.source));
 }
+export function plDescription(p, catalog = plCatItem(p)) {
+  const values = p.official ? [catalog?.description, p.description] : [p.description, catalog?.description];
+  return values.find((value) => value && !/\?{3,}/.test(value)) || "";
+}
 export function plOfficial(id) { return (PL.list || []).find((c) => c.official && c.id === id); }
 export const plRepo = () => PL.data?.repo || S.repo || "newfpv/YaJavis";
 
@@ -35,11 +39,11 @@ export function plItems() {
   const inst = PL.data?.installed || [];
   const out = (PL.list || []).map((c) => {
     const p = inst.find((p) => p.id === c.id && (c.official ? p.official : p.source === c.repo));
-    return { ...c, name: p?.name || c.name, description: p?.description || c.description, inst: p }; // поставленный знает своё имя лучше каталога
+    return { ...c, name: p?.name || c.name, description: p ? plDescription(p, c) : c.description, inst: p };
   });
   for (const p of inst) {
     if (out.some((x) => x.inst === p)) continue;
-    out.push({ id: p.id, repo: p.source, name: p.name, description: p.description, category: p.category, icon: p.icon, kind: p.kind,
+    out.push({ id: p.id, repo: p.source, name: p.name, description: plDescription(p), category: p.category, icon: p.icon, kind: p.kind,
       version: p.version, author: p.author, official: p.official, url: p.homepage, inst: p });
   }
   return out;

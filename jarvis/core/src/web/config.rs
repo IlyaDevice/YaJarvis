@@ -170,10 +170,7 @@ pub async fn profile(State(app): State<App>, Json(mut p): Json<Profile>) -> Resp
             return bad(e.to_string());
         }
     }
-    // Имена движков принадлежат модулям: ядро не заменяет незнакомый движок на OpenAI.
-    if p.engine.trim().is_empty() {
-        return bad("Выберите голосовой модуль");
-    }
+    p.engine = p.engine.trim().into();
     if !p.llm_plugin.is_empty() && !crate::plugins::valid_id(&p.llm_plugin) {
         return bad("Неверный идентификатор текстового плагина");
     }

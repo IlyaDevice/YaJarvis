@@ -111,7 +111,8 @@ fn lang_name(l: &str) -> &'static str {
 /// Чего не хватает, чтобы говорить выбранным движком ("" — всё на месте).
 pub fn key_missing(host: &Host, s: &Settings, engine: &str) -> String {
     let id = match engine {
-        "" | "live" => "openai",
+        "" => return "Установите голосовой плагин и выберите его в настройках ассистента".into(),
+        "live" => "openai",
         "eleven_realtime" => "elevenlabs",
         id => id,
     };
@@ -121,7 +122,7 @@ pub fn key_missing(host: &Host, s: &Settings, engine: &str) -> String {
     match engine {
         "chatgpt" if !chatgpt::signed_in(&s.chatgpt) => "не выполнен вход в ChatGPT — войдите в «Подключениях»".into(),
         "chatgpt" => chatgpt::voice_limit().unwrap_or_default(),
-        "" | "live" | "openai" => if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
+        "live" | "openai" => if s.openai_key.is_empty(){"Добавьте ключ OpenAI в «Подключениях»".into()}else{String::new()},
         "gemini" => if s.gemini_key.is_empty(){"Добавьте ключ Gemini в «Подключениях»".into()}else{String::new()},
         "grok" => if s.grok_key.is_empty(){"Добавьте ключ Grok в «Подключениях»".into()}else{String::new()},
         "elevenlabs"|"eleven_realtime"=>if s.elevenlabs_key.is_empty(){"Добавьте ключ ElevenLabs в «Подключениях»".into()}else{String::new()},
