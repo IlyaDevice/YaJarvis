@@ -10,6 +10,11 @@ use std::{
 
 pub const TOPIC: &str = "yajarvis-plugin";
 
+pub fn official_url(path: &str) -> String {
+    let reference = option_env!("JARVIS_PLUGIN_REF").unwrap_or("rust");
+    format!("https://raw.githubusercontent.com/{}/{reference}/plugins/{path}", crate::DEFAULT_REPO)
+}
+
 pub fn github_api() -> String {
     std::env::var("JARVIS_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into())
 }
@@ -49,13 +54,22 @@ impl Host {
             v["official"]=true.into();v["repo"]=crate::DEFAULT_REPO.into();v["bundled"]=compiled.into();v
         }).collect();
         let mut errs = vec![];
-        #[cfg(feature = "lua")]
-        {
-            let idx: Value = serde_json::from_str(include_str!("../../../../plugins/index.json")).expect("официальный каталог");
+        let q = format!("{}/search/repositories?per_page=60&sort=stars&q=topic%3A{TOPIC}", github_api());
+        let index_url = official_url("index.json");
+        let (index, community) = tokio::join!(
+            crate::net::download(&index_url, 128 << 10),
+            crate::net::get_json(&q),
+        );
+        match index.and_then(|raw| serde_json::from_slice::<Value>(&raw).map_err(|e| e.to_string())) {
+            Ok(idx) => {
                 for mut it in idx.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default() {
                     if out.iter().any(|m|m["id"]==it["id"]) {continue;}
                     let Some(o) = it.as_object_mut() else { continue };
                     if !o.get("id").and_then(Value::as_str).is_some_and(valid_id) {
+                        continue;
+                    }
+                    if o.get("kind").and_then(Value::as_str) != Some("module")
+                        && !(cfg!(feature = "lua") && o.get("kind").and_then(Value::as_str) == Some("lua")) {
                         continue;
                     }
                     o.insert("official".into(), true.into());
@@ -65,9 +79,10 @@ impl Host {
                     }
                     out.push(it);
                 }
+            }
+            Err(error) => errs.push(format!("официальный каталог: {error}")),
         }
-        let q = format!("{}/search/repositories?per_page=60&sort=stars&q=topic%3A{TOPIC}", github_api());
-        match crate::net::get_json(&q).await {
+        match community {
             Ok(found) => {
                 for r in found.get("items").and_then(Value::as_array).cloned().unwrap_or_default() {
                     let full = r.get("full_name").and_then(Value::as_str).unwrap_or("");

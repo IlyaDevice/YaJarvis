@@ -65,10 +65,13 @@ impl RtcVoice {
         let track=Arc::new(TrackLocalStaticSample::new(Instant::now(),MediaStreamTrack::new("jarvis".into(),"audio".into(),"jarvis".into(),RtpCodecKind::Audio,vec![RTCRtpEncodingParameters{rtp_coding_parameters:RTCRtpCodingParameters{ssrc:Some(ssrc),..Default::default()},codec,..Default::default()}])).map_err(|e|e.to_string())?);
         pc.add_track(track.clone() as Arc<dyn TrackLocal>).await.map_err(|e|e.to_string())?;
         let dc=pc.create_data_channel("oai-events",None).await.map_err(|e|e.to_string())?;
-        let offer=pc.create_offer(None).await.map_err(|e|e.to_string())?;pc.set_local_description(offer).await.map_err(|e|e.to_string())?;
-        let _=tokio::time::timeout(Duration::from_secs(3),gathered.notified()).await;
-        let offer=pc.local_description().await.ok_or("Нет предложения SDP")?.sdp;
-        let auth=provider.token().await?;let access=auth["access"].as_str().ok_or("Нет токена")?;let account=auth["account"].as_str().ok_or("Нет аккаунта")?;
+        let (offer,auth)=tokio::try_join!(async {
+            let offer=pc.create_offer(None).await.map_err(|e|e.to_string())?;
+            pc.set_local_description(offer).await.map_err(|e|e.to_string())?;
+            let _=tokio::time::timeout(Duration::from_secs(3),gathered.notified()).await;
+            Ok::<_,String>(pc.local_description().await.ok_or("Нет предложения SDP")?.sdp)
+        }, provider.token())?;
+        let access=auth["access"].as_str().ok_or("Нет токена")?;let account=auth["account"].as_str().ok_or("Нет аккаунта")?;
         let instructions=params["instructions"].as_str().unwrap_or("");let voice=params["profile"]["voice"].as_str().unwrap_or("cove");let voice=if ["cove","juniper","maple","spruce","ember","vale","breeze","arbor","sol"].contains(&voice){voice}else{"cove"};
         let thread=params["profile"]["thread"].as_str().filter(|s|!s.is_empty()&&s.len()<=128).unwrap_or(&id);
         let session=json!({"model":"gpt-live-1-codex","instructions":instructions,"audio":{"output":{"voice":voice}},"delegation":{"type":"client"},"initial_items":[{"type":"message","role":"developer","content":[{"type":"input_text","text":instructions}]}]});

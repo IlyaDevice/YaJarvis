@@ -6,33 +6,45 @@ use std::{
     time::Duration,
 };
 
-const BUILTINS: &[(&str, bool)] = &[
-    (include_str!("../../../../plugins/chatgpt/plugin.json"), cfg!(feature = "chatgpt")),
-    (include_str!("../../../../plugins/openai/plugin.json"), cfg!(feature = "openai")),
-    (include_str!("../../../../plugins/gemini/plugin.json"), cfg!(feature = "gemini")),
-    (include_str!("../../../../plugins/grok/plugin.json"), cfg!(feature = "grok")),
-    (include_str!("../../../../plugins/elevenlabs/plugin.json"), cfg!(feature = "elevenlabs")),
-    (include_str!("../../../../plugins/homeassistant/plugin.json"), cfg!(feature = "homeassistant")),
-    (include_str!("../../../../plugins/yandexhome/plugin.json"), cfg!(feature = "yandexhome")),
-    (include_str!("../../../../plugins/smartlife/plugin.json"), cfg!(feature = "smartlife")),
-    (include_str!("../../../../plugins/xiaomi/plugin.json"), cfg!(feature = "xiaomi")),
-    (include_str!("../../../../plugins/vpn-rust/plugin.json"), cfg!(feature = "vpn")),
-    (include_str!("../../../../plugins/youtube/plugin.json"), cfg!(feature = "youtube")),
-    (include_str!("../../../../plugins/training/plugin.json"), cfg!(feature = "wake-training")),
+const BUILTINS: &[&str] = &[
+    #[cfg(feature = "chatgpt")]
+    include_str!("../../../../plugins/chatgpt/plugin.json"),
+    #[cfg(feature = "openai")]
+    include_str!("../../../../plugins/openai/plugin.json"),
+    #[cfg(feature = "gemini")]
+    include_str!("../../../../plugins/gemini/plugin.json"),
+    #[cfg(feature = "grok")]
+    include_str!("../../../../plugins/grok/plugin.json"),
+    #[cfg(feature = "elevenlabs")]
+    include_str!("../../../../plugins/elevenlabs/plugin.json"),
+    #[cfg(feature = "homeassistant")]
+    include_str!("../../../../plugins/homeassistant/plugin.json"),
+    #[cfg(feature = "yandexhome")]
+    include_str!("../../../../plugins/yandexhome/plugin.json"),
+    #[cfg(feature = "smartlife")]
+    include_str!("../../../../plugins/smartlife/plugin.json"),
+    #[cfg(feature = "xiaomi")]
+    include_str!("../../../../plugins/xiaomi/plugin.json"),
+    #[cfg(feature = "vpn")]
+    include_str!("../../../../plugins/vpn-rust/plugin.json"),
+    #[cfg(feature = "youtube")]
+    include_str!("../../../../plugins/youtube/plugin.json"),
+    #[cfg(feature = "wake-training")]
+    include_str!("../../../../plugins/training/plugin.json"),
 ];
 
 pub fn catalog() -> impl Iterator<Item = (Manifest, bool)> {
-    let builtins = BUILTINS.iter().map(|&(raw, compiled)| {
-        (serde_json::from_str(raw).expect("manifest module"), compiled)
+    let builtins = BUILTINS.iter().map(|&raw| {
+        (serde_json::from_str(raw).expect("manifest module"), true)
     });
     #[cfg(feature = "native-plugins")]
     let builtins = builtins.chain(super::native_addon::entries().map(|(manifest, _)| (manifest, true)));
     builtins
 }
 
-#[cfg(feature = "native-plugins")]
 pub fn built_in(id: &str) -> bool {
-    BUILTINS.iter().any(|&(raw, _)| serde_json::from_str::<Manifest>(raw).is_ok_and(|m| m.id == id))
+    matches!(id, "chatgpt" | "openai" | "gemini" | "grok" | "elevenlabs" | "homeassistant"
+        | "yandexhome" | "smartlife" | "xiaomi" | "vpn" | "youtube" | "training")
 }
 
 pub fn manifests() -> Vec<Manifest> {

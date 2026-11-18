@@ -140,9 +140,8 @@ impl ChatGptSession {
         SESSIONS.lock().unwrap().insert(self.id.clone(), Arc::downgrade(&self));
         let t0 = Instant::now();
         let open = async {
-            let auth = n.request("auth.token", Value::Null, Duration::from_secs(40)).await?;
             let left = Duration::from_secs(40).saturating_sub(t0.elapsed()).max(Duration::from_secs(1));
-            n.request("voice.open", json!({"id": self.id, "profile": {"voice": voice, "thread": thread}, "instructions": instructions, "auth": auth}), left).await
+            n.request("voice.open", json!({"id": self.id, "profile": {"voice": voice, "thread": thread}, "instructions": instructions}), left).await
         };
         // `closed` may arrive immediately before the actual connection error.
         let res = await_open(open,&self.wake).await;

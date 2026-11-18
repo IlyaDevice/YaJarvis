@@ -554,26 +554,58 @@ async fn stage_install(
             return Err(format!("Файл {name} повреждён при передаче"));
         }
     }
-    for (id, requested, manifest) in [
-        (
-            "openai",
-            !input.openai.is_empty(),
-            include_str!("../../../plugins/openai/plugin.json"),
-        ),
-        (
-            "vpn",
-            !input.vless.is_empty(),
-            include_str!("../../../plugins/vpn-rust/plugin.json"),
-        ),
+    app.shell(
+        ip,
+        &format!("chmod 700 {stage}/jarvisd {stage}/jarvis-supervisor"),
+    )
+    .await?;
+    let image = app.shell(ip, &format!("{stage}/jarvisd core-info")).await?;
+    let image: jarvis_station::Image =
+        serde_json::from_str(&image).map_err(|_| "Колонка не запускает Rust-сборку")?;
+    if image.format != jarvis_station::IDENTITY || image.arch != sp.arch {
+        return Err("Архитектура сборки не совпадает".into());
+    }
+    let mut required = std::collections::BTreeSet::new();
+    if !sp.installed.is_empty() {
+        let manifests = app.shell(ip, r#"printf '['; comma=; for f in /data/opt/jarvisd/plugins/*/plugin.json; do if [ -f "$f" ]; then printf '%s' "$comma"; cat "$f"; comma=,; fi; done; printf ']'"#).await?;
+        let manifests: Vec<Value> = serde_json::from_str(&manifests)
+            .map_err(|_| "Не удалось проверить установленные модули")?;
+        required.extend(
+            manifests
+                .iter()
+                .filter(|m| m["kind"] == "module")
+                .filter_map(|m| m["id"].as_str().map(str::to_owned)),
+        );
+    }
+    for (id, requested) in [
+        ("openai", !input.openai.is_empty()),
+        ("vpn", !input.vless.is_empty()),
     ] {
         if requested {
-            let filename = format!("module-{id}.json");
-            let path = temp.join(&filename);
-            tokio::fs::write(&path, manifest)
-                .await
-                .map_err(|e| e.to_string())?;
-            app.push(ip, &path, &format!("{stage}/{filename}")).await?;
+            required.insert(id.into());
         }
+    }
+    let shipped: std::collections::BTreeSet<_> = image.modules.iter().cloned().collect();
+    if !required.is_subset(&shipped) || (!sp.installed.is_empty() && required != shipped) {
+        return Err("В пакете нужен точный набор выбранных Rust-модулей".into());
+    }
+    for id in &image.modules {
+        if !(2..=32).contains(&id.len())
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err("Неверный идентификатор модуля в пакете".into());
+        }
+        let manifest = app
+            .shell(ip, &format!("{stage}/jarvisd module-manifest {id}"))
+            .await?;
+        let filename = format!("module-{id}.json");
+        let path = temp.join(&filename);
+        tokio::fs::write(&path, manifest)
+            .await
+            .map_err(|e| e.to_string())?;
+        app.push(ip, &path, &format!("{stage}/{filename}")).await?;
     }
     let password_hash = if input.password.is_empty() {
         String::new()
@@ -590,12 +622,6 @@ async fn stage_install(
         ),
     )
     .await?;
-    let image = app.shell(ip, &format!("{stage}/jarvisd core-info")).await?;
-    let image: jarvis_station::Image =
-        serde_json::from_str(&image).map_err(|_| "Колонка не запускает Rust-сборку")?;
-    if image.format != jarvis_station::IDENTITY || image.arch != sp.arch {
-        return Err("Архитектура сборки не совпадает".into());
-    }
     app.log("Добавляю автозапуск и проверяю, что панель поднимается…");
     app.shell(
         ip,
@@ -660,10 +686,13 @@ mount -o remount,rw /
 if ! cp "$s/S98jarvisd" /etc/init.d/S98jarvisd || ! chmod 755 /etc/init.d/S98jarvisd; then mount -o remount,ro /; exit 1; fi
 mount -o remount,ro /
 if [ -x "$d/jarvisd.sh" ]; then "$d/jarvisd.sh" stop; sleep 2; fi
-for id in openai vpn; do
-    if [ -f "$s/module-$id.json" ] && [ ! -e "$d/plugins/$id/plugin.json" ]; then
+for manifest in "$s"/module-*.json; do
+    if [ -f "$manifest" ]; then
+        id=${{manifest##*/module-}}
+        id=${{id%.json}}
+        [ ! -e "$d/plugins/$id/plugin.json" ] || continue
         mkdir -p "$d/plugins/$id"
-        cp "$s/module-$id.json" "$d/plugins/$id/plugin.json"
+        cp "$manifest" "$d/plugins/$id/plugin.json"
     fi
 done
 cp "$s/jarvisd.sh" "$d/jarvisd.sh"

@@ -1,5 +1,11 @@
 use super::{App, bad, ok, reply};
-use axum::{Json, body::Bytes, extract::State, http::StatusCode, response::Response};
+use axum::{
+    Json,
+    body::Bytes,
+    extract::{Query, State},
+    http::StatusCode,
+    response::Response,
+};
 use serde::Deserialize;
 
 pub async fn get(State(app): State<App>) -> Response {
@@ -56,11 +62,23 @@ pub async fn install(State(app): State<App>) -> Response {
     }
 }
 
-pub async fn upload(State(app): State<App>, data: Bytes) -> Response {
+#[derive(Deserialize)]
+pub struct Upload {
+    module: Option<String>,
+}
+
+pub async fn upload(State(app): State<App>, Query(input): Query<Upload>, data: Bytes) -> Response {
     if app.engine.talking() || app.engine.music.playing() {
         return bad("Остановите разговор и музыку перед обновлением");
     }
-    match app.updater.upload(data).await {
+    if input
+        .module
+        .as_deref()
+        .is_some_and(|id| !crate::plugins::valid_id(id))
+    {
+        return bad("Неверный идентификатор нового модуля");
+    }
+    match app.updater.upload(data, input.module.as_deref()).await {
         Ok(()) => ok(),
         Err(error) => bad(error),
     }
@@ -72,18 +90,27 @@ pub fn automatic(app: App) {
     {
         return;
     }
+    let data = app.data_dir.clone();
+    // The supervisor keeps the old image until startup is confirmed. Afterwards,
+    // its copy could still contain the machine code of a removed module.
     tokio::spawn(async move {
-        use std::time::{Duration, Instant};
+        for _ in 0..35 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if !data.join(jarvis_station::PENDING).exists() {
+                let _ = tokio::fs::remove_file(data.join(jarvis_station::PREVIOUS)).await;
+                break;
+            }
+        }
+    });
+    tokio::spawn(async move {
+        use std::time::Duration;
         tokio::time::sleep(Duration::from_secs(120)).await;
-        let mut last_check = None;
         loop {
             let (enabled, auto, hour) = app
                 .store
                 .with(|s| (s.update_check, s.update_auto, s.now().hour()));
             if enabled {
-                if last_check.is_none_or(|t: Instant| t.elapsed() >= Duration::from_secs(6 * 3600))
-                {
-                    last_check = Some(Instant::now());
+                if app.updater.check_due() {
                     let _ = app.updater.check().await;
                 }
                 if auto

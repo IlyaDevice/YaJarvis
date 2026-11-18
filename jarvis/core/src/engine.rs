@@ -538,7 +538,10 @@ impl Engine {
             let x = self.new_session(&s, &p);
             {
                 let mut st = self.st.lock().unwrap();
-                let mut first = preroll.clone();
+                // The wake word has already been detected. Avoid replaying seconds of
+                // old audio into the subscription call before the first real question.
+                let before = if p.engine == "chatgpt" { preroll.len().saturating_sub(RATE * 5 / 4) } else { 0 };
+                let mut first = preroll[before..].to_vec();
                 first.extend_from_slice(&st.hold);
                 x.feed(&boost(&first, s.mic_boost_db));
                 st.hold.clear();

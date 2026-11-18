@@ -38,6 +38,115 @@
       "version": "1.1.0",
       "icon": "puzzle",
       "description": "Подбросить монетку, бросить кубик, случайное число. Пример простого плагина."
+    },
+    {
+      "id": "chatgpt",
+      "kind": "module",
+      "category": "system",
+      "name": "ChatGPT по подписке",
+      "version": "0.2.0",
+      "icon": "bolt",
+      "description": "Вход по подписке, Codex и голос WebRTC/Opus через выбранный VPN. Rust."
+    },
+    {
+      "id": "openai",
+      "kind": "module",
+      "category": "system",
+      "name": "OpenAI",
+      "version": "0.1.0",
+      "icon": "bolt",
+      "description": "API OpenAI: текстовые запросы, распознавание и синтез речи. Rust."
+    },
+    {
+      "id": "gemini",
+      "kind": "module",
+      "category": "system",
+      "name": "Gemini",
+      "version": "0.1.0",
+      "icon": "bolt",
+      "description": "Gemini API: текстовые запросы и модели. Rust."
+    },
+    {
+      "id": "grok",
+      "kind": "module",
+      "category": "system",
+      "name": "Grok",
+      "version": "0.1.0",
+      "icon": "bolt",
+      "description": "xAI API: текстовые запросы и модели. Rust."
+    },
+    {
+      "id": "elevenlabs",
+      "kind": "module",
+      "category": "system",
+      "name": "ElevenLabs",
+      "version": "0.1.0",
+      "icon": "bolt",
+      "description": "ElevenLabs API: голоса, распознавание и синтез речи. Rust."
+    },
+    {
+      "id": "homeassistant",
+      "kind": "module",
+      "category": "home",
+      "name": "Home Assistant",
+      "version": "1.0.0",
+      "icon": "home",
+      "description": "Устройства Home Assistant и уборка выбранных комнат. Модуль на Rust."
+    },
+    {
+      "id": "yandexhome",
+      "kind": "module",
+      "category": "home",
+      "name": "Яндекс Умный дом",
+      "version": "1.0.0",
+      "icon": "home",
+      "description": "Устройства, группы и сценарии Яндекс Умного дома. Модуль на Rust."
+    },
+    {
+      "id": "smartlife",
+      "kind": "module",
+      "category": "home",
+      "name": "Smart Life",
+      "version": "1.0.0",
+      "icon": "home",
+      "description": "Устройства и команды Smart Life (Tuya) через облако и домашнюю сеть."
+    },
+    {
+      "id": "xiaomi",
+      "kind": "module",
+      "category": "home",
+      "name": "Xiaomi Home",
+      "version": "1.0.0",
+      "icon": "home",
+      "description": "Устройства Xiaomi Home, свойства и действия MIoT."
+    },
+    {
+      "id": "vpn",
+      "kind": "module",
+      "category": "system",
+      "name": "VPN (Rust)",
+      "version": "0.3.0",
+      "icon": "shield",
+      "description": "VLESS TCP/WebSocket, TLS, REALITY с Chrome 133, Vision и UDP для голоса на Rust."
+    },
+    {
+      "id": "youtube",
+      "kind": "module",
+      "category": "media",
+      "name": "YouTube",
+      "version": "1.0.0",
+      "icon": "music",
+      "description": "Поиск и воспроизведение YouTube, очередь, история и вход в аккаунт."
+    },
+    {
+      "id": "training",
+      "kind": "module",
+      "category": "system",
+      "name": "Обучение слова",
+      "version": "1.2.0",
+      "icon": "mic",
+      "description": "Обучение фразы, разметка и архив записей «Джарвис», запись фона в облако.",
+      "min_core": "0.9.82"
     }
   ]
 }

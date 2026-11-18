@@ -81,6 +81,15 @@ fn flags() -> Flags {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("module-manifest") {
+        let id = std::env::args().nth(2).unwrap_or_default();
+        if let Some(m) = plugins::modules::manifests().into_iter().find(|m| m.id == id) {
+            println!("{}", serde_json::to_string(&m).expect("манифест модуля"));
+            return;
+        }
+        eprintln!("Модуля нет в сборке");
+        std::process::exit(1);
+    }
     if std::env::args().nth(1).as_deref() == Some("core-info") {
         let image = jarvis_station::Image { format: jarvis_station::IDENTITY.into(), version: version().into(),
             arch: jarvis_station::arch().into(), modules: plugins::compiled_modules() };

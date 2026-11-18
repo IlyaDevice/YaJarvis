@@ -34,19 +34,20 @@ pub async fn install(State(app): State<App>, body: Bytes) -> Response {
     let Ok(req) = serde_json::from_slice::<Value>(&body) else { return bad("нет репозитория") };
     let repo = field(&req, "repo").and_then(Value::as_str).unwrap_or("");
     let id = field(&req, "id").and_then(Value::as_str).unwrap_or("");
-    if (repo.is_empty() || repo.eq_ignore_ascii_case(crate::DEFAULT_REPO))
-        && let Some((manifest, compiled)) = crate::plugins::modules::catalog().find(|(m, _)| m.id == id)
-    {
-        if compiled {
+    let repo = if repo.is_empty() { crate::DEFAULT_REPO } else { repo };
+    if repo.eq_ignore_ascii_case(crate::DEFAULT_REPO) {
+        if crate::plugins::compiled_modules().iter().any(|module| module == id) {
             return match app.plugins.install_module(id).await {Ok(m)=>reply(StatusCode::OK,json!({"ok":true,"plugin":m})),Err(e)=>bad(e)};
         }
-        if app.engine.talking() || app.engine.music.playing() {
-            return bad("Остановите разговор и музыку, чтобы установить модуль");
+        if crate::plugins::modules::built_in(id) {
+            if app.engine.talking() || app.engine.music.playing() {
+                return bad("Остановите разговор и музыку, чтобы установить модуль");
+            }
+            return match app.updater.install_build(Some(id)).await {
+                Ok(()) => reply(StatusCode::OK, json!({"ok":true,"restarting":true})),
+                Err(error) => bad(error),
+            };
         }
-        return match app.updater.install_build(Some(id)).await {
-            Ok(()) => reply(StatusCode::OK, json!({"ok":true,"plugin":manifest,"restarting":true})),
-            Err(error) => bad(error),
-        };
     }
     match app.plugins.install_repo(repo, id, "").await {
         Ok(m) => reply(StatusCode::OK, json!({"ok": true, "plugin": m})),
@@ -80,7 +81,10 @@ pub async fn settings(State(app): State<App>, Path(id): Path<String>, body: Byte
 
 pub async fn remove(State(app): State<App>, Path(id): Path<String>) -> Response {
     match app.plugins.uninstall(&id).await {
-        Ok(()) => ok(),
+        Ok(()) => {
+            app.updater.invalidate();
+            ok()
+        },
         Err(e) => bad(e),
     }
 }

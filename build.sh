@@ -5,6 +5,24 @@ cd "$(dirname "$0")"
 : "${VERSION:=dev}" "${REPO:=newfpv/YaJavis}" "${ZIG:=zig}"
 VERSION=${VERSION#v}
 export JARVIS_VERSION="$VERSION" JARVIS_UI="$PWD/jarvisd/ui" JARVIS_REPO="$REPO"
+export JARVIS_PLUGIN_REF="${JARVIS_PLUGIN_REF:-$(git rev-parse HEAD)}"
+features=lua
+modules='['
+sep=
+for id in $(printf '%s' "${STATION_MODULES:-}" | tr ',' ' '); do
+    case "$id" in
+        training) feature=wake-training ;;
+        chatgpt|openai|gemini|grok|elevenlabs|homeassistant|yandexhome|smartlife|xiaomi|vpn|youtube) feature=$id ;;
+        *) echo "Unknown Rust module: $id" >&2; exit 1 ;;
+    esac
+    case ",$features," in
+        *,"$feature",*) echo "Duplicate Rust module: $id" >&2; exit 1 ;;
+    esac
+    modules="$modules$sep\"$id\""
+    features="$features,$feature"
+    sep=,
+done
+modules="$modules]"
 out="$PWD/build/release"
 tools="$PWD/build/station-build"
 mkdir -p "$out" "$tools"
@@ -32,8 +50,8 @@ chmod +x "$tools/cc" "$tools/ar"
 
 manifest="$out/rust-builds.json"
 printf '{"version":"%s","builds":[' "$VERSION" > "$manifest"
-modules='["chatgpt","openai","gemini","grok","elevenlabs","homeassistant","yandexhome","smartlife","xiaomi","vpn","youtube","training"]'
 comma=
+core_assets=
 for arch in ${STATION_ARCHES:-arm64 armv7}; do
     case "$arch" in
         arm64)
@@ -53,7 +71,8 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     export "CC_$env_target=$tools/cc" "AR_$env_target=$tools/ar"
     export "CMAKE_TOOLCHAIN_FILE_$env_target=$PWD/scripts/aarch64-musl.cmake" "CMAKE_GENERATOR_$env_target=Ninja"
     export JARVIS_CMAKE_CC="$tools/cc" JARVIS_CMAKE_AR="$tools/ar"
-    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis -p jarvis-station --all-features)
+    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis --no-default-features --features "$features" &&
+        cargo build --locked --release --target "$target" -p jarvis-station)
     release="${CARGO_TARGET_DIR:-$PWD/jarvis/target}/$target/release"
     stage="$tools/$arch"
     mkdir -p "$stage"
@@ -64,13 +83,10 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     rm -f "$out/station-$arch.zip"
     (cd "$stage" && zip -q "$out/station-$arch.zip" jarvisd jarvis-supervisor vqe_tap-*.so spotcmd wake.bin oww.bin wake_oww.bin jarvisd.sh S98jarvisd)
     cp "$stage/jarvisd" "$out/jarvisd-$arch"
+    core_assets="$core_assets jarvisd-$arch"
     bytes=$(wc -c < "$stage/jarvisd" | tr -d '[:space:]')
     printf '%s{"arch":"%s","asset":"jarvisd-%s","modules":%s,"bytes":%s}' "$comma" "$arch" "$arch" "$modules" "$bytes" >> "$manifest"
     comma=,
-    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis)
-    cp "$release/jarvis" "$out/jarvisd-$arch-small"
-    bytes=$(wc -c < "$release/jarvis" | tr -d '[:space:]')
-    printf ',{"arch":"%s","asset":"jarvisd-%s-small","modules":[],"bytes":%s}' "$arch" "$arch" "$bytes" >> "$manifest"
 done
 printf ']}\n' >> "$manifest"
 for file in install.sh install.ps1; do
@@ -78,4 +94,5 @@ for file in install.sh install.ps1; do
 done
 tar -czf "$out/THIRD_PARTY_NOTICES.tar.gz" LICENSE LICENSES THIRD_PARTY.md CREDITS.md
 sh scripts/pack-plugins.sh "$out"
-(cd "$out" && sha256sum station-*.zip jarvisd-* install.* plugin-*.zip rust-builds.json THIRD_PARTY_NOTICES.tar.gz > SHA256SUMS)
+# core_assets contains only names formed from the two known architectures.
+(cd "$out" && sha256sum station-*.zip $core_assets install.* plugin-*.zip rust-builds.json THIRD_PARTY_NOTICES.tar.gz > SHA256SUMS)

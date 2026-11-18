@@ -64,6 +64,12 @@ pub struct Updater {
 }
 
 impl Updater {
+    fn can_apply(&self, image: &Image) -> bool {
+        plugins::newer(&image.version, crate::version())
+            || (image.version == crate::version()
+                && !same_modules(&image.modules, &plugins::compiled_modules()))
+    }
+
     pub fn new(data: PathBuf, store: Store, host: Arc<Host>) -> Self {
         Self {
             data,
@@ -102,7 +108,21 @@ impl Updater {
             .unwrap()
             .candidate
             .as_ref()
-            .is_some_and(|c| plugins::newer(&c.image.version, crate::version()))
+            .is_some_and(|c| self.can_apply(&c.image))
+    }
+
+    pub fn invalidate(&self) {
+        let mut status = self.status.lock().unwrap();
+        status.checked = None;
+        status.candidate = None;
+    }
+
+    pub fn check_due(&self) -> bool {
+        self.status
+            .lock()
+            .unwrap()
+            .checked
+            .is_none_or(|checked| checked.elapsed() >= Duration::from_secs(6 * 3600))
     }
 
     pub fn snapshot(&self) -> Value {
@@ -112,7 +132,7 @@ impl Updater {
         json!({"version":crate::version(),"repo":self.repo(),"check":settings.update_check,"auto":settings.update_auto,
             "asset":format!("jarvisd-{}", jarvis_station::arch()), "stats":!settings.no_stats,
             "latest":s.candidate.as_ref().map(|c| &c.image.version),"notes":s.candidate.as_ref().map(|c| &c.notes),
-            "available":s.candidate.as_ref().is_some_and(|c| plugins::newer(&c.image.version, crate::version())),
+            "available":s.candidate.as_ref().is_some_and(|c| self.can_apply(&c.image)),
             "checked":s.checked.map(|t| if t.elapsed()<Duration::from_secs(3600) {"недавно"} else {"ранее"}),
             "busy":s.busy,"error":if s.error.is_empty() { previous } else { s.error.clone() }})
     }
@@ -145,7 +165,7 @@ impl Updater {
             return Err("Версия каталога не совпадает с релизом".into());
         }
         let build = select(&builds.builds, jarvis_station::arch(), &required)
-            .ok_or("В релизе нет сборки с выбранными модулями")?;
+            .ok_or("В релизе нет сборки ровно с выбранными Rust-модулями")?;
         let catalog = net::download(find("SHA256SUMS")?, 256 << 10).await?;
         let digest = jarvis_station::checksum(
             std::str::from_utf8(&catalog).map_err(|_| "Некорректный SHA256SUMS")?,
@@ -202,9 +222,7 @@ impl Updater {
                 required.push(id.to_string());
             }
             let candidate = self.candidate(required).await?;
-            if !plugins::newer(&candidate.image.version, crate::version())
-                && !(module.is_some() && candidate.image.version == crate::version())
-            {
+            if !self.can_apply(&candidate.image) {
                 return Err(if module.is_some() {
                     "Для этой версии ядра сборка модуля ещё не опубликована"
                 } else {
@@ -246,7 +264,11 @@ impl Updater {
         result
     }
 
-    pub async fn upload(&self, data: axum::body::Bytes) -> Result<(), String> {
+    pub async fn upload(
+        &self,
+        data: axum::body::Bytes,
+        module: Option<&str>,
+    ) -> Result<(), String> {
         let _guard = self
             .operation
             .try_lock()
@@ -259,7 +281,7 @@ impl Updater {
             .map_err(|e| e.to_string());
         drop(data);
         let result = match written {
-            Ok(()) => self.stage(&path, None, None).await,
+            Ok(()) => self.stage(&path, None, module).await,
             Err(e) => Err(e),
         };
         let _ = tokio::fs::remove_file(path).await;
@@ -287,19 +309,24 @@ impl Updater {
             return Err("Контрольная сумма не совпала".into());
         }
         let image = identify(path).await?;
+        let mut expected = self.required();
+        if let Some(id) = module {
+            if !expected.iter().any(|m| m == id) {
+                expected.push(id.to_owned());
+            }
+        }
         if let Some(candidate) = official {
             if candidate.image.version != image.version
-                || candidate
-                    .image
-                    .modules
-                    .iter()
-                    .any(|m| !image.modules.contains(m))
+                || !same_modules(&candidate.image.modules, &image.modules)
             {
                 return Err("Сборка отличается от каталога релиза".into());
             }
         }
-        if self.required().iter().any(|m| !image.modules.contains(m)) {
-            return Err("В сборке нет установленных модулей".into());
+        if !same_modules(&expected, &image.modules) {
+            return Err(
+                "Загруженная сборка должна содержать ровно установленные и выбранные Rust-модули"
+                    .into(),
+            );
         }
         let pending = Pending {
             version: image.version,
@@ -309,7 +336,15 @@ impl Updater {
         let next = self.data.join(NEXT);
         let saved = self.data.join(PREVIOUS);
         if saved.exists() {
-            std::fs::remove_file(saved).map_err(|e| e.to_string())?;
+            std::fs::remove_file(saved)
+                .or_else(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                })
+                .map_err(|e| e.to_string())?;
         }
         let copied = (|| -> std::io::Result<()> {
             std::fs::copy(path, &next)?;
@@ -336,6 +371,12 @@ impl Updater {
     }
 }
 
+pub(crate) fn same_modules(left: &[String], right: &[String]) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|id| right.contains(id))
+        && right.iter().all(|id| left.contains(id))
+}
+
 fn select<'a>(builds: &'a [Build], arch: &str, required: &[String]) -> Option<&'a Build> {
     builds
         .iter()
@@ -343,7 +384,7 @@ fn select<'a>(builds: &'a [Build], arch: &str, required: &[String]) -> Option<&'
             b.arch == arch
                 && (1..=MAX_BINARY).contains(&b.bytes)
                 && b.asset.starts_with("jarvisd-")
-                && required.iter().all(|m| b.modules.contains(m))
+                && same_modules(&b.modules, required)
         })
         .min_by_key(|b| b.bytes)
 }
@@ -387,7 +428,7 @@ async fn identify(path: &Path) -> Result<Image, String> {
 mod tests {
     use super::*;
     #[test]
-    fn chooses_smallest_image_with_all_installed_modules() {
+    fn selects_only_the_exact_installed_module_set() {
         let mk = |arch: &str, bytes, ids: &[&str]| Build {
             arch: arch.into(),
             asset: format!("jarvisd-{arch}-{bytes}"),
@@ -401,11 +442,12 @@ mod tests {
         ];
         assert_eq!(select(&builds, "arm64", &[]).unwrap().bytes, 100);
         assert_eq!(
-            select(&builds, "arm64", &["training".into()])
+            select(&builds, "arm64", &["training".into(), "vpn".into()])
                 .unwrap()
                 .bytes,
             200
         );
+        assert!(select(&builds, "arm64", &["training".into()]).is_none());
         assert!(select(&builds, "arm64", &["unavailable".into()]).is_none());
     }
 }

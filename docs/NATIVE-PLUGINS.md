@@ -5,7 +5,7 @@
 1. Добавьте зависимость от `jarvis-plugin-sdk` в свой crate.
 2. Реализуйте `Plugin::request` и экспортируйте `Registration` с манифестом и функцией создания экземпляра.
 3. Добавьте свой crate в зависимости `jarvis/native-plugins/Cargo.toml` и регистрацию в список `PLUGINS`. В манифесте `kind` — `module`, значения `id`, `main` и единственного элемента `provides` совпадают.
-4. Соберите ядро с feature `native-plugins`, обновите колонку и включите модуль в «Подключениях».
+4. Соберите ядро с feature `native-plugins`, сохранив текущие Cargo features колонки. Для добавления модуля передайте бинарник в `PUT /api/update/upload?module=<id>` из авторизованной панели. Модуль включится при запуске новой сборки.
 
 ```sh
 cd jarvis

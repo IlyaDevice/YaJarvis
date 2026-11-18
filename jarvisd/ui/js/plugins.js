@@ -122,7 +122,7 @@ export async function plSave(btn, id, vals, then) {
 export async function plRemove(btn, id, then) {
   const p = plInstalled(id);
   const kept = ["home", "vpn", "youtube"].includes(p?.id) ? " Вход в аккаунты и ключи останутся на колонке." : "";
-  const linked = p?.kind === "module" ? " Код модуля входит в сборку ядра. Его размер изменится при установке сборки без этого модуля." : "";
+  const linked = p?.kind === "module" ? " Код будет освобождён после перехода на точную сборку без этого модуля. Колонка применит её автоматически, если она есть в релизе и автообновление включено." : "";
   if (!confirm(`Удалить плагин «${p?.name || id}» вместе с его отдельными настройками и данными?${kept}${linked}`)) return;
   await act(btn, async () => { const r = await api("DELETE", `/api/plugins/${encodeURIComponent(id)}`); if (r.restarting && !await waitModuleChange()) return; await plLoad(); await then?.(); }, "Плагин удалён");
 }

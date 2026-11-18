@@ -4,11 +4,15 @@
 
 ```sh
 rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
-VERSION=0.9.83-rs sh build.sh
+VERSION=0.9.87-rs STATION_MODULES=chatgpt,vpn sh build.sh
 cd jarvis
 cargo test --locked --workspace --all-features
 cargo build --locked --release -p jarvis-setup
 ```
+
+`STATION_MODULES` задаёт один точный список Rust-модулей. Пустой список собирает ядро с Lua. Каждый релиз содержит одну сборку на архитектуру. В GitHub Actions тот же список задаётся переменной репозитория `STATION_MODULES`.
+
+После установки колонка скачивает и применяет обновления сама, если автообновление включено. Для перехода нужна опубликованная сборка с тем же набором установленных модулей. Для удаления машинного кода соберите ядро без удалённого модуля. Если такая сборка уже появилась в релизе, колонка применит её автоматически.
 
 `build/release` содержит ZIP-пакеты для колонки, ядра обновления, Lua-плагины и контрольные суммы. GitHub Actions собирает установщики для Windows, Linux и macOS. Для локальной сборки под одну архитектуру задайте `STATION_ARCHES=arm64` или `STATION_ARCHES=armv7`, для своего репозитория задайте `REPO=owner/repo`. Локальные ключи и настройки сборка не читает.
 
