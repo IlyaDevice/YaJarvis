@@ -9,9 +9,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::{Cursor, Read},
+    io::{Cursor, ErrorKind, Read},
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -30,6 +31,7 @@ const VERSION: &str = match option_env!("JARVIS_VERSION") {
     None => "dev",
 };
 const STAGE: &str = "/tmp/jarvis-setup-stage";
+const MAX_PAYLOAD: usize = 40 << 20;
 const REQUIRED: &[&str] = &[
     "jarvisd",
     "jarvis-supervisor",
@@ -446,13 +448,60 @@ async fn uninstall(State(app): State<App>, Json(input): Json<Address>) -> Respon
     })
 }
 
-async fn payload(arch: &str) -> Result<Vec<u8>, String> {
-    let name = format!("station-{arch}.zip");
-    if let Some(path) = std::env::var_os("JARVIS_SETUP_PAYLOAD") {
-        return tokio::fs::read(PathBuf::from(path).join(&name))
-            .await
-            .map_err(|e| e.to_string());
+fn verify_payload(bytes: &[u8], sums: &str, name: &str) -> Result<(), String> {
+    let wanted = jarvis_station::checksum(sums, name)
+        .ok_or_else(|| format!("В SHA256SUMS нет контрольной суммы для {name}"))?;
+    if format!("{:x}", Sha256::digest(bytes)) != wanted {
+        return Err(format!("Контрольная сумма {name} не совпала"));
     }
+    Ok(())
+}
+
+fn local_payload(dir: &Path, name: &str, require_checksum: bool) -> Result<Option<Vec<u8>>, String> {
+    let path = dir.join(name);
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Не удалось открыть {name}: {error}")),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_PAYLOAD as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Не удалось прочитать {name}: {error}"))?;
+    if bytes.len() > MAX_PAYLOAD {
+        return Err(format!("{name} больше допустимого размера"));
+    }
+    match std::fs::read_to_string(dir.join("SHA256SUMS")) {
+        Ok(sums) => verify_payload(&bytes, &sums, name)?,
+        Err(error) if !require_checksum && error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Не удалось прочитать SHA256SUMS рядом с {name}: {error}")),
+    }
+    Ok(Some(bytes))
+}
+
+async fn payload(app: &Setup, arch: &str) -> Result<Vec<u8>, String> {
+    let name = format!("station-{arch}.zip");
+    let (dir, explicit) = match std::env::var_os("JARVIS_SETUP_PAYLOAD") {
+        Some(path) => (Some(PathBuf::from(path)), true),
+        None => (
+            std::env::current_exe().ok().and_then(|path| path.parent().map(Path::to_path_buf)),
+            false,
+        ),
+    };
+    if let Some(dir) = dir {
+        let local_name = name.clone();
+        let local = tokio::task::spawn_blocking(move || local_payload(&dir, &local_name, !explicit))
+            .await
+            .map_err(|error| error.to_string())??;
+        if let Some(bytes) = local {
+            app.log(&format!("Использую локальную прошивку {name}"));
+            return Ok(bytes);
+        }
+        if explicit {
+            return Err(format!("В указанной папке нет {name}"));
+        }
+    }
+    app.log("Скачиваю прошивку с GitHub…");
     let url = if let Some(url) = option_env!("JARVIS_SETUP_ASSETS") {
         url.to_owned()
     } else if VERSION == "dev" {
@@ -468,12 +517,16 @@ async fn payload(arch: &str) -> Result<Vec<u8>, String> {
         .get(format!("{url}/{name}"))
         .send()
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Не удалось скачать {name}: {e}"))?
         .error_for_status()
         .map_err(|_| "Пакет для вашей колонки недоступен")?;
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        if bytes.len() + chunk.len() > 40 << 20 {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("Скачивание {name} с GitHub оборвалось: {e}"))?
+    {
+        if bytes.len() + chunk.len() > MAX_PAYLOAD {
             return Err("Пакет больше допустимого размера".into());
         }
         bytes.extend_from_slice(&chunk);
@@ -488,15 +541,30 @@ async fn payload(arch: &str) -> Result<Vec<u8>, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let wanted =
-        jarvis_station::checksum(&sums, &name).ok_or("Отсутствует контрольная сумма пакета")?;
-    let scratch = Scratch::new()?;
-    let file = scratch.0.join(name);
-    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
-    if jarvis_station::sha256(&file).map_err(|e| e.to_string())? != wanted {
-        return Err("Контрольная сумма пакета не совпала".into());
-    }
+    verify_payload(&bytes, &sums, &name)?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    #[test]
+    fn offline_bundle_uses_only_the_verified_local_archive() {
+        let scratch = Scratch::new().unwrap();
+        let dir = &scratch.0;
+        let name = "station-arm64.zip";
+        assert!(local_payload(dir, name, true).unwrap().is_none());
+        let bytes = b"test payload";
+        std::fs::write(dir.join(name), bytes).unwrap();
+        assert!(local_payload(dir, name, true).is_err());
+        assert_eq!(local_payload(dir, name, false).unwrap().unwrap(), bytes);
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        std::fs::write(dir.join("SHA256SUMS"), format!("{digest}  {name}\n")).unwrap();
+        assert_eq!(local_payload(dir, name, true).unwrap().unwrap(), bytes);
+        std::fs::write(dir.join(name), b"corrupt").unwrap();
+        assert!(local_payload(dir, name, true).is_err());
+    }
 }
 
 fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String> {
@@ -545,9 +613,9 @@ async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
     {
         return Err("Пароль панели должен содержать от 6 до 72 байт".into());
     }
-    app.log("Определена архитектура колонки. Загружаю прошивку…");
+    app.log(&format!("Определена архитектура колонки: {}", sp.arch));
     let temp = Scratch::new()?;
-    let sums = unpack(payload(&sp.arch).await?, &temp.0)?;
+    let sums = unpack(payload(app, &sp.arch).await?, &temp.0)?;
     let stage = format!("{STAGE}-{}", token()?);
     app.shell(ip, &format!("umask 077; mkdir {stage}")).await?;
     let result = stage_install(app, input, &sp, &stage, &temp.0, &sums).await;
