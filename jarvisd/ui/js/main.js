@@ -11,6 +11,7 @@ import { viewMemory } from "./memory.js";
 import { viewSecurity } from "./security.js";
 import { viewSpeaker } from "./speaker.js";
 import { wizOpen } from "./wizard.js";
+import { viewWakeTraining } from "./wake-training.js";
 
 export let S = null;          // состояние с колонки
 export let journal = [];
@@ -97,11 +98,11 @@ export async function poll() {
 
 // Что сейчас делает колонка: вид кольца, заголовок и пояснение.
 export function speakerState() {
-  const sp = S.speaker;
+  const sp = S.speaker, word = S.settings.wake_word || "Джарвис";
   if (sp.talking) return { ring: "talk", title: "Идёт разговор", text: "Говорите — пока разговор открыт, звать по имени не нужно" };
   if (!sp.mic) return { ring: "off", title: "Микрофон не подключён", text: sp.mic_why ? `Колонка не присылает звук: ${sp.mic_why}. Подробности — в «Журнале».` : "Колонка не присылает звук. Проверьте, что она включена и установка завершилась." };
-  if (sp.wake_model && S.settings.wake_enabled) return { ring: "idle", title: "Жду слово «Джарвис»", text: "Скажите «Джарвис, …» или нажмите «Поговорить»" };
-  return { ring: "mute", title: "Жду кнопку «Поговорить»", text: S.settings.wake_enabled ? "Модель слова «Джарвис» ещё не установлена" : "Отклик на слово «Джарвис» выключен" };
+  if (sp.wake_model && S.settings.wake_enabled) return { ring: "idle", title: `Жду фразу «${word}»`, text: `Скажите «${word}, …» или нажмите «Поговорить»` };
+  return { ring: "mute", title: "Жду кнопку «Поговорить»", text: S.settings.wake_enabled ? `Модель для «${word}» ещё не установлена` : `Отклик на «${word}» выключен` };
 }
 
 // Кольцо перерисовываем, только когда состояние сменилось, — иначе анимация дёргается на каждом опросе.
@@ -111,7 +112,7 @@ export function setRing(box, state, cls) {
   box.innerHTML = ring(state, cls);
 }
 
-export const ORB_TEXT = { idle: "Колонка на связи — ждёт «Джарвис»", listening: "Слушает", thinking: "Думает", speaking: "Говорит", off: "Нет звука с колонки", mute: "На связи, но слово «Джарвис» выключено или нет модели" };
+export const ORB_TEXT = { idle: "Колонка ждёт фразу активации", listening: "Слушает", thinking: "Думает", speaking: "Говорит", off: "Нет звука с колонки", mute: "На связи, голосовая активация недоступна" };
 export function renderStatus() {
   const st = speakerState(), ph = S.speaker.phase;
   const o = st.ring === "off" ? "off" : S.speaker.talking ? (ph || "listening") : st.ring === "mute" ? "mute" : "idle";
@@ -144,7 +145,8 @@ export function renderSide() {
     });
   });
   // страницы плагинов — в меню «Колонка», только пока плагин стоит и работает
-  const ext = (S.plugin_pages || []).map((x) => `<a href="#ext/${esc(x.plugin)}/${esc(x.id)}" data-page="ext:${esc(x.plugin)}/${esc(x.id)}">${icon(ICONS[x.icon] ? x.icon : "puzzle")}${esc(x.title || x.id)}</a>`).join("");
+  const training = S.settings.wake_word ? `<a href="#wake-training" data-page="wake-training">${icon("mic")}Обучить слово</a>` : "";
+  const ext = training + (S.plugin_pages || []).map((x) => `<a href="#ext/${esc(x.plugin)}/${esc(x.id)}" data-page="ext:${esc(x.plugin)}/${esc(x.id)}">${icon(ICONS[x.icon] ? x.icon : "puzzle")}${esc(x.title || x.id)}</a>`).join("");
   if ($("#nav-ext").innerHTML !== ext) $("#nav-ext").innerHTML = ext;
   $$(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === page));
   navPill();
@@ -170,7 +172,8 @@ export function route() {
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
   else if (h.startsWith("connections/")) { page = "connections"; viewConnections(); connOpen(h.slice(12)); }
   else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
-  else if (h === "training") { location.replace("#ext/training/training"); return; } // обучение — плагин
+  else if (h === "wake-training" || (h === "training" && S.settings.wake_word)) { page = "wake-training"; viewWakeTraining(); }
+  else if (h === "training") { location.replace("#ext/training/training"); return; }
   else if (h.startsWith("ext/")) { page = "ext:" + h.slice(4); viewExt(h.slice(4)); }
   else {
     page = ["home", "player", "charts", "logs", "characters", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";

@@ -57,6 +57,8 @@ pub struct Engine {
     rt: tokio::runtime::Handle,
     st: Mutex<St>,
     reset_wake: AtomicBool,
+    #[cfg(feature = "wake-training")]
+    recording_word: AtomicBool,
     speech_epoch: AtomicU64,
     saying: AtomicBool,
     cmds: std::sync::OnceLock<crate::cmdspot::CmdSpotter>,
@@ -109,7 +111,23 @@ pub fn key_missing(s: &Settings, engine: &str) -> String {
     }
 }
 
+#[cfg(feature = "wake-training")]
+pub struct WakeRecording(Arc<Engine>);
+
+#[cfg(feature = "wake-training")]
+impl Drop for WakeRecording {
+    fn drop(&mut self) {
+        self.0.reset_wake.store(true, Ordering::Release);
+        self.0.recording_word.store(false, Ordering::Release);
+    }
+}
+
 impl Engine {
+    #[cfg(feature = "wake-training")]
+    pub fn recording_word(self: &Arc<Self>) -> WakeRecording {
+        self.recording_word.store(true, Ordering::Release);
+        WakeRecording(self.clone())
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         rt: tokio::runtime::Handle,
@@ -124,7 +142,9 @@ impl Engine {
         data: PathBuf,
         music: Arc<crate::music::Music>,
     ) -> Arc<Engine> {
-        Arc::new(Engine { store, host, mic, player, leds, journal, tools, music, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false), speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), cmds: Default::default() })
+        Arc::new(Engine { store, host, mic, player, leds, journal, tools, music, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false),
+            #[cfg(feature = "wake-training")] recording_word: AtomicBool::new(false),
+            speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), cmds: Default::default() })
     }
 
     /// Слушать микрофон в своём потоке: слово, звук в разговор, перебивание.
@@ -178,6 +198,8 @@ impl Engine {
                     }
                     let (enabled, boost_db) = e.store.with(|s| (s.wake_enabled, s.mic_boost_db));
                     let ready = e.listener.ready.load(Ordering::Relaxed);
+                    #[cfg(feature = "wake-training")]
+                    let enabled = enabled && !e.recording_word.load(Ordering::Acquire);
                     let hit = ready && enabled && det.feed(&raw); // поток признаков непрерывный, и во время разговора
                     e.listener.last_prob.store(det.last_prob().to_bits(), Ordering::Relaxed);
                     if let Some(live) = live {
@@ -275,6 +297,8 @@ impl Engine {
 
     /// Начать разговор (по слову, по кнопке в настройках).
     pub fn trigger(self: &Arc<Self>, source: &str, prob: f32) {
+        #[cfg(feature = "wake-training")]
+        if source == "слово" && self.recording_word.load(Ordering::Acquire) { return; }
         let clip = {
             let mut st = self.st.lock().unwrap();
             if st.busy || st.last_wake.is_some_and(|t| t.elapsed() < Duration::from_millis(1500)) {
@@ -333,7 +357,12 @@ impl Engine {
     }
 
     fn instructions(&self, s: &Settings, p: &Profile) -> String {
+        let phrase = self.listener.phrase();
         let mut text = s.prompt_text(&p.prompt);
+        if p.prompt == "jarvis" || p.prompt == "bro" {
+            text = text.replacen("Ты — Джарвис", &format!("Ты — «{phrase}»"), 1);
+        }
+        let persona = text.clone();
         let n = lang_name(&s.language);
         if !n.is_empty() {
             text += &format!(
@@ -363,16 +392,16 @@ impl Engine {
         }
         if p.engine == "chatgpt" && self.tools.memory.is_some() {
             // напоминание после истории: в длинном чате модель иначе сползает в обычный стиль ChatGPT
-            let persona = s.prompt_text(&p.prompt).trim().to_string();
-            let persona = if persona.chars().count() > 2500 { format!("{}…", persona.chars().take(2500).collect::<String>()) } else { persona };
+            let persona = persona.trim();
+            let persona = if persona.chars().count() > 2500 { format!("{}…", persona.chars().take(2500).collect::<String>()) } else { persona.to_owned() };
             text += &format!(
-                "\n\nГлавное, не забывай: ты — голосовой ассистент Джарвис внутри умной колонки Яндекс Станция у хозяина дома, \
+                "\n\nГлавное, не забывай: ты — голосовой ассистент «{phrase}» внутри умной колонки Яндекс Станция у хозяина дома, \
 а не ChatGPT в приложении. Говоришь вслух, коротко, своим характером. Что делать на колонке (музыка, YouTube, свет, \
 поиск, погода, таймеры, будильники, напоминания) — передаёшь бэкенду, он делает: таймеры и будильники ставит Алиса \
 на этой же колонке, так что не говори, что не умеешь. Твой характер:\n{persona}"
             );
         }
-        text + rules::SPEAKER_CONTENT_RULES + rules::SPEAKER_WAIT_RULES + rules::IDENTITY_RULES
+        text + rules::SPEAKER_CONTENT_RULES + rules::SPEAKER_WAIT_RULES + &rules::identity(&phrase)
     }
 
     /// Кто думает и управляет домом, когда голосовая модель передаёт задачу: модель подписки ChatGPT.
@@ -407,7 +436,7 @@ impl Engine {
     /// Открыть разговор с моделью тем движком, который выбран у ассистента.
     fn new_session(&self, s: &Settings, p: &Profile) -> Arc<dyn Session> {
         #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
-        if p.is_classic(){return crate::classic_voice::Classic::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));}
+        if p.is_classic(){return crate::classic_voice::Classic::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p),self.listener.phrase());}
         #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
         if ["","live","openai","gemini","grok","eleven_realtime"].contains(&p.engine.as_str()) {
             return crate::cloud_voice::Voice::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));
@@ -600,7 +629,7 @@ impl Engine {
     /// Законченная фраза человека: «стоп», команды плагинов, Алисе и умному дому — сами, без модели.
     /// true — разговор закончен.
     fn handle(&self, x: &Arc<dyn Session>, text: &str, from: &str) -> bool {
-        let cmd = fastcmd::canon_name(text);
+        let cmd = fastcmd::command_for_phrase(text, &self.listener.phrase());
         let quiet = || {
             x.dialog().mute();
             self.player.stop(true);

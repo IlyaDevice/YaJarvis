@@ -1209,6 +1209,7 @@ dependencies = [
  "jarvis-homeassistant",
  "jarvis-smartlife",
  "jarvis-vpn",
+ "jarvis-wake-train",
  "jarvis-xiaomi",
  "jarvis-yandexhome",
  "jarvis-youtube",
@@ -1332,6 +1333,13 @@ dependencies = [
  "x25519-dalek",
  "x509-parser 0.18.1",
  "zeroize",
+]
+
+[[package]]
+name = "jarvis-wake-train"
+version = "0.9.71"
+dependencies = [
+ "jarvis-dsp",
 ]
 
 [[package]]

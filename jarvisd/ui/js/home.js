@@ -27,11 +27,11 @@ export function viewHome() {
       <div class="tg-who"><b>${esc(p.name)}</b><span id="tg-status" class="tg-st"></span></div>
       <a class="ib lg" href="#p/${esc(p.id)}" aria-label="Настроить ассистента">${icon("tune")}</a></header>
     <div class="tg-body" id="feed"></div>
-    <form class="tg-f" id="say-form"><input type="text" id="say" maxlength="600" placeholder="Сообщение" autocomplete="off" aria-label="Сообщение Джарвису">
+    <form class="tg-f" id="say-form"><input type="text" id="say" maxlength="600" placeholder="Сообщение" autocomplete="off" aria-label="Сообщение ассистенту">
       <button class="ib lg" id="say-voice" type="button" data-tip="Читать ответ вслух на колонке" aria-label="Читать ответ вслух"></button>
       <button class="rb hidden" id="stop" type="button" data-tip="Оборвать разговор" aria-label="Стоп">${icon("stop", "solid")}</button>
       <button class="rb primary hidden" id="send" type="submit" aria-label="Отправить">${icon("send")}</button>
-      <button class="rb primary" id="talk" type="button" data-tip="Колонка сразу начнёт слушать — как будто вы сказали «Джарвис»" aria-label="Поговорить">${icon("mic")}</button></form>
+      <button class="rb primary" id="talk" type="button" data-tip="Колонка сразу начнёт слушать — как при голосовой активации" aria-label="Поговорить">${icon("mic")}</button></form>
   </section>
   <aside class="rail">
     ${left.length ? `<div class="card"><h2>Осталось настроить <span class="count">${doneN} из ${steps.length}</span></h2>
@@ -39,7 +39,7 @@ export function viewHome() {
       ${steps.map((x) => `<a class="step${x.done ? " done" : ""}" href="${x.href}">${icon(x.done ? "done" : "todo")}<span class="sb"><b>${esc(x.title)}</b><small>${esc(x.text)}</small></span>${x.done ? "" : icon("right")}</a>`).join("")}</div>` : ""}
     <div class="card"><h2>Состояние</h2><dl class="stat">
       <div><dt>Микрофон ${tip("Звук с микрофонов колонки после шумо- и эхоподавления Яндекса.")}</dt><dd id="t-mic"></dd></div>
-      <div><dt>Слово «Джарвис» ${tip("Распознаётся прямо на колонке маленькой нейросетью — без интернета и сразу.")}</dt><dd id="t-wake"></dd></div>
+      <div><dt>Фраза «${esc(S.settings.wake_word || "Джарвис")}» ${tip("Распознаётся прямо на колонке маленькой нейросетью — без интернета и сразу.")}</dt><dd id="t-wake"></dd></div>
       <div><dt>Интернет ${tip("Как колонка ходит в OpenAI: через ваш VPN (VLESS) или напрямую.")}</dt><dd id="t-net"></dd></div>
       <div><dt>Свободно на диске ${tip("На флешке колонки мало места. Если свободно меньше 5 МБ, обновления могут не встать.")}</dt><dd id="t-disk"></dd></div>
     </dl></div>
@@ -144,6 +144,6 @@ export function homeData() {
     }
     if (it.error) rows.push({ key: "err:" + it.ts, cls: "b him err", html: `<span class="t">${esc(it.error)}</span><span class="m">${tm}</span>` });
   }
-  if (!rows.length) rows.push({ key: "empty", cls: "tg-empty", html: `<b>Здесь будет переписка</b><span>Скажите «Джарвис, какая погода?» — вопрос и ответ появятся тут</span>` });
+  if (!rows.length) rows.push({ key: "empty", cls: "tg-empty", html: `<b>Здесь будет переписка</b><span>Скажите «${esc(S.settings.wake_word || "Джарвис")}, какая погода?» — вопрос и ответ появятся тут</span>` });
   feedSync(feed, rows);
 }

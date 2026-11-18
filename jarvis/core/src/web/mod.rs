@@ -12,6 +12,7 @@ mod chatgpt;
 mod config;
 mod diagnostics;
 mod device;
+mod wake_profiles;
 mod homeassistant;
 mod home_vendor;
 mod keys;
@@ -50,7 +51,7 @@ pub struct Web {
     pub data_dir: PathBuf,
     pub started: Instant,
     pub telemetry: Arc<crate::telemetry::Telemetry>,
-    wake_update:tokio::sync::Mutex<()>,
+    wake_update:Arc<tokio::sync::Mutex<()>>,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
     reset_at: Mutex<Option<Instant>>,
 }
@@ -60,7 +61,7 @@ pub type App = Arc<Web>;
 impl Web {
     pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, engine: Arc<crate::engine::Engine>) -> App {
         let telemetry=crate::telemetry::Telemetry::start(data_dir.clone());
-        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, wake_update:tokio::sync::Mutex::new(()), started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, wake_update:Arc::default(), started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 
@@ -98,7 +99,16 @@ pub fn ok() -> Response {
 }
 
 pub fn router(app: App) -> Router {
-    let api = Router::new()
+    let api = Router::new();
+    #[cfg(feature = "wake-training")]
+    let api = api
+        .route("/api/train/wake/capture", post(wake_profiles::capture))
+        .route("/api/train/wake/train", post(wake_profiles::train).layer(DefaultBodyLimit::max(jarvis_wake_train::BODY_BYTES)))
+        .route("/api/train/wake/test/{id}", post(wake_profiles::test));
+    let api = api
+        .route("/api/train/wake/profiles", get(wake_profiles::list).put(wake_profiles::upload).layer(DefaultBodyLimit::max(crate::wake_profiles::MAX_MODEL)))
+        .route("/api/train/wake/active", put(wake_profiles::select))
+        .route("/api/train/wake/profiles/{id}", delete(wake_profiles::remove))
         .route("/api/state", get(state::state))
         .route("/api/stats", get(diagnostics::stats))
         .route("/api/logs", get(diagnostics::logs))

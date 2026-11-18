@@ -170,6 +170,30 @@ pub fn canon_name(text: &str) -> String {
 
 /// Детектор уверен, а расшифровка вместо имени услышала другое слово («Сейчас отключи свет»):
 /// если остаток фразы — чистая команда или «стоп», считаем, что звали.
+pub fn command_for_phrase(text: &str, phrase: &str) -> String {
+    let normal = norm_text(text);
+    let name = norm_text(phrase);
+    if name == norm_text(crate::wake_profiles::DEFAULT_PHRASE) {
+        return canon_name(text);
+    }
+    if name.is_empty() {
+        return text.into();
+    }
+    let lead = ["эй ", "слушай ", "так ", "ну "].iter()
+        .find_map(|lead| normal.strip_prefix(lead)).unwrap_or(&normal);
+    if lead == name {
+        return String::new();
+    }
+    if let Some(rest) = lead.strip_prefix(&name).and_then(|s| s.strip_prefix(' ')) {
+        return rest.into();
+    }
+    if let Some(rest) = normal.strip_suffix(&name).and_then(|s| s.strip_suffix(' ')) {
+        if is_stop(rest) {
+            return rest.into();
+        }
+    }
+    text.into()
+}
 pub fn command_after_lost_name(text: &str) -> Option<String> {
     let n = norm_text(text);
     let words: Vec<&str> = n.split_whitespace().collect();
@@ -197,6 +221,15 @@ mod tests {
         assert!(alice_skill("расскажи анекдот").is_none());
         assert_eq!(home_command_local("Джарвис, выключи свет на кухне").as_deref(), Some("выключи свет на кухне"));
         assert!(home_command_local("сделай лампу синей").is_some());
+    }
+
+    #[test]
+    fn custom_phrase_is_stripped_only_at_command_boundary() {
+        assert_eq!(command_for_phrase("Эй, Привет Орион, выключи свет", "Привет Орион"), "выключи свет");
+        assert_eq!(command_for_phrase("Расскажи про Орион", "Орион"), "Расскажи про Орион");
+        assert_eq!(command_for_phrase("Стоп, Орион", "Орион"), "стоп");
+        assert_eq!(command_for_phrase("Ориончики с Марса", "Орион"), "Ориончики с Марса");
+        assert_eq!(command_for_phrase("Чарлис, выключи свет", "Джарвис"), "джарвис выключи свет");
     }
 
     #[test]

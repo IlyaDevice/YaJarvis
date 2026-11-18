@@ -31,6 +31,7 @@ mod tools;
 mod telemetry;
 mod vpn;
 mod wake;
+mod wake_profiles;
 mod web;
 
 use serde_json::{Value, json};

@@ -2,6 +2,7 @@
 import { $, $$, api, esc, icon, jelly, sec, tip, toast } from "./core.js";
 import { ledLabBind, ledLabHtml } from "./leds.js";
 import { S, reload } from "./main.js";
+import { bindWakeProfiles } from "./wake-training.js";
 
 // ---------------------------------------------------------------- колонка
 export const TZ = [["Europe/Kaliningrad", "Калининград (UTC+2)"], ["Europe/Moscow", "Москва (UTC+3)"], ["Europe/Minsk", "Минск (UTC+3)"],
@@ -25,6 +26,7 @@ export function homeUseRows() {
 }
 export function viewSpeaker() {
   const s = S.settings, via = s.home_via === "jarvis" ? "jarvis" : "alice";
+  const word = s.wake_word || "Джарвис";
   $("#view").innerHTML = `<header class="ph"><h1>Колонка</h1><p class="sub">Изменения сохраняются сразу</p></header>
   ${sec("Умный дом и музыка", "Через что Джарвис может управлять домом и откуда включать музыку. Можно оставить несколько: быстрые команды сначала пробуют Smart Life по домашней сети, потом Алису, а сложные просьбы модель решает сама теми способами, что здесь включены",
     `<div class="home-use">${homeUseRows()}</div>`)}
@@ -34,14 +36,15 @@ export function viewSpeaker() {
       <datalist id="s-rooms">${(S.rooms || []).map((r) => `<option value="${esc(r)}">`).join("")}</datalist></div>
     <div class="grid g2"><div class="f"><label for="s-city">Город</label><input type="text" id="s-city" value="${esc(s.city || "")}" placeholder="Например, Москва"></div>
       <div class="f"><label for="s-tz">Часовой пояс</label><select id="s-tz">${TZ.map(([id, n]) => `<option value="${id}"${id === (s.timezone || "UTC") ? " selected" : ""}>${n}</option>`).join("")}</select></div></div>`)}
-  ${sec("Слово «Джарвис»", "Его распознаёт сама колонка, без интернета",
-    `<label class="sw"><input type="checkbox" id="s-wake"${s.wake_enabled ? " checked" : ""}><span class="tr"></span>Откликаться на «Джарвис» ${tip("Выключите, если Джарвис нужен только по кнопке «Поговорить». Алиса работает в любом случае.")}</label>
-    <label class="sw"><input type="checkbox" id="s-check"${s.wake_check ? " checked" : ""}><span class="tr"></span>Проверять имя перед ответом ${tip("Выключено — как у Алисы: услышал слово, сразу загорается кольцо и Джарвис слушает. Включено — сначала облако проверяет, что прозвучало именно «Джарвис»: ложных разговоров меньше, но отклик на полсекунды-секунду позже.")}</label>
+  ${sec("Слово активации", "Колонка распознаёт его без интернета",
+    `${s.wake_word ? `<div class="f"><label for="s-wake-profile">Выбранная фраза</label><select id="s-wake-profile" disabled><option>${esc(word)}</option></select><a href="#wake-training">Обучить или загрузить модель</a></div>` : ""}
+    <label class="sw"><input type="checkbox" id="s-wake"${s.wake_enabled ? " checked" : ""}><span class="tr"></span>Откликаться на «${esc(word)}» ${tip("Выключите, если Джарвис нужен только по кнопке «Поговорить». Алиса работает в любом случае.")}</label>
+    ${s.wake_word ? "" : `<label class="sw"><input type="checkbox" id="s-check"${s.wake_check ? " checked" : ""}><span class="tr"></span>Проверять имя перед ответом ${tip("Выключено — как у Алисы: услышал слово, сразу загорается кольцо и Джарвис слушает. Включено — сначала облако проверяет, что прозвучало именно «Джарвис»: ложных разговоров меньше, но отклик на полсекунды-секунду позже.")}</label>`}
     <div class="f"><label>Чувствительность ${tip("Выше — слышит издалека и тихо, но чаще срабатывает зря (например, на разговор в Discord). Ниже — реже ошибается, но звать нужно чётче.")}<b id="s-sens-v" class="val">${s.wake_sensitivity}</b></label>
       <input type="range" id="s-sens" min="1" max="10" value="${s.wake_sensitivity}"><div class="scale"><span>осторожно</span><span>слышит всё</span></div></div>
-    <div class="f"><label>Общее усиление микрофона ${tip("Для колонок, которые слышат вас только вблизи (так бывает на Станции Мини 2: её обработка отдаёт голос тихо). Усиливает звук для всего: слова «Джарвис», ИИ и записей для обучения. Прибавляйте по 6 дБ и проверяйте; слишком много — чаще ложные срабатывания. На Лайт обычно не нужно.")}<b id="s-gain-v" class="val">+${s.mic_gain_db || 0} дБ</b></label>
+    <div class="f"><label>Общее усиление микрофона ${tip("Для колонок, которые слышат вас только вблизи (так бывает на Станции Мини 2: её обработка отдаёт голос тихо). Усиливает звук для всего: слова активации, ИИ и записей для обучения. Прибавляйте по 6 дБ и проверяйте; слишком много — чаще ложные срабатывания. На Лайт обычно не нужно.")}<b id="s-gain-v" class="val">+${s.mic_gain_db || 0} дБ</b></label>
       <input type="range" id="s-gain" min="0" max="30" step="3" value="${s.mic_gain_db || 0}"><div class="scale"><span>как есть</span><span>+30 дБ</span></div></div>
-    <div class="f"><label>Усиление микрофона для ИИ ${tip("Если модель плохо слышит и переспрашивает, хотя вы говорите не тихо (так бывает на Станции Лайт 2: её обработка отдаёт голос тише), прибавьте 6–12 дБ. Слово «Джарвис» это не меняет. Уровень голоса за каждый разговор пишется в журнал: «микрофон: за разговор голос …».")}<b id="s-mic-v" class="val">+${s.mic_boost_db || 0} дБ</b></label>
+    <div class="f"><label>Усиление микрофона для ИИ ${tip("Если модель плохо слышит и переспрашивает, хотя вы говорите не тихо (так бывает на Станции Лайт 2: её обработка отдаёт голос тише), прибавьте 6–12 дБ. На слово активации это не влияет. Уровень голоса за каждый разговор пишется в журнал: «микрофон: за разговор голос …».")}<b id="s-mic-v" class="val">+${s.mic_boost_db || 0} дБ</b></label>
       <input type="range" id="s-mic" min="0" max="18" step="3" value="${s.mic_boost_db || 0}"><div class="scale"><span>как есть</span><span>+18 дБ</span></div></div>
     ${S.speaker.wake_model ? "" : `<p class="note">Модель слова ещё не установлена — пока Джарвиса можно позвать только кнопкой «Поговорить» на главной.</p>`}`)}
   ${sec("Язык", "На каком языке вы говорите с Джарвисом. Распознавание речи и ответы будут на нём — так он не «услышит» испанский там, где был русский",
@@ -62,8 +65,9 @@ export function viewSpeaker() {
     const ch = b.dataset.home, on = b.checked, name = HOME_USE.find((x) => x[0] === ch)?.[1] || ch;
     put({ home_use: { [ch]: on } }).then(() => toast(`${name}: ${on ? "используется" : "не используется"}`));
   }));
+  void bindWakeProfiles($("#s-wake-profile"));
   $("#s-wake").addEventListener("change", (e) => put({ wake_enabled: e.target.checked }).then(() => toast(e.target.checked ? "Джарвис снова слушает" : "Джарвис больше не откликается на слово")));
-  $("#s-check").addEventListener("change", (e) => put({ wake_check: e.target.checked }).then(() => toast(e.target.checked ? "Сначала проверяю имя, потом отвечаю" : "Отклик сразу, как у Алисы")));
+  $("#s-check")?.addEventListener("change", (e) => put({ wake_check: e.target.checked }).then(() => toast(e.target.checked ? "Сначала проверяю имя, потом отвечаю" : "Отклик сразу, как у Алисы")));
   $("#s-city").addEventListener("change", (e) => put({ city: e.target.value.trim() }).then(() => toast("Город сохранён")));
   $("#s-room").addEventListener("change", (e) => put({ speaker_room: e.target.value.trim() }).then(() => toast(e.target.value.trim() ? `Колонка стоит: ${e.target.value.trim()}` : "Комната колонки не задана")));
   $("#s-tz").addEventListener("change", (e) => put({ timezone: e.target.value }).then(() => toast("Часовой пояс сохранён — время в журнале тоже по нему")));

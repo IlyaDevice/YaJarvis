@@ -230,6 +230,7 @@ pub struct Settings {
     pub live_voices: Vec<CustomVoice>,
 
     pub wake_enabled: bool,
+    pub wake_profile: String,
     pub wake_check: bool,
     pub wake_sensitivity: i64,
     pub mic_boost_db: i64,
@@ -318,6 +319,7 @@ impl Default for Settings {
             ],
             live_voices: vec![],
             wake_enabled: true,
+            wake_profile: String::new(),
             wake_check: false,
             wake_sensitivity: 5,
             mic_boost_db: 0,

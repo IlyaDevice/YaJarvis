@@ -2,8 +2,12 @@ use super::*;
 impl Engine {
     pub async fn text_turn(self:Arc<Self>,text:String,speak:bool){
         let text=text.trim();if text.is_empty(){return;}
-        if fastcmd::is_stop(text){
-            let e=self.clone();let all=fastcmd::is_stop_all(text);
+        let phrase = self.listener.phrase();
+        let command = if phrase == crate::wake_profiles::DEFAULT_PHRASE { text.to_owned() }
+            else { fastcmd::command_for_phrase(text, &phrase) };
+        let command = command.as_str();
+        if fastcmd::is_stop(command){
+            let e=self.clone();let all=fastcmd::is_stop_all(command);
             let _=tokio::task::spawn_blocking(move||if all{e.stop("написали стоп")}else{e.end_chat("написали стоп")}).await;
             self.journal.note("стоп",text,"");return;
         }
@@ -12,14 +16,14 @@ impl Engine {
         self.journal.update(id,|t|{t.text=text.into();t.live=true;});
         let epoch=self.speech_epoch.load(Ordering::SeqCst);
         let work=async {
-            if let Some(answer)=self.host.command(text).await{return Ok(answer);}
-            if let Some(answer)=self.music.control(&self.host,text).await{return Ok(answer);}
-            if let Some(answer)=self.tools.ha_vacuum(text).await{return Ok(answer);}
-            if let Some(answer)=self.tools.smartlife_fast(text).await{return Ok(answer);}
-            if let Some(command)=fastcmd::alice_skill_for(text,s.use_home("yandexmusic")){
+            if let Some(answer)=self.host.command(command).await{return Ok(answer);}
+            if let Some(answer)=self.music.control(&self.host,command).await{return Ok(answer);}
+            if let Some(answer)=self.tools.ha_vacuum(command).await{return Ok(answer);}
+            if let Some(answer)=self.tools.smartlife_fast(command).await{return Ok(answer);}
+            if let Some(command)=fastcmd::alice_skill_for(command,s.use_home("yandexmusic")){
                 let answer=format!("Передал Алисе: {command}");tokio::task::spawn_blocking(move||alice::text(&command,false)).await.map_err(|e|e.to_string())??;return Ok(answer);
             }
-            if let Some(answer)=self.tools.fast(text).await{return Ok(answer);}
+            if let Some(answer)=self.tools.fast(command).await{return Ok(answer);}
             let (context,defs)=self.tools.prepare().await;
             let instructions=format!("{}{}{}\n{context}",self.instructions(&s,&p),rules::TEXT_RULES,rules::BACKEND_RULES);
             crate::llm::ask(&self.host,&s,&p,&instructions,text,&self.tools,defs).await

@@ -180,6 +180,11 @@ impl Oww {
 
         let mut hr = Bin::new(&head[4..]);
         let (seq, emb, h) = (hr.u32(), hr.u32(), hr.u32());
+        if !(1..=40).contains(&seq) || emb != 96 || !(1..=256).contains(&h)
+            || head.len() != 16 + 4 * (10 + h * seq * emb + h * h + 3 * h + 1)
+        {
+            return Err("Неверные размеры классификатора openWakeWord".into());
+        }
         let th = hr.f32s(10);
         let w1 = hr.f32s(h * seq * emb);
         let b1 = hr.f32s(h);
@@ -187,7 +192,9 @@ impl Oww {
         let b2 = hr.f32s(h);
         let w3 = hr.f32s(h);
         let b3 = hr.f32s(1)[0];
-        if hr.err || emb != 96 {
+        if hr.err || !b3.is_finite() || th.iter().any(|p| !(0.0..=1.0).contains(p))
+            || w1.iter().chain(&w2).chain(&w3).chain(&b1).chain(&b2).any(|v| !v.is_finite()) {
+
             return Err("модель «Джарвис» повреждена".into());
         }
         let mut thresholds = [0f32; 10];
@@ -223,22 +230,34 @@ impl Oww {
         })
     }
 
-    /// 80 мс звука: 8 кадров мел-спектра, новые строки сети, вероятность.
-    fn step(&mut self) -> bool {
-        let frames = self.mel();
-        let mut hit = false;
-        for f in frames {
-            if self.dropped < DROP {
-                self.dropped += 1;
-                continue;
-            }
-            if let Some(e) = self.push(f) {
-                if self.head(e) {
-                    hit = true;
+    fn stream(&mut self, pcm: &[i16], mut emit: impl FnMut(&mut Self, usize, Vec<f32>)) {
+        for (index, &sample) in pcm.iter().enumerate() {
+            self.buf.push(sample as f32);
+            if self.buf.len() != CTX + STEP { continue; }
+            for frame in self.mel() {
+                if self.dropped < DROP {
+                    self.dropped += 1;
+                } else if let Some(embedding) = self.push(frame) {
+                    emit(self, index + 1, embedding);
                 }
             }
+            self.buf.drain(..STEP);
         }
-        hit
+    }
+
+    /// Feature extraction for enrollment. Each recording starts with independent DSP state.
+    pub fn embeddings(&mut self, pcm: &[i16]) -> Vec<(usize, Vec<f32>)> {
+        self.buf.resize(CTX, 0.0);
+        self.buf.fill(0.0);
+        self.dropped = 0;
+        for convolution in &mut self.convs { convolution.rows.clear(); }
+        for pool in self.pools.iter_mut().flatten() { pool.pending = None; }
+        self.ring.clear();
+        self.cooldown = 0;
+        self.pending = 0;
+        let mut features = Vec::with_capacity(pcm.len() / STEP);
+        self.stream(pcm, |_, end, row| features.push((end, row)));
+        features
     }
 
     fn mel(&mut self) -> Vec<Vec<f32>> {
@@ -357,15 +376,7 @@ impl Oww {
 impl crate::Wake for Oww {
     fn feed(&mut self, pcm: &[i16]) -> bool {
         let mut hit = false;
-        for &s in pcm {
-            self.buf.push(s as f32);
-            if self.buf.len() == CTX + STEP {
-                if self.step() {
-                    hit = true;
-                }
-                self.buf.drain(..STEP);
-            }
-        }
+        self.stream(pcm, |model, _, embedding| hit |= model.head(embedding));
         hit
     }
 

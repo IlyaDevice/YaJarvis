@@ -21,9 +21,21 @@ impl Wake for NoWake {
 pub struct Loaded {
     pub det: Box<dyn Wake>,
     pub ready: bool,
+    pub phrase: String,
 }
 
 pub fn load(data: &Path, store: &Store) -> Loaded {
+    use crate::wake_profiles::{self, DEFAULT_PHRASE};
+    let selected = store.with(|s| s.wake_profile.clone());
+    if !selected.is_empty() {
+        let custom = wake_profiles::get(data, &selected).and_then(|(phrase, bytes)| {
+            Ok(Loaded { det: wake_profiles::model(data, &bytes, store)?, ready: true, phrase })
+        });
+        match custom {
+            Ok(loaded) => return loaded,
+            Err(error) => log::warn!("Слово активации: {error}. Загружаю штатную модель"),
+        }
+    }
     let sens = |store: &Store| {
         let s = store.clone();
         Box::new(move || s.with(|s| s.wake_sensitivity)) as Box<dyn Fn() -> i64 + Send>
@@ -33,7 +45,7 @@ pub fn load(data: &Path, store: &Store) -> Loaded {
             match Oww::load(&feat, &head, sens(store)) {
                 Ok(m) => {
                     log::info!("слово активации: модель openWakeWord загружена ({} КБ)", (feat.len() + head.len()) / 1024);
-                    return Loaded { det: Box::new(m), ready: true };
+                    return Loaded { det: Box::new(m), ready: true, phrase: DEFAULT_PHRASE.into() };
                 }
                 Err(e) => log::info!("слово активации: openWakeWord: {e} — беру прежнюю модель"),
             }
@@ -42,16 +54,16 @@ pub fn load(data: &Path, store: &Store) -> Loaded {
     let path = data.join("wake.bin");
     let Ok(bin) = std::fs::read(&path) else {
         log::info!("слово активации: модели {} нет — только кнопка в настройках", path.display());
-        return Loaded { det: Box::new(NoWake), ready: false };
+        return Loaded { det: Box::new(NoWake), ready: false, phrase: DEFAULT_PHRASE.into() };
     };
     match Kws::load(&bin, sens(store)) {
         Ok(m) => {
             log::info!("слово активации: модель загружена ({} КБ)", bin.len() / 1024);
-            Loaded { det: Box::new(m), ready: true }
+            Loaded { det: Box::new(m), ready: true, phrase: DEFAULT_PHRASE.into() }
         }
         Err(e) => {
             log::info!("слово активации: {e}");
-            Loaded { det: Box::new(NoWake), ready: false }
+            Loaded { det: Box::new(NoWake), ready: false, phrase: DEFAULT_PHRASE.into() }
         }
     }
 }
@@ -93,17 +105,19 @@ pub struct Listener {
     pub ready: std::sync::atomic::AtomicBool,
     pub last_prob: std::sync::atomic::AtomicU32,
     reload:std::sync::atomic::AtomicBool,
+    phrase: std::sync::RwLock<String>,
 }
 
 impl Listener {
     pub fn new(data: &Path, store: &Store) -> (std::sync::Arc<Listener>, Box<dyn Wake>) {
         let w = load(data, store);
-        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into(),reload:false.into() });
+        let me = std::sync::Arc::new(Listener { ready: w.ready.into(), last_prob: 0.into(),reload:false.into(),phrase:w.phrase.into() });
         (me, w.det)
     }
+    pub fn phrase(&self) -> String { self.phrase.read().unwrap().clone() }
     pub fn request_reload(&self){self.reload.store(true,std::sync::atomic::Ordering::Release);}
     pub fn take_reload(&self,data:&Path,store:&Store)->Option<Box<dyn Wake>>{
         if !self.reload.swap(false,std::sync::atomic::Ordering::AcqRel){return None;}
-        let loaded=load(data,store);self.ready.store(loaded.ready,std::sync::atomic::Ordering::Release);self.last_prob.store(0,std::sync::atomic::Ordering::Relaxed);Some(loaded.det)
+        let loaded=load(data,store);*self.phrase.write().unwrap() = loaded.phrase; self.ready.store(loaded.ready,std::sync::atomic::Ordering::Release);self.last_prob.store(0,std::sync::atomic::Ordering::Relaxed);Some(loaded.det)
     }
 }

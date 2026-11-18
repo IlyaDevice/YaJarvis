@@ -10,12 +10,12 @@ pub struct Classic {
     out:Mutex<Option<SyncSender<Vec<i16>>>>,audio:Mutex<Option<Receiver<Vec<i16>>>>,
     closed:AtomicBool,generation:AtomicU64,interrupted:AtomicBool,stop:tokio::sync::Notify,
 }
-struct Context {host:Arc<Host>,tools:Arc<Tools>,settings:Settings,profile:Profile,instructions:String}
+struct Context {host:Arc<Host>,tools:Arc<Tools>,settings:Settings,profile:Profile,instructions:String,phrase:String}
 impl Classic {
-    pub fn open(rt:&tokio::runtime::Handle,host:Arc<Host>,tools:Arc<Tools>,journal:Arc<Journal>,settings:Settings,profile:Profile,instructions:String)->Arc<Self>{
+    pub fn open(rt:&tokio::runtime::Handle,host:Arc<Host>,tools:Arc<Tools>,journal:Arc<Journal>,settings:Settings,profile:Profile,instructions:String,phrase:String)->Arc<Self>{
         let (out,audio)=sync_channel(64);let (frames,mut input)=mpsc::channel(64);let (say,mut messages)=mpsc::channel(8);
         let me=Arc::new(Self{dialog:Dialog::new(journal,"классический",&profile.llm_model),frames,say,out:Mutex::new(Some(out)),audio:Mutex::new(Some(audio)),closed:AtomicBool::new(false),generation:AtomicU64::new(0),interrupted:AtomicBool::new(false),stop:tokio::sync::Notify::new()});
-        let actor=me.clone();let context=Arc::new(Context{host,tools,settings,profile,instructions});
+        let actor=me.clone();let context=Arc::new(Context{host,tools,settings,profile,instructions,phrase});
         rt.spawn(async move {
             let mut vad=Capture::default();let mut tasks=tokio::task::JoinSet::new();
             loop {tokio::select! {
@@ -45,19 +45,22 @@ impl Classic {
         let response=context.host.provider(stt)?.request(stt,json!({"op":"stt","key":key,"model":model,"language":context.settings.language,"audio":B64.encode(wav(&pcm))}),Duration::from_secs(45)).await?;
         let text=response["text"].as_str().unwrap_or("").trim();if text.is_empty(){return Ok(());}
         self.dialog.on_user(text);
-        if crate::fastcmd::is_stop(text){
-            if crate::fastcmd::is_stop_all(text){if let Some(control)=&context.tools.music_ctl{control("стоп".into()).await;}}
+        let command = if context.phrase == crate::wake_profiles::DEFAULT_PHRASE { text.to_owned() }
+            else { crate::fastcmd::command_for_phrase(text, &context.phrase) };
+        let command = command.as_str();
+        if crate::fastcmd::is_stop(command){
+            if crate::fastcmd::is_stop_all(command){if let Some(control)=&context.tools.music_ctl{control("стоп".into()).await;}}
             self.dialog.annotate("стоп","");self.dialog.finish_turn("");self.close();return Ok(());
         }
         if let Some(control)=&context.tools.music_fast {
-            let answer=control(text.to_string()).await;
+            let answer=control(command.to_string()).await;
             if let Some(answer)=answer{self.dialog.on_bot(&answer);self.speak(context,&answer,generation).await?;self.dialog.finish_turn("");return Ok(());}
         }
-        if let Some(command)=crate::fastcmd::alice_skill_for(text,context.settings.use_home("yandexmusic")) {
+        if let Some(command)=crate::fastcmd::alice_skill_for(command,context.settings.use_home("yandexmusic")) {
             tokio::task::spawn_blocking(move||crate::alice::text(&command,false)).await.map_err(|e|e.to_string())??;
             self.dialog.on_bot("Передал Алисе");self.dialog.finish_turn("");return Ok(());
         }
-        let answer=if let Some(answer)=context.host.command(text).await{answer}else if let Some(answer)=context.tools.ha_vacuum(text).await{answer}else if let Some(answer)=context.tools.smartlife_fast(text).await{answer}else if let Some(answer)=context.tools.fast(text).await{answer}else{
+        let answer=if let Some(answer)=context.host.command(command).await{answer}else if let Some(answer)=context.tools.ha_vacuum(command).await{answer}else if let Some(answer)=context.tools.smartlife_fast(command).await{answer}else if let Some(answer)=context.tools.fast(command).await{answer}else{
             let (extra,defs)=context.tools.prepare().await;
             crate::llm::ask(&context.host,&context.settings,&context.profile,&format!("{}\n{}\n{extra}",context.instructions,crate::rules::BACKEND_RULES),text,&context.tools,defs).await?
         };
