@@ -83,7 +83,7 @@ return {
 - Для вызова инструмента верните `{text = "", tool_calls = {{id = "call_1", name = "имя", arguments = "{}"}}}`. `arguments` принимает строку с объектом JSON. Ядро проверит имя по выданному списку, выполнит инструмент и снова вызовет `chat` с результатом. Доступно до пяти вызовов `chat` на реплику и до 16 инструментов за вызов.
 - Для своего HTTP API добавьте право `network` и внесите точный origin сервера в `network_allow`. Ключ объявите настройкой с `"type": "password"` и читайте через `jarvis.settings`.
 
-[Готовый плагин DeepSeek и OpenRouter](../plugins/compatible-chat/) показывает вызов HTTP и обработку инструментов. URL и ID модели берите из документации своего сервиса. [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [OpenRouter Chat Completions](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request).
+Для подключения к другой модели возьмите URL и ID из документации поставщика. Передайте `request.messages` в формате его API, а текст ответа верните из `chat`.
 
 Обычная сборка включает Lua. Для сборки без интерпретатора и его зависимостей:
 

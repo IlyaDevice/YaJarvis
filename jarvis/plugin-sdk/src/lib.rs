@@ -1,5 +1,7 @@
 //! Source-level interface for trusted modules linked into the YaJavis executable.
 pub use serde_json::{Map, Value, json};
+#[cfg(feature = "process")]
+pub mod process;
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 pub type Response<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;

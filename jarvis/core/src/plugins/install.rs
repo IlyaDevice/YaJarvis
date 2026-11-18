@@ -55,8 +55,11 @@ pub fn unpack(raw: &[u8]) -> Result<(BTreeMap<String, Vec<u8>>, Manifest), Strin
     }
     let m: Manifest = serde_json::from_slice(&files["plugin.json"]).map_err(|e| format!("plugin.json: {e}"))?;
     m.validate()?;
-    if m.kind == "lua" && !files.contains_key(&m.main) {
+    if matches!(m.kind.as_str(), "lua" | "rust") && !files.contains_key(&m.main) {
         return Err(format!("в архиве нет {}", m.main));
+    }
+    if m.kind == "rust" {
+        super::process::check_binary(&files[&m.main], &m.arch)?;
     }
     Ok((files, m))
 }
@@ -84,6 +87,9 @@ impl Host {
         if m.kind == "module" && !(official && source == "core") {
             return Err("Rust-модуль выбирается из официального каталога".into());
         }
+        if m.kind == "rust" && (super::modules::built_in(&m.id) || super::modules::manifests().iter().any(|item| item.id == m.id)) {
+            return Err("Этот идентификатор занят встроенным модулем".into());
+        }
         let later = m.needs_newer_core();
         if later {
             return Err(format!("плагину нужен Джарвис {} или новее — сначала обновите Джарвиса", m.min_core));
@@ -99,35 +105,25 @@ impl Host {
         for (name, b) in &files {
             let p = tmp.join(name);
             std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
-            if let Err(e) = crate::settings::write_atomic(&p, b, 0o644) {
+            let mode = if m.kind == "rust" && name == &m.main { 0o700 } else { 0o644 };
+            if let Err(e) = crate::settings::write_atomic(&p, b, mode) {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(e.to_string());
             }
         }
         let had = self.inner.lock().unwrap().plugins.contains_key(&m.id);
+        let bak = self.dir().join(format!("{}.old", m.id));
+        if bak.exists() {
+            std::fs::remove_dir_all(&bak).map_err(|e| e.to_string())?;
+        }
         if had {
             self.stop(&m.id).await;
-            for keep in ["data.json", "data"] {
-                // данные плагина переживают обновление
-                if dst.join(keep).exists() {
-                    let _ = std::fs::remove_dir_all(tmp.join(keep));
-                    let _ = std::fs::remove_file(tmp.join(keep));
-                    let _ = std::fs::rename(dst.join(keep), tmp.join(keep));
-                }
-            }
         }
-        let bak = self.dir().join(format!("{}.old", m.id));
-        let _ = std::fs::remove_dir_all(&bak);
-        let had_old = std::fs::rename(&dst, &bak).is_ok();
-        if let Err(e) = std::fs::rename(&tmp, &dst) {
-            let _ = std::fs::remove_dir_all(&tmp);
-            if had_old {
-                let _ = std::fs::rename(&bak, &dst); // вернуть прежнюю версию
-                if had {
-                    self.start(&m.id).await;
-                }
+        if let Err(error) = replace_package(&tmp, &dst, &bak) {
+            if had {
+                self.start(&m.id).await;
             }
-            return Err(e.to_string());
+            return Err(error.to_string());
         }
         let _ = std::fs::remove_dir_all(&bak);
         let enabled = {
@@ -179,7 +175,7 @@ impl Host {
             }
             vec![format!("plugin-{id}.zip")]
         } else {
-            vec!["jarvis-plugin.zip".into()]
+            vec![format!("jarvis-plugin-{}.zip", super::arch()), "jarvis-plugin.zip".into()]
         };
         let api = super::catalog::github_api();
         let rel_url = if tag.is_empty() {
@@ -205,6 +201,39 @@ impl Host {
         }
         self.install(&raw, repo, official).await
     }
+}
+
+fn replace_package(tmp: &Path, dst: &Path, backup: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        return std::fs::rename(tmp, dst);
+    }
+    std::fs::rename(dst, backup)?;
+    let mut moved = Vec::new();
+    let result = (|| {
+        for name in ["data.json", "data"] {
+            let old = backup.join(name);
+            if !old.exists() {
+                continue;
+            }
+            let staged = tmp.join(name);
+            if staged.is_dir() {
+                std::fs::remove_dir_all(&staged)?;
+            } else if staged.exists() {
+                std::fs::remove_file(&staged)?;
+            }
+            std::fs::rename(old, staged)?;
+            moved.push(name);
+        }
+        std::fs::rename(tmp, dst)
+    })();
+    if result.is_err() {
+        for name in moved {
+            std::fs::rename(tmp.join(name), backup.join(name))?;
+        }
+        std::fs::rename(backup, dst)?;
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+    result
 }
 
 #[cfg(feature = "lua")]

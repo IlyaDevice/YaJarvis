@@ -8,10 +8,7 @@ fn configured<'a>(s:&'a Settings,id:&str)->&'a str {
 }
 pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
     if !p.llm_plugin.is_empty() {
-        #[cfg(any(feature = "lua", feature = "native-plugins"))]
         return ask_plugin(host, &p.llm_plugin, instructions, text, tools, &defs).await;
-        #[cfg(not(any(feature = "lua", feature = "native-plugins")))]
-        return Err("В этой сборке нет поддержки текстовых плагинов".into());
     }
     let preferred=if ["openai","live",""].contains(&p.engine.as_str()){"openai"}else{p.engine.as_str()};
     if preferred=="chatgpt" && crate::chatgpt::signed_in(&s.chatgpt){
@@ -75,7 +72,6 @@ async fn run_tool(tools: &Tools, defs: &[Value], call: &Call) -> Result<String, 
         .await.unwrap_or_else(|_| "Инструмент не ответил за 15 с".into()))
 }
 
-#[cfg(any(feature = "lua", feature = "native-plugins"))]
 async fn ask_plugin(host: &Host, id: &str, instructions: &str, text: &str, tools: &Tools, defs: &[Value]) -> Result<String, String> {
     let mut messages = vec![json!({"role":"system","content":instructions}), json!({"role":"user","content":text})];
     let schemas: Vec<_> = defs.iter().filter(|def| def["type"] == "function").map(|def| {

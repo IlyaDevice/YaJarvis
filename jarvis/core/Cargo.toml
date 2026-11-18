@@ -28,6 +28,7 @@ name = "jarvis"
 path = "src/main.rs"
 
 [dependencies]
+jarvis-plugin-sdk = { path = "../plugin-sdk", features = ["process"] }
 jarvis-native-plugins = { path = "../native-plugins", optional = true }
 jarvis-station = { path = "../station-runtime" }
 jarvis-wake-train = { path = "../modules/wake-train", optional = true }

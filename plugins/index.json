@@ -2,16 +2,6 @@
   "api": 1,
   "plugins": [
     {
-      "id": "compatible-chat",
-      "category": "assistant",
-      "name": "DeepSeek и OpenRouter",
-      "kind": "lua",
-      "version": "1.0.0",
-      "min_core": "0.9.84",
-      "icon": "sparkles",
-      "description": "Текстовая модель для переписки и классического голосового режима."
-    },
-    {
       "id": "weather",
       "category": "info",
       "name": "Погода",

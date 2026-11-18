@@ -4,7 +4,7 @@ import { $$, ICONS, act, api, esc, icon, tip, toast, upload } from "./core.js";
 import { S } from "./main.js";
 
 export const PL = { data: null, list: null, catErr: "", loading: false };
-export const PL_KIND = { lua: "Lua", module: "Модуль Rust" };
+export const PL_KIND = { lua: "Lua", rust: "Пакет Rust", module: "Встроенный Rust" };
 export const plIcon = (n) => icon(ICONS[n] ? n : "puzzle");
 export const plSize = (b) => (b < 1048576 ? `${Math.max(1, Math.round(b / 1024))} КБ` : `${(b / 1048576).toFixed(1).replace(".", ",")} МБ`);
 export const plBadge = (official) => official ? `<span class="plg-b ok">${icon("shield")}официальный</span>` : `<span class="plg-b warn">неофициальный</span>`;

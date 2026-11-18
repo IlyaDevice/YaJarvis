@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod coresvc;
 pub mod install;
+mod process;
 pub(crate) mod modules;
 #[cfg(feature = "native-plugins")]
 mod native_addon;
@@ -25,7 +26,6 @@ pub const PLUGIN_API: i64 = 1;
 
 pub fn compiled_modules() -> Vec<String> { modules::manifests().into_iter().map(|m|m.id).collect() }
 
-#[cfg(any(feature = "lua", feature = "native-plugins"))]
 pub fn command_text(text: &str) -> String {
     let normalized = crate::fastcmd::norm_text(text);
     normalized.strip_prefix("джарвис ").or_else(|| normalized.strip_prefix("jarvis "))
@@ -110,6 +110,8 @@ pub struct Manifest {
     pub homepage: String,
     pub kind: String,
     pub main: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub arch: String,
     #[serde(skip_serializing_if = "is_zero")]
     pub api: i64,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -147,11 +149,11 @@ impl Manifest {
         if self.name.trim().is_empty() {
             return Err("у плагина нет name".into());
         }
-        if !["lua", "module"].contains(&self.kind.as_str()) {
+        if !["lua", "module", "rust"].contains(&self.kind.as_str()) {
             return Err(if matches!(self.kind.as_str(), "js" | "native") {
                 "Это пакет для старого ядра. Возьмите Lua-версию плагина или установите Rust-модуль из каталога"
             } else {
-                "В plugin.json укажите kind: lua. Встроенный Rust-модуль выбирается из каталога"
+                "В plugin.json укажите kind: lua или kind: rust"
             }.into());
         }
         if !valid_category(&self.category) {
@@ -166,6 +168,13 @@ impl Manifest {
         }
         if self.main.is_empty() || self.main.contains("..") || self.main.starts_with('/') || self.main.contains('\\') {
             return Err("main плагина — имя файла внутри архива".into());
+        }
+        if self.kind == "rust" && (!cfg!(target_os = "linux") || self.arch != arch()
+            || self.api != PLUGIN_API || self.main.contains('/')
+            || matches!(self.main.as_str(), "data" | "data.json" | "plugin.json" | ".")
+            || !self.main.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c)))
+        {
+            return Err("Для Rust-пакета нужны подходящая архитектура, api: 1 и имя бинарника в корне ZIP".into());
         }
         if self.kind == "module" && (self.id != self.main || self.provides != [self.main.clone()]) {
             return Err("Манифест встроенного модуля должен указывать его собственные id, main и provides".into());
@@ -250,6 +259,7 @@ impl Default for Hooks {
 #[derive(Clone)]
 pub enum Runtime {
     Module(Arc<modules::Module>),
+    Process(Arc<process::Process>),
     #[cfg(feature = "native-plugins")]
     Native(Arc<native_addon::Native>),
     #[cfg(feature = "lua")]
@@ -260,6 +270,7 @@ impl Runtime {
     pub fn tools(&self) -> Vec<Value> {
         match self {
             Runtime::Module(_) => vec![],
+            Runtime::Process(n) => n.tools(),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.tools(),
             #[cfg(feature = "lua")]
@@ -269,6 +280,7 @@ impl Runtime {
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         match self {
             Runtime::Module(_) => None,
+            Runtime::Process(n) => n.call_tool(name, args).await,
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.call_tool(name, args).await,
             #[cfg(feature = "lua")]
@@ -278,6 +290,8 @@ impl Runtime {
     pub async fn command(&self, text: &str) -> Option<String> {
         match self {
             Runtime::Module(_) => None,
+            Runtime::Process(n) => n.request("command", command_text(text).into(), Duration::from_secs(2))
+                .await.ok().and_then(|value| value.as_str().map(str::to_owned)),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.request("command", command_text(text).into(), Duration::from_secs(2))
                 .await.ok().and_then(|value| value.as_str().map(str::to_owned)),
@@ -288,6 +302,7 @@ impl Runtime {
     pub fn configure(&self, settings: Map<String, Value>) {
         match self {
             Runtime::Module(_) => {},
+            Runtime::Process(n) => n.configure(settings),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.configure(settings),
             #[cfg(feature = "lua")]
@@ -297,6 +312,7 @@ impl Runtime {
     pub fn status(&self) -> String {
         match self {
             Runtime::Module(_) => "Встроенный модуль Rust".into(),
+            Runtime::Process(n) => if n.running() { "Rust-пакет".into() } else { "Процесс Rust-пакета завершился".into() },
             #[cfg(feature = "native-plugins")]
             Runtime::Native(_) => "Нативное расширение Rust".into(),
             #[cfg(feature = "lua")]
@@ -306,6 +322,7 @@ impl Runtime {
     pub async fn stop(&self) {
         match self {
             Runtime::Module(n) => n.stop().await,
+            Runtime::Process(n) => n.stop().await,
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.stop(),
             #[cfg(feature = "lua")]
@@ -315,6 +332,7 @@ impl Runtime {
     pub async fn request(&self, method:&str, params:Value, timeout:Duration)->Result<Value,String> {
         match self {
             Self::Module(n)=>n.request(method,params,timeout).await,
+            Self::Process(n)=>n.request(method,params,timeout).await,
             #[cfg(feature = "native-plugins")]
             Self::Native(n)=>n.request(method,params,timeout).await,
             #[cfg(feature="lua")]
@@ -329,11 +347,19 @@ impl Runtime {
 
     fn supports_chat(&self) -> bool {
         match self {
+            Runtime::Process(n) => n.supports_chat(),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.supports_chat(),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.supports_chat(),
             _ => false,
+        }
+    }
+
+    fn running(&self) -> bool {
+        match self {
+            Runtime::Process(n) => n.running(),
+            _ => true,
         }
     }
 }
@@ -504,6 +530,7 @@ impl Host {
             (m, dir, settings)
         };
         let res: Result<Runtime, String> = match m.kind.as_str() {
+            "rust" => process::Process::start(&m, &dir, (self.hooks.info)(), settings).await.map(Runtime::Process),
             "module" => {
                 #[cfg(feature = "native-plugins")]
                 let custom = native_addon::entries().find(|(manifest, _)| manifest.id == id).map(|(_, entry)| entry);
@@ -575,7 +602,6 @@ impl Host {
             .map(|plugin| json!({"id": plugin.manifest.id, "name": plugin.manifest.name})).collect()
     }
 
-    #[cfg(any(feature = "lua", feature = "native-plugins"))]
     pub async fn plugin_chat(&self, id: &str, request: Value) -> Result<Value, String> {
         let runtime = {
             let installed = self.inner.lock().unwrap();
@@ -584,6 +610,7 @@ impl Host {
                 .ok_or_else(|| format!("Включите текстовый плагин «{id}» в «Подключениях»"))?
         };
         let result = match runtime {
+            Runtime::Process(plugin) => plugin.request("llm.chat", request, Duration::from_secs(30)).await,
             #[cfg(feature = "lua")]
             Runtime::Lua(script) => script.chat(request).await,
             #[cfg(feature = "native-plugins")]
@@ -675,6 +702,7 @@ impl Host {
     }
 
     pub async fn set_enabled(self: &Arc<Self>, id: &str, on: bool) -> Result<(), String> {
+        let _operation = self.install_lock.lock().await;
         let was = {
             let mut g = self.inner.lock().unwrap();
             if !g.plugins.contains_key(id) {
@@ -771,7 +799,7 @@ impl Host {
                 let mut v = serde_json::to_value(&m).unwrap_or(json!({}));
                 let o = v.as_object_mut().unwrap();
                 o.insert("enabled".into(), st.enabled.into());
-                o.insert("running".into(), rt.is_some().into());
+                o.insert("running".into(), rt.as_ref().is_some_and(Runtime::running).into());
                 o.insert("official".into(), st.official.into());
                 o.insert("source".into(), st.source.into());
                 if !err.is_empty() {

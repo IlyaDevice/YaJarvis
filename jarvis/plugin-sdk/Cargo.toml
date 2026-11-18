@@ -6,3 +6,11 @@ license.workspace = true
 
 [dependencies]
 serde_json.workspace = true
+tokio = { workspace = true, optional = true, features = ["io-std"] }
+
+[features]
+process = ["dep:tokio"]
+
+[[example]]
+name = "process_echo"
+required-features = ["process"]

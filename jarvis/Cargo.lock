@@ -1287,6 +1287,7 @@ dependencies = [
  "jarvis-home-common",
  "jarvis-homeassistant",
  "jarvis-native-plugins",
+ "jarvis-plugin-sdk",
  "jarvis-smartlife",
  "jarvis-station",
  "jarvis-vpn",
@@ -1383,6 +1384,7 @@ name = "jarvis-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
