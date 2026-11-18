@@ -13,6 +13,8 @@ mod config;
 mod diagnostics;
 mod device;
 mod wake_profiles;
+#[cfg(feature = "wake-training")]
+mod training;
 mod homeassistant;
 mod home_vendor;
 mod keys;
@@ -102,6 +104,7 @@ pub fn router(app: App) -> Router {
     let api = Router::new();
     #[cfg(feature = "wake-training")]
     let api = api
+        .merge(training::routes())
         .route("/api/train/wake/capture", post(wake_profiles::capture))
         .route("/api/train/wake/train", post(wake_profiles::train).layer(DefaultBodyLimit::max(jarvis_wake_train::BODY_BYTES)))
         .route("/api/train/wake/test/{id}", post(wake_profiles::test));

@@ -85,7 +85,7 @@ enum Implementation {
     #[cfg(feature = "youtube")]
     Youtube(std::sync::Arc<jarvis_youtube::Youtube>),
     #[cfg(feature = "wake-training")]
-    Training,
+    Training(std::sync::Arc<crate::training_records::Records>),
     #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "smartlife", feature = "xiaomi", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt",feature="youtube",feature="wake-training")))]
     Unavailable,
 }
@@ -307,12 +307,15 @@ impl Module {
         }
         match m.main.as_str() {
             #[cfg(feature = "wake-training")]
-            "training" => Ok(Self {
-                host,
-                stopped: AtomicBool::new(false),
-                cancel: tokio::sync::watch::channel(false).0,
-                implementation: Implementation::Training,
-            }),
+            "training" => {
+                let root = host.upgrade().ok_or("Хост плагинов завершился")?.dir().join("training/data");
+                Ok(Self {
+                    host,
+                    stopped: AtomicBool::new(false),
+                    cancel: tokio::sync::watch::channel(false).0,
+                    implementation: Implementation::Training(std::sync::Arc::new(crate::training_records::Records::new(root))),
+                })
+            }
             #[cfg(feature = "youtube")]
             "youtube" => {
                 let weak = host.clone();
@@ -451,9 +454,16 @@ impl Module {
             }
         }
     }
+    #[cfg(feature = "wake-training")]
+    pub fn records(&self) -> Option<std::sync::Arc<crate::training_records::Records>> {
+        match &self.implementation { Implementation::Training(records) => Some(records.clone()), _ => None }
+    }
+
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.cancel.send_replace(true);
+        #[cfg(feature = "wake-training")]
+        if let Implementation::Training(records) = &self.implementation { records.stop(); }
         #[cfg(feature = "youtube")]
         if let Implementation::Youtube(service) = &self.implementation { service.stop().await; }
         #[cfg(feature="smartlife")]

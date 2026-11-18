@@ -14,7 +14,7 @@ pub async fn post(State(app): State<App>, Json(v): Json<Value>) -> Response {
         "play" => ("play", json!({"query":query})),
         "id" if !query.is_empty() => ("play_id", json!({"id":query})),
         "queue" => ("enqueue", json!({"query":query})),
-        "pause" | "resume" | "next" | "stop" => (action, Value::Null),
+        "pause" | "resume" | "next" | "prev" | "stop" => (action, Value::Null),
         "seek" => match v["sec"].as_f64().filter(|s| s.is_finite() && *s >= 0.0) {
             Some(sec) => ("seek", json!({"delta":sec,"abs":true})),
             None => return bad("Неверная позиция"),
@@ -40,7 +40,7 @@ pub async fn post(State(app): State<App>, Json(v): Json<Value>) -> Response {
         }
         _ => return bad("Неизвестная команда"),
     };
-    match app.engine.music.call(&app.plugins, op, args).await {
+    match app.engine.music.transport(&app.plugins, op, args).await {
         Ok(_) => reply(
             StatusCode::OK,
             app.engine.music.snapshot(&app.plugins).await,

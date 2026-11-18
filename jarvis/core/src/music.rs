@@ -1,10 +1,10 @@
 //! Общий интерфейс музыки. Поиск, аккаунт и декодирование принадлежат модулю-провайдеру.
-use crate::{fastcmd, plugins::Host};
+use crate::{alice_music::AliceMusic, fastcmd, plugins::Host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -22,12 +22,22 @@ pub struct Remote {
 
 pub struct Music {
     state: Mutex<Remote>,
+    pub alice: Mutex<AliceMusic>,
+    button: Mutex<Button>,
     cancel: tokio::sync::watch::Sender<u64>,
+}
+
+#[derive(Default)]
+struct Button {
+    youtube_pause: bool,
+    at: Option<Instant>,
 }
 impl Default for Music {
     fn default() -> Self {
         Self {
             state: Mutex::default(),
+            alice: Mutex::default(),
+            button: Mutex::default(),
             cancel: tokio::sync::watch::channel(0).0,
         }
     }
@@ -36,6 +46,71 @@ impl Default for Music {
 impl Music {
     pub fn state(&self) -> Remote {
         self.state.lock().unwrap().clone()
+    }
+
+    pub fn playing(&self) -> bool {
+        self.state.lock().unwrap().playing || self.alice.lock().unwrap().playing()
+    }
+
+    fn use_alice(&self) -> bool {
+        let youtube = self.state.lock().unwrap();
+        let alice = self.alice.lock().unwrap();
+        !youtube.playing && alice.active() && (alice.playing() || !youtube.active)
+    }
+
+    pub async fn alice_control(&self, op: &str, args: &Value) -> Result<(), String> {
+        let cmd = self.alice.lock().unwrap().command(op, args)?;
+        if cmd.is_empty() { return Ok(()); }
+        tokio::task::spawn_blocking(move || crate::alice::text(&cmd, true)).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn transport(&self, host: &Host, op: &str, args: Value) -> Result<(), String> {
+        if self.use_alice() && matches!(op, "pause" | "resume" | "next" | "prev" | "stop" | "seek" | "related") {
+            self.alice_control(op, &args).await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            return Ok(());
+        }
+        self.call(host, op, args).await.map(|_| ())
+    }
+
+    pub async fn stop_all(&self, host: &Host) {
+        let stop_alice = self.alice.lock().unwrap().active();
+        let _ = tokio::join!(self.call(host, "stop", Value::Null), async {
+            if stop_alice { let _ = self.alice_control("stop", &Value::Null).await; }
+        });
+    }
+
+    pub async fn alice_started(&self, host: &Host) {
+        let from_button = {
+            let mut button = self.button.lock().unwrap();
+            let from_button = button.at.is_some_and(|at| at.elapsed() < Duration::from_secs(4));
+            if !from_button { button.youtube_pause = false; }
+            from_button
+        };
+        if from_button {
+            let playing = self.alice.lock().unwrap().playing();
+            if playing { let _ = self.alice_control("pause", &Value::Null).await; }
+        } else if self.state().playing {
+            let _ = self.call(host, "pause", Value::Null).await;
+        }
+    }
+
+    pub async fn pause_button(&self, host: &Host) {
+        let next = {
+            let youtube = self.state.lock().unwrap();
+            let alice = self.alice.lock().unwrap();
+            let mut button = self.button.lock().unwrap();
+            if youtube.playing {
+                button.at = Some(Instant::now());
+                button.youtube_pause = true;
+                "pause"
+            } else if youtube.paused && !alice.playing() && (button.youtube_pause || alice.paused_since().is_none()) {
+                button.at = Some(Instant::now());
+                button.youtube_pause = false;
+                "resume"
+            } else { return; }
+        };
+        let _ = self.call(host, next, Value::Null).await;
     }
 
     pub fn event(&self, name: &str, data: Value) {
@@ -93,7 +168,6 @@ impl Music {
             "resume_saved",
             "respond",
             "next",
-            "respond",
         ]
         .contains(&op);
         let out = tokio::select! {
@@ -117,13 +191,19 @@ impl Music {
     }
 
     pub async fn snapshot(&self, host: &Host) -> Value {
-        match self.call(host, "snapshot", Value::Null).await {
+        let youtube = match self.call(host, "snapshot", Value::Null).await {
             Ok(v) => v,
             Err(_) => {
                 let s = self.state();
                 json!({"source":"youtube", "playing":s.playing,"paused":s.paused,"track":s.cur,"pos":s.pos})
             }
+        };
+        if self.use_alice() {
+            let mut alice = self.alice.lock().unwrap().snapshot();
+            alice["history"] = youtube["history"].clone();
+            return alice;
         }
+        youtube
     }
 
     pub async fn play(&self, host: &Host, query: &str, queue: bool) -> String {
@@ -152,6 +232,15 @@ impl Music {
     }
 
     pub async fn control(&self, host: &Host, text: &str) -> Option<String> {
+        let command = command(text);
+        if self.use_alice() && let Some((op, args, answer)) = &command {
+            if *op == "status" { return Some(self.alice.lock().unwrap().description()); }
+            return Some(match self.alice_control(op, args).await {
+                Ok(()) if *op == "related" => "Переключаю трек.".into(),
+                Ok(()) => (*answer).into(),
+                Err(e) => format!("Не получилось: {e}"),
+            });
+        }
         if self.state().proposal {
             match self.call(host, "respond", json!({"text":text})).await {
                 Ok(v) if v["ok"].as_bool() == Some(true) => {
@@ -164,7 +253,7 @@ impl Music {
         if !self.state().active {
             return None;
         }
-        let (op, args, answer) = command(text)?;
+        let (op, args, answer) = command?;
         if op == "status" {
             return Some(self.state().status);
         }
@@ -400,5 +489,18 @@ mod tests {
         assert!(m.state().playing);
         m.event("exit", Value::Null);
         assert!(!m.state().active);
+    }
+
+    #[test]
+    fn foreground_player_owns_controls() {
+        let m = Music::default();
+        m.alice.lock().unwrap().main_log(r#"event=track_start, payload={"id":"42"}"#);
+        assert!(m.use_alice());
+        m.event("music.state", json!({"playing":true,"active":true}));
+        assert!(!m.use_alice());
+        m.event("music.state", json!({"paused":true,"active":true}));
+        assert!(m.use_alice());
+        m.alice.lock().unwrap().media_log("[audio stream=42] pause (position 2000)");
+        assert!(!m.use_alice());
     }
 }

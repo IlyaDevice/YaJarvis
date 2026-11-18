@@ -134,7 +134,7 @@ pub async fn capture(State(app): State<App>) -> Response {
             if !engine.host.wake_training() {
                 break Err(DISABLED);
             }
-            if engine.talking() || engine.player.playing() || engine.music.state().playing {
+            if engine.talking() || engine.player.playing() || engine.music.playing() {
                 break Err("Остановите разговор или музыку и запишите ещё раз");
             }
             let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {

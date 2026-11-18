@@ -343,7 +343,7 @@ impl Default for Settings {
             radio_off: false,
             night: NightSettings::default(),
             train_mode: false,
-            train_limit_mb: 5,
+            train_limit_mb: 2,
             update_repo: String::new(),
             update_check: true,
             update_auto: true,

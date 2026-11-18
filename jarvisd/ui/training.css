@@ -1,0 +1,31 @@
+.train-bg[hidden], .train-bg [hidden] { display: none; }
+.train-bg { display: grid; gap: 12px; }
+.rv-ans { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.rv-ans .btn { height: 44px; font-size: 15px; }
+.rv-ans kbd, .rv-alt kbd { font: 11px var(--mono); color: inherit; opacity: .55; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
+.rv-alt { display: flex; justify-content: space-between; }
+.rv-done { display: flex; gap: 12px; align-items: center; }
+.rv-done .ic { color: var(--acc); width: 24px; height: 24px; flex: none; }
+.rv-done small { display: block; color: var(--fg2); font-size: 13px; }
+@media (max-width: 560px) { .rv-ans { grid-template-columns: 1fr; } }
+.rvp { display: grid; gap: 16px; padding: 16px; border-radius: 14px; background: var(--card); border: 1px solid var(--line2); }
+.rvp-head { display: flex; align-items: center; gap: 12px; font-size: 13px; flex-wrap: wrap; }
+.rvp-player { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 16px; align-items: center; }
+.rvp-wave { display: flex; align-items: center; gap: 2px; height: 56px; cursor: pointer; }
+.rvp-wave i { flex: 1; height: var(--h, 12%); min-height: 3px; border-radius: 2px; background: var(--raise2); transition: background-color .12s linear, height .3s var(--ease); }
+.rvp-wave i.on { background: var(--acc); }
+.rvp-time { font-size: 12px; color: var(--fg2); font-variant-numeric: tabular-nums; min-width: 72px; text-align: right; }
+.rvp-q b { font-size: 18px; font-weight: 500; }
+#clips { display: grid; gap: 12px; }
+.clips { display: grid; }
+.clip { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto 32px; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.clip:first-child { border-top: 0; }
+.clip-play { width: 32px; height: 32px; border-radius: 50%; background: var(--raise); }
+.clip.on .clip-play { background: var(--acc); color: var(--bg0); }
+.clip-meta { display: grid; min-width: 0; }
+.clip-meta b { font-weight: 500; font-size: 13px; }
+.clip-meta small { color: var(--fg3); font-size: 12px; }
+.clip-del { width: 32px; height: 32px; color: var(--fg3); }
+.clip-del:hover { color: var(--bad); }
+@media (max-width: 560px) { .clip { grid-template-columns: 36px 1fr 32px; } .clip .seg { grid-column: 2 / -1; grid-row: 2; justify-self: start; } }
+.clip.on .clip-play { color: var(--on-acc); }

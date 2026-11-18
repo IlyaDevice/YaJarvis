@@ -201,7 +201,22 @@ impl Engine {
                     #[cfg(feature = "wake-training")]
                     let enabled = enabled && !e.recording_word.load(Ordering::Acquire);
                     let hit = ready && enabled && det.feed(&raw); // поток признаков непрерывный, и во время разговора
-                    e.listener.last_prob.store(det.last_prob().to_bits(), Ordering::Relaxed);
+                    let prob = det.last_prob();
+                    e.listener.last_prob.store(prob.to_bits(), Ordering::Relaxed);
+                    #[cfg(feature = "wake-training")]
+                    if let Some(records) = e.host.training_records() {
+                        let conversation = busy || live.is_some() || e.saying.load(Ordering::Relaxed) || e.player.playing();
+                        records.background.frame(&e.rt, &raw, conversation || hit || !ready || !enabled);
+                        if !conversation && ready && enabled {
+                            let (collect, limit) = e.store.with(|s| (s.train_mode, s.train_limit_mb));
+                            if collect && e.listener.phrase() == crate::wake_profiles::DEFAULT_PHRASE
+                                && let Some(kind) = records.sample_kind(hit, prob, loud(&raw)) {
+                                let st = e.st.lock().unwrap();
+                                let clip = &st.ring[st.ring.len().saturating_sub(3 * RATE)..];
+                                if clip.len() >= RATE { records.save_soon(&e.rt, kind, clip.to_vec(), prob, limit); }
+                            }
+                        }
+                    }
                     if let Some(live) = live {
                         live.feed(&if boost_db > 0 { boost(&raw, boost_db) } else { raw.to_vec() });
                         // «Джарвис» во время разговора — как у Алисы: сразу замолкает и слушает
@@ -243,7 +258,7 @@ impl Engine {
 
     /// Состояние из событий музыкального модуля: без запросов на каждом кадре микрофона.
     fn music_playing(&self) -> bool {
-        self.music.state().playing
+        self.music.playing()
     }
 
     /// Встроенный распознаватель услышал команду, пока Джарвис занят.
@@ -254,7 +269,7 @@ impl Engine {
             if !self.music_playing() { return; }
             if has("стоп") || has("пауза") {
                 let op = if has("пауза") { "pause" } else { "stop" };
-                let _ = self.rt.block_on(self.music.call(&self.host, op, serde_json::Value::Null));
+                let _ = self.rt.block_on(self.music.transport(&self.host, op, serde_json::Value::Null));
                 return;
             }
             if has("громче") || has("тише") {
@@ -644,7 +659,7 @@ impl Engine {
         if fastcmd::is_stop(&cmd) {
             quiet();
             if fastcmd::is_stop_all(&cmd) {
-                let _ = self.rt.block_on(self.music.call(&self.host, "stop", serde_json::Value::Null));
+                self.rt.block_on(self.music.stop_all(&self.host));
                 log::info!("Джарвис: «{text}» — стоп ({from})");
             } else {
                 log::info!("Джарвис: «{text}» — разговор закрыт, музыка не тронута ({from})");
@@ -720,6 +735,17 @@ impl Engine {
             return;
         }
         (self.say_hook())(text.to_string());
+    }
+
+    pub async fn offer_next(self: Arc<Self>, id: String) {
+        if self.talking() || self.music.playing() { return; }
+        let epoch = self.speech_epoch.load(Ordering::SeqCst);
+        let result = self.music.call(&self.host, "related", serde_json::json!({"expected":id})).await;
+        let Ok(serde_json::Value::String(answer)) = result else { return };
+        if answer.is_empty() || self.talking() || self.music.playing()
+            || self.speech_epoch.load(Ordering::SeqCst) != epoch { return; }
+        self.journal.note("следующий ролик", "ролик закончился", &answer);
+        let _ = tokio::task::spawn_blocking(move || self.say_text(&answer)).await;
     }
 
     /// Озвучка короткого ответа (плагины, команды, музыка); не вышло — звуком «готово».
@@ -832,7 +858,7 @@ impl Engine {
     /// Прервать разговор и музыку (Алиса, кнопка «Стоп» в настройках).
     pub fn stop(&self, reason: &str) {
         self.end_chat(reason);
-        let _ = self.rt.block_on(self.music.call(&self.host, "stop", serde_json::Value::Null));
+        self.rt.block_on(self.music.stop_all(&self.host));
     }
 
     /// Закончить только разговор: музыка, если играет, играет дальше. Блокирует до 3 с.
@@ -862,8 +888,27 @@ impl Engine {
         alice::follow_log(alice::MAIND_LOG, move |line| {
             let Some(e) = w.upgrade() else { return };
             if line.contains("onPhraseSpotted") && line.contains("alice_capability") && e.talking() {
-                e.stop("позвали Алису");
+                e.end_chat("позвали Алису");
+                let _ = e.rt.block_on(e.music.call(&e.host, "stop", serde_json::Value::Null));
             }
+            if line.contains("Toggle play/pause") {
+                e.rt.block_on(e.music.pause_button(&e.host));
+            }
+            let (started, id) = e.music.alice.lock().unwrap().main_log(line);
+            if started || id.is_some() {
+                e.rt.clone().spawn(async move {
+                    if started { e.music.alice_started(&e.host).await; }
+                    if let Some(id) = id && let Some(track) = crate::alice_music::lookup(&id).await {
+                        e.music.alice.lock().unwrap().set_track(&id, track);
+                    }
+                });
+            }
+        });
+        let w = Arc::downgrade(self);
+        alice::follow_log("/data/quasar/daemons_logs/mediad.log", move |line| {
+            let Some(e) = w.upgrade() else { return };
+            let started = e.music.alice.lock().unwrap().media_log(line);
+            if started { e.rt.block_on(e.music.alice_started(&e.host)); }
         });
     }
 }

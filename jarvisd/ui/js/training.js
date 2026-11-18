@@ -1,15 +1,16 @@
 // Обучение слова «Джарвис» и запись фона.
 import { $, Motion, act, api, esc, icon, sec } from "./core.js";
-import { page } from "./main.js";
+import { S, page } from "./main.js";
 
-const TRAIN = "/api/p/training/train";
+const train = () => S.settings.training_records ? "/api/train/records" : "/api/p/training/train";
+const BACKGROUND = "/api/train/background";
 
 // ---------------------------------------------------------------- обучение слова
 export const KIND = { pos: "Джарвис", false: "Не Джарвис", near: "Не проверено", bg: "Фон" };
 export const GUESS = { pos: "колонка решила, что звали", false: "колонка сработала, но решила, что зря", near: "колонка насторожилась, но не сработала" };
 export let T = null, skipped = new Set(), clipFilter = "all", clipLimit = 40;
 
-export const clipUrl = (x) => `${TRAIN}/clip?kind=${x.kind}&name=${encodeURIComponent(x.name)}`;
+export const clipUrl = (x) => `${train()}/clip?kind=${x.kind}&name=${encodeURIComponent(x.name)}`;
 export const clipWhen = (x) => new Date(x.time).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 export const clipProb = (x) => (x.name.match(/_p(\d+)/) || [])[1];
 export const clipSec = (x) => Math.max(0, (x.size - 44) / 32000);
@@ -19,29 +20,126 @@ export const queue = () => (T?.clips || []).filter((x) => !x.reviewed && x.kind 
 export async function drawTrainingRecords(panel = $("#training-records")) {
   if (!panel?.isConnected) return;
   let data;
-  try { data = await api("GET", TRAIN); } catch (e) {
+  try { data = await api("GET", train()); } catch (e) {
     if (panel.isConnected) panel.innerHTML = `<p class="err">${esc(e.message)}</p>`;
     return;
   }
   if (!panel.isConnected) return;
   T = data;
   T.clips ||= [];
-  panel.innerHTML = `${sec("Проверка записей «Джарвис»", "Прослушайте сохранённые записи и отметьте, где был оклик. Клавиши 1 и 2 отмечают ответ, пробел ставит запись на паузу.", `<div id="rv"></div>`)}
+  panel.innerHTML = `${S.settings.training_records ? recordingHtml() : ""}
+  ${sec("Проверка записей «Джарвис»", "Прослушайте сохранённые записи и отметьте, где был оклик. Клавиши 1 и 2 отмечают ответ, пробел ставит запись на паузу.", `<div id="rv"></div>`)}
   ${sec("Дообучить на компьютере", "В архив входят размеченные записи, модель и скрипт дообучения.", trainStepsHtml())}
   ${sec("Все записи", "", `<div id="clips"></div>`)}`;
   drawReview(); drawClips();
+  if (S.settings.training_records) bindRecording(panel);
   $("#t-restore")?.addEventListener("click", (e) => act(e.target, () => api("POST", "/api/train/model/restore"), "Прежняя модель сохранена для «Джарвиса»"));
 }
 
 export function trainStepsHtml() {
   const c = T.counts || {};
   return `<div class="row"><div class="chips"><span class="chip k-pos">Джарвис <b id="c-pos">${c.pos || 0}</b></span><span class="chip k-false">Не Джарвис <b id="c-false">${c.false || 0}</b></span><span class="chip">Фон <b>${c.bg || 0}</b></span></div>
-      <span class="spacer"></span>${T.clips.length ? `<a class="btn primary" href="${TRAIN}/download" download>Скачать записи</a>` : `<button class="btn" disabled>Скачать записи</button>`}</div>
+      <span class="spacer"></span>${T.clips.length ? `<a class="btn primary" href="${train()}/download" download>Скачать записи</a>` : `<button class="btn" disabled>Скачать записи</button>`}</div>
     <ol class="steps">
       <li><b>Скачайте и распакуйте архив.</b> Записи уже разложены по вашим ответам.</li>
       <li><b>Дообучите модель.</b> В распакованной папке установите зависимости командой <code>pip install torch numpy</code> и запустите <code>python finetune.py</code>.</li>
       <li><b>Загрузите</b> <code>wake_new.bin</code> в разделе «Обучить фразу» с именем «Джарвис». Проверьте и выберите модель в списке.</li></ol>
     ${T.prev_model ? `<div><button class="btn ghost" id="t-restore">Вернуть прежнюю модель «Джарвис»</button></div>` : ""}`;
+}
+
+function recordingHtml() {
+  return `${sec("Короткие записи", "Колонка сохраняет примеры «Джарвиса» для разметки. Лимит применяется к новым записям.",
+    `<label class="sw"><input id="train-capture" type="checkbox"${T.mode ? " checked" : ""}><span class="tr"></span>Собирать примеры</label>
+     <div class="f"><label for="train-limit">Лимит на колонке <b class="val">${(T.used_kb / 1024).toFixed(1)} МБ занято</b></label>
+     <select id="train-limit">${[1, 2, 3, 4, 5].map((mb) => `<option${mb === T.limit_mb ? " selected" : ""}>${mb} МБ</option>`).join("")}</select></div>
+     ${T.legacy_kb ? `<p class="note">Старый архив занимает ${(T.legacy_kb / 1024).toFixed(1)} МБ.</p>` : ""}`)}
+  ${sec("Длительная запись фона", "Колонка сама отправляет сжатые записи в облако. Каждая порция занимает примерно минуту и хранится в памяти до отправки.",
+    `<form id="bg-connect" class="train-bg" hidden>
+       <div class="f"><label for="bg-provider">Облако</label><select id="bg-provider"><option value="nextcloud">Nextcloud</option><option value="koofr">Koofr</option></select></div>
+       <div class="f" id="bg-link-field"><label for="bg-link">Ссылка Nextcloud на папку «Только загрузка»</label><input id="bg-link" type="url" required placeholder="https://cloud.example.com/s/…" autocomplete="off"></div>
+       <div class="f" id="bg-email-field" hidden><label for="bg-email">Почта Koofr</label><input id="bg-email" type="email" required disabled autocomplete="off"></div>
+       <div class="f"><label for="bg-password" id="bg-password-label">Пароль ссылки, если задан</label><input id="bg-password" type="password" maxlength="512" autocomplete="off"></div>
+       <small class="muted" id="bg-nextcloud-help">В Nextcloud откройте «Поделиться» у папки, выберите «Только загрузка» и скопируйте ссылку.</small>
+       <small class="muted" id="bg-koofr-help" hidden>В <a href="https://app.koofr.net" target="_blank" rel="noopener noreferrer">Koofr</a> откройте настройки пароля и создайте отдельный пароль приложения.</small>
+       <div><button type="submit" class="btn primary" id="bg-connect-button">Подключить облако</button></div>
+     </form>
+     <form id="train-bg" class="train-bg" hidden>
+       <div class="row"><span class="st ok" id="bg-cloud-name"></span><button type="button" class="btn ghost" id="bg-disconnect">Отключить</button></div>
+       <div class="f"><label for="bg-length">Продолжительность</label><select id="bg-length"><option value="15">15 минут</option><option value="60" selected>1 час</option><option value="240">4 часа</option><option value="480">8 часов</option></select></div>
+       <div class="row"><button type="submit" class="btn primary" id="bg-start">Записать фон</button><button type="button" class="btn" id="bg-stop" hidden>Остановить</button></div>
+     </form>
+     <div id="bg-status" role="status" class="note"></div>`)} `;
+}
+
+function bindRecording(panel) {
+  const mode = panel.querySelector("#train-capture");
+  const limit = panel.querySelector("#train-limit");
+  mode.onchange = () => act(mode, async () => {
+    try { await api("PUT", train(), { mode: mode.checked }); }
+    catch (error) { mode.checked = !mode.checked; throw error; }
+  });
+  limit.onchange = () => act(limit, async () => {
+    const mb = Number.parseInt(limit.value, 10);
+    try { await api("PUT", train(), { limit_mb: mb }); T.limit_mb = mb; }
+    catch (error) { limit.value = `${T.limit_mb} МБ`; throw error; }
+  });
+  const form = panel.querySelector("#train-bg");
+  const connection = panel.querySelector("#bg-connect");
+  const provider = panel.querySelector("#bg-provider"), link = panel.querySelector("#bg-link");
+  const email = panel.querySelector("#bg-email"), password = panel.querySelector("#bg-password");
+  const start = panel.querySelector("#bg-start"), stop = panel.querySelector("#bg-stop"), status = panel.querySelector("#bg-status");
+  const disconnect = panel.querySelector("#bg-disconnect"), length = panel.querySelector("#bg-length");
+  provider.onchange = () => {
+    const koofr = provider.value === "koofr";
+    link.disabled = panel.querySelector("#bg-link-field").hidden = koofr;
+    email.disabled = panel.querySelector("#bg-email-field").hidden = !koofr;
+    password.required = koofr;
+    panel.querySelector("#bg-nextcloud-help").hidden = koofr;
+    panel.querySelector("#bg-koofr-help").hidden = !koofr;
+    panel.querySelector("#bg-password-label").textContent = koofr ? "Пароль приложения Koofr" : "Пароль ссылки, если задан";
+    password.value = "";
+  };
+  let timer;
+  function show(result) {
+    if (!form.isConnected) return;
+    clearTimeout(timer);
+    const connected = Boolean(result.provider);
+    connection.hidden = connected;
+    form.hidden = !connected;
+    panel.querySelector("#bg-cloud-name").textContent = result.provider === "koofr" ? "Koofr подключён" : "Nextcloud подключён";
+    start.hidden = result.running;
+    stop.hidden = !result.running;
+    disconnect.hidden = length.disabled = result.running;
+    status.textContent = result.error || (result.sent || result.running || result.discarded
+      ? `${result.running ? (result.uploading ? "Отправляю запись. " : `Записываю. Осталось ${Math.ceil(result.left_sec / 60)} мин. `) : ""}Архивов отправлено: ${result.sent}. Фрагментов пропущено: ${result.discarded}.` : "");
+    status.classList.toggle("err", Boolean(result.error));
+    if (result.running) timer = setTimeout(refresh, 2500);
+  }
+  async function refresh() {
+    if (!form.isConnected) return;
+    try { show(await api("GET", BACKGROUND)); }
+    catch (error) { status.textContent = error.message; }
+  }
+  connection.onsubmit = (event) => {
+    event.preventDefault();
+    void act(panel.querySelector("#bg-connect-button"), async () => {
+      const input = { provider: provider.value, password: password.value };
+      if (input.provider === "koofr") input.email = email.value;
+      else input.link = link.value;
+      const result = await api("PUT", BACKGROUND + "/cloud", input);
+      password.value = link.value = "";
+      show(result);
+    });
+  };
+  disconnect.onclick = () => act(disconnect, async () => show(await api("DELETE", BACKGROUND + "/cloud")));
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    void act(start, async () => {
+      show(await api("POST", BACKGROUND, { minutes: Number(length.value) }));
+    });
+  };
+  stop.onclick = () => act(stop, async () => show(await api("DELETE", BACKGROUND)));
+  void refresh();
 }
 
 // ---- проверка: плеер, который всё время играет текущую запись по кругу
@@ -124,8 +222,8 @@ export async function answer(a, btn) {
   RV.started = true;   // ответили — дальше записи сами играют по кругу
   if (a === "skip") { skipped.add(x.kind + "/" + x.name); drawReview(); return; }
   await act(btn, async () => {
-    await api("POST", TRAIN + "/move", { kind: x.kind, name: x.name, to: a === "yes" ? "pos" : a === "no" ? "false" : "delete", reviewed: true });
-    T = await api("GET", TRAIN); T.clips ||= [];
+    await api("POST", train() + "/move", { kind: x.kind, name: x.name, to: a === "yes" ? "pos" : a === "no" ? "false" : "delete", reviewed: true });
+    T = await api("GET", train()); T.clips ||= [];
   });
   const c = T.counts || {};
   if ($("#c-pos")) { $("#c-pos").textContent = c.pos || 0; $("#c-false").textContent = c.false || 0; }
@@ -162,7 +260,7 @@ export function drawClips() {
     const f = e.target.closest("[data-f]"), mv = e.target.closest("[data-mv]"), pl = e.target.closest("[data-play]");
     if (f) { clipFilter = f.dataset.f; clipLimit = 40; drawClips(); return; }
     if (e.target.closest("#cl-more")) { clipLimit += 40; drawClips(); return; }
-    if (e.target.closest("#t-clear")) { if (confirm("Удалить все записи для обучения? Сначала лучше скачать архив.")) act(null, async () => { await api("DELETE", TRAIN); drawTrainingRecords(); }, "Записи удалены"); return; }
+    if (e.target.closest("#t-clear")) { if (confirm("Удалить все записи для обучения? Сначала лучше скачать архив.")) act(null, async () => { await api("DELETE", train()); drawTrainingRecords(); }, "Записи удалены"); return; }
     if (pl) {
       const a = LIST.audio ||= new Audio();
       if (LIST.key === pl.dataset.play && !a.paused) a.pause();
@@ -171,8 +269,8 @@ export function drawClips() {
       return;
     }
     if (mv && !mv.classList.contains("on")) await act(mv, async () => {
-      await api("POST", TRAIN + "/move", { kind: mv.dataset.k, name: mv.dataset.n, to: mv.dataset.mv, reviewed: true });
-      T = await api("GET", TRAIN); T.clips ||= []; drawClips(); drawReview();
+      await api("POST", train() + "/move", { kind: mv.dataset.k, name: mv.dataset.n, to: mv.dataset.mv, reviewed: true });
+      T = await api("GET", train()); T.clips ||= []; drawClips(); drawReview();
     });
   };
 }

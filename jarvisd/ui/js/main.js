@@ -181,8 +181,8 @@ export function route() {
     if (S.settings.wake_training) {
       v0.insertAdjacentHTML("beforeend", '<div id="wake-training"></div>');
       void drawWakeTraining(v0.querySelector("#wake-training"));
-      if (S.plugin_pages?.some(isTrainingPage)) {
-        loadExtStyle("training", "training");
+      if (S.settings.training_records || S.plugin_pages?.some(isTrainingPage)) {
+        loadExtStyle("training", "training", S.settings.training_records ? "/training.css" : undefined);
         v0.insertAdjacentHTML("beforeend", '<div id="training-records"></div>');
         const records = v0.querySelector("#training-records");
         void import("./training.js").then((m) => m.drawTrainingRecords(records)).catch((error) => {
@@ -221,10 +221,10 @@ async function viewExt(path) {
   }
 }
 
-function loadExtStyle(id, pg) {
+function loadExtStyle(id, pg, stylesheet) {
   if (document.querySelector(`link[data-ext="${id}/${pg}"]`)) return;
   const l = document.createElement("link");
-  l.rel = "stylesheet"; l.href = `/p/${encodeURIComponent(id)}/${encodeURIComponent(pg)}.css`; l.dataset.ext = `${id}/${pg}`;
+  l.rel = "stylesheet"; l.href = stylesheet || `/p/${encodeURIComponent(id)}/${encodeURIComponent(pg)}.css`; l.dataset.ext = `${id}/${pg}`;
   document.head.append(l);
 }
 

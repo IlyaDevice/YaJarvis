@@ -3,6 +3,7 @@
 #![recursion_limit = "256"]
 
 mod alice;
+mod alice_music;
 mod launchpatch;
 mod audio;
 mod chatgpt;
@@ -32,6 +33,10 @@ mod telemetry;
 mod vpn;
 mod wake;
 mod wake_profiles;
+#[cfg(feature = "wake-training")]
+mod training_records;
+#[cfg(feature = "wake-training")]
+mod training_background;
 mod web;
 
 use serde_json::{Value, json};
@@ -189,9 +194,22 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
             info: Box::new(move || info(&st)),
             event: {
                 let music = music.clone();
+                let engine = engine_cell.clone();
                 Box::new(move |manifest, name, data| {
                     if manifest.id=="chatgpt" && manifest.kind=="module" && name=="voice.event"{chatgpt::module_voice_event(data.clone());}
-                    if manifest.provides("youtube") { music.event(name, data); }
+                    if manifest.provides("youtube") {
+                        let was_playing = music.state().playing;
+                        let next = (name == "music.related_end").then(|| data.as_str().map(str::to_owned)).flatten();
+                        music.event(name, data);
+                        if let Some(e) = engine.get().and_then(std::sync::Weak::upgrade) {
+                            if let Some(id) = next {
+                                tokio::spawn(e.offer_next(id));
+                            } else if !was_playing && music.state().playing && music.alice.lock().unwrap().playing() {
+                                let music = music.clone();
+                                tokio::spawn(async move { let _ = music.alice_control("pause", &Value::Null).await; });
+                            }
+                        }
+                    }
                 })
             },
             ..Default::default()

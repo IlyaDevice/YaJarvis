@@ -474,7 +474,12 @@ impl Host {
         let (m, dir, settings, official) = {
             let mut g = self.inner.lock().unwrap();
             let Some(p) = g.plugins.get(id) else { return };
-            let (m, dir) = (p.manifest.clone(), p.dir.clone());
+            let (mut m, dir) = (p.manifest.clone(), p.dir.clone());
+            if m.id == "training" && (m.kind == "module" || g.state.get(id).is_some_and(|s| s.official)) {
+                if let Some(module) = modules::manifests().into_iter().find(|module| module.id == "training") {
+                    m = module;
+                }
+            }
             if m.needs_newer_core() {
                 g.plugins.get_mut(id).unwrap().err = format!("заработает после обновления Джарвиса до {}", m.min_core);
                 return;
@@ -497,6 +502,7 @@ impl Host {
         let Some(p) = g.plugins.get_mut(id) else { return };
         match res {
             Ok(rt) => {
+                p.manifest = m.clone();
                 p.rt = Some(rt);
                 p.err.clear();
                 log::info!("плагины: {id} {} запущен", m.version);
@@ -538,6 +544,16 @@ impl Host {
                     _ => false,
                 }
             })
+    }
+
+    #[cfg(feature = "wake-training")]
+    pub fn training_records(&self) -> Option<Arc<crate::training_records::Records>> {
+        let g = self.inner.lock().unwrap();
+        if !g.state.get("training").is_some_and(|s| s.enabled) { return None; }
+        match g.plugins.get("training")?.rt.as_ref()? {
+            Runtime::Module(module) => module.records(),
+            _ => None,
+        }
     }
 
     pub fn tools(&self) -> Vec<Value> {

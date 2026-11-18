@@ -395,6 +395,7 @@ impl Youtube {
         let mut pending: VecDeque<_> = tracks.into();
         let mut last = String::new();
         let mut retries = 0;
+        let mut finished_selection = None;
         while let Some(track) = pending.pop_front() {
             let resolved = if let Some(ready) = stream.take() {
                 Ok((track.clone(), ready))
@@ -538,8 +539,7 @@ impl Youtube {
                 continue;
             }
             if related_end {
-                self.event("music.related_end", track.id.clone().into())
-                    .await;
+                finished_selection = Some(track.id.clone());
             } else if radio {
                 if !candidates.is_empty() {
                     pending = candidates;
@@ -573,6 +573,9 @@ impl Youtube {
             }));
         }
         self.emit_state().await;
+        if let Some(id) = finished_selection {
+            self.event("music.related_end", id.into()).await;
+        }
     }
 
     async fn related(&self, id: &str) -> Result<Vec<Track>, String> {
@@ -766,12 +769,15 @@ impl Youtube {
             let track = started.await.map_err(|_| "Воспроизведение отменено")??;
             return Ok(json!({"ok":true,"answer":format!("Включил «{}».",track.title)}));
         }
+        let generation = self.state.lock().unwrap().generation;
         let items = if op == "related" {
             let expected = text(&args["expected"]);
-            let id = if expected.is_empty() {
-                self.state.lock().unwrap().track.id.clone()
-            } else {
-                expected
+            let id = {
+                let state = self.state.lock().unwrap();
+                if !expected.is_empty() && (state.track.id != expected || state.phase != Phase::Idle) {
+                    return Ok(Value::Null);
+                }
+                state.track.id.clone()
             };
             if !valid_id(&id) {
                 return Err("Нет текущего видео YouTube".into());
@@ -802,6 +808,9 @@ impl Youtube {
             return Err("Подходящих видео YouTube нет".into());
         };
         let answer = describe(first);
+        if self.state.lock().unwrap().generation != generation {
+            return Ok(Value::Null);
+        }
         let (_, generation) = self.halt(true).await;
         let mut state = self.state.lock().unwrap();
         if state.generation != generation {
