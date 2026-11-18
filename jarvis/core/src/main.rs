@@ -19,6 +19,7 @@ mod jlog;
 mod journal;
 mod led;
 mod llm;
+mod gemini;
 #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
 mod cloud_voice;
 #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]

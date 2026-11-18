@@ -36,7 +36,7 @@ pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,t
     for _ in 0..5 {
         let body=match id {
             "gemini"=>{
-                let mut declarations=Vec::new();for def in &defs {if def["type"]=="function"{declarations.push(json!({"name":def["name"],"description":def["description"],"parameters":def["parameters"]}));}}
+                let declarations=crate::gemini::declarations(&defs);
                 let mut body=json!({"contents":contents,"systemInstruction":{"parts":[{"text":instructions}]}});
                 let mut tools=vec![];if !declarations.is_empty(){tools.push(json!({"functionDeclarations":declarations}));}if p.web_search{tools.push(json!({"googleSearch":{}}));}if !tools.is_empty(){body["tools"]=tools.into();}body
             },
