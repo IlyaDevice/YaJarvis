@@ -11,6 +11,8 @@ default = ["lua"]
 lua = ["dep:mlua"]
 homeassistant = ["dep:jarvis-homeassistant"]
 yandexhome = ["dep:jarvis-yandexhome"]
+smartlife = ["dep:jarvis-smartlife", "dep:jarvis-home-common"]
+xiaomi = ["dep:jarvis-xiaomi", "dep:jarvis-home-common"]
 vpn = ["dep:jarvis-vpn"]
 openai = ["dep:jarvis-cloud", "jarvis-cloud/openai", "dep:futures-util"]
 gemini = ["dep:jarvis-cloud", "jarvis-cloud/gemini", "dep:futures-util"]
@@ -29,6 +31,9 @@ jarvis-cloud = { path = "../modules/cloud", optional = true }
 jarvis-vpn = { path = "../modules/vpn", optional = true }
 jarvis-yandexhome = { path = "../modules/yandexhome", optional = true }
 jarvis-homeassistant = { path = "../modules/homeassistant", optional = true }
+jarvis-smartlife = { path = "../modules/smartlife", optional = true }
+jarvis-xiaomi = { path = "../modules/xiaomi", optional = true }
+jarvis-home-common = { path = "../modules/home-common", optional = true }
 mlua = { version = "0.11.4", optional = true, features = ["lua54", "vendored", "serialize", "send"] }
 jarvis-dsp = { path = "../dsp" }
 serde.workspace = true

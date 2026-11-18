@@ -122,6 +122,10 @@ fn security_checks() -> Value {
 }
 
 pub async fn state(State(app): State<App>) -> Json<Value> {
+    let (xiaomi,smartlife)=tokio::join!(
+        super::home_vendor::state(&app,"xiaomi"),
+        super::home_vendor::state(&app,"smartlife")
+    );
     let chatgpt_login=match app.plugins.provider("chatgpt"){
         Ok(provider)=>provider.request("login.status",Value::Null,std::time::Duration::from_secs(1)).await.unwrap_or(Value::Null),
         Err(_)=>Value::Null,
@@ -181,8 +185,8 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "youtube": {"plugin": app.plugins.provider("youtube").is_ok()},
         "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),
                            "rooms": ha.get("rooms").cloned().unwrap_or(Value::Null)},
-        "xiaomi": {"signed_in": s.home_connected("xiaomi")},
-        "smartlife": {"signed_in": s.home_connected("smartlife")},
+        "xiaomi": xiaomi,
+        "smartlife": smartlife,
         "rooms": Value::Null,
         "update_available": false,
         "plugin_pages": app.plugins.pages(),

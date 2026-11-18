@@ -86,6 +86,9 @@ impl CoreServices {
         if service.is_empty() {
             return Err("у плагина нет доступа к этому сервису ядра".into());
         }
+        if matches!(id,"xiaomi"|"smartlife") && !official && matches!(method,"config.get"|"config.set"|"legacy") {
+            return Err("official plugin required".into());
+        }
         let field = |svc: &str| match svc {
             "homeassistant" => Some("home_assistant"),
             "xiaomi" => Some("xiaomi"),
@@ -166,7 +169,20 @@ impl CoreServices {
                 if name.is_empty() {
                     return Err("у сервиса нет старого кеша".into());
                 }
-                match std::fs::read(self.data_dir.join(name)) {
+                let path = if matches!(id,"xiaomi"|"smartlife") {
+                    let fresh=self.data_dir.join("plugins/home/data").join(name);
+                    if fresh.exists() { fresh }
+                    else if self.data_dir.join("plugins/home/data").join(format!("{name}.migrated")).exists() {
+                        return Ok(Value::Null);
+                    } else { self.data_dir.join(name) }
+                } else { self.data_dir.join(name) };
+                let read = || -> std::io::Result<Vec<u8>> {
+                    use std::io::Read;
+                    let mut bytes=Vec::new();
+                    std::fs::File::open(path)?.take((4<<20)+1).read_to_end(&mut bytes)?;
+                    Ok(bytes)
+                };
+                match read() {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Null),
                     Err(e) => Err(e.to_string()),
                     Ok(b) if b.len() > 4 << 20 => Err("старый кеш слишком большой".into()),

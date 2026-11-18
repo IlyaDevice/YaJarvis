@@ -13,6 +13,7 @@ mod config;
 mod diagnostics;
 mod device;
 mod homeassistant;
+mod home_vendor;
 mod keys;
 mod memory;
 mod music;
@@ -116,6 +117,14 @@ pub fn router(app: App) -> Router {
         .route("/api/prompt", put(config::prompt).delete(config::delete_prompt))
         .route("/api/home-assistant", get(homeassistant::get).put(homeassistant::put).delete(homeassistant::delete))
         .route("/api/home-assistant/rooms/discover", post(homeassistant::rooms))
+        .route("/api/xiaomi/login", post(home_vendor::xiaomi_login))
+        .route("/api/xiaomi/qr", get(home_vendor::xiaomi_qr))
+        .route("/api/xiaomi/refresh", post(home_vendor::xiaomi_refresh))
+        .route("/api/xiaomi", axum::routing::delete(home_vendor::xiaomi_logout))
+        .route("/api/smartlife/login", post(home_vendor::smartlife_login))
+        .route("/api/smartlife/qr", get(home_vendor::smartlife_qr))
+        .route("/api/smartlife/refresh", post(home_vendor::smartlife_refresh))
+        .route("/api/smartlife", axum::routing::delete(home_vendor::smartlife_logout))
         .route("/api/plugins", get(plugins::list))
         .route("/api/plugins/catalog", get(plugins::catalog))
         .route("/api/plugins/install", post(plugins::install))

@@ -30,6 +30,10 @@ pub fn manifests() -> Vec<Manifest> {
         serde_json::from_str(include_str!("../../../../plugins/yandexhome/plugin.json"))
             .expect("manifest yandexhome"),
     );
+    #[cfg(feature = "smartlife")]
+    out.push(serde_json::from_str(include_str!("../../../../plugins/smartlife/plugin.json")).expect("manifest smartlife"));
+    #[cfg(feature = "xiaomi")]
+    out.push(serde_json::from_str(include_str!("../../../../plugins/xiaomi/plugin.json")).expect("manifest xiaomi"));
     #[cfg(feature = "vpn")]
     out.push(
         serde_json::from_str(include_str!("../../../../plugins/vpn-rust/plugin.json"))
@@ -68,9 +72,13 @@ enum Implementation {
     HomeAssistant(jarvis_homeassistant::HomeAssistant),
     #[cfg(feature = "yandexhome")]
     YandexHome(jarvis_yandexhome::YandexHome),
+    #[cfg(feature = "smartlife")]
+    SmartLife(std::sync::Arc<jarvis_smartlife::SmartLife>),
+    #[cfg(feature = "xiaomi")]
+    Xiaomi(std::sync::Arc<jarvis_xiaomi::Xiaomi>),
     #[cfg(feature = "vpn")]
     Vpn(jarvis_vpn::Vpn),
-    #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt")))]
+    #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "smartlife", feature = "xiaomi", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt")))]
     Unavailable,
 }
 
@@ -235,6 +243,19 @@ mod tests {
     }
 }
 impl Module {
+    #[cfg(any(feature="smartlife",feature="xiaomi"))]
+    fn home_services(host:&std::sync::Weak<super::Host>,id:&'static str)->Result<jarvis_home_common::Host,String>{
+        let data=host.upgrade().ok_or("Хост плагинов завершился")?.dir().join(id).join("data");
+        let weak=host.clone();
+        let services:jarvis_home_common::Callback=std::sync::Arc::new(move|method,params|{
+            let weak=weak.clone();
+            Box::pin(async move{
+                let host=weak.upgrade().ok_or("Хост плагинов завершился")?;
+                (host.hooks.request)(id.into(),method,params).await
+            })
+        });
+        Ok(jarvis_home_common::Host::new(services,data))
+    }
     #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
     pub async fn cloud_socket(&self,key:&str)->Result<(jarvis_cloud::Socket,tokio::sync::watch::Receiver<bool>),String>{
         self.cloud_socket_config(key,None).await
@@ -260,6 +281,17 @@ impl Module {
             );
         }
         match m.main.as_str() {
+            #[cfg(feature="smartlife")]
+            "smartlife"=>{
+                let provider=std::sync::Arc::new(jarvis_smartlife::SmartLife::new(Self::home_services(&host,"smartlife")?));
+                provider.start_lan();
+                Ok(Self{host,stopped:AtomicBool::new(false),cancel:tokio::sync::watch::channel(false).0,implementation:Implementation::SmartLife(provider)})
+            }
+            #[cfg(feature="xiaomi")]
+            "xiaomi"=>{
+                let provider=std::sync::Arc::new(jarvis_xiaomi::Xiaomi::new(Self::home_services(&host,"xiaomi")?)?);
+                Ok(Self{host,stopped:AtomicBool::new(false),cancel:tokio::sync::watch::channel(false).0,implementation:Implementation::Xiaomi(provider)})
+            }
             #[cfg(feature="chatgpt")]
             "chatgpt"=>{
                 let weak=host.clone();let manifest=m.clone();let services:jarvis_chatgpt::Callback=std::sync::Arc::new(move|method,params|{let weak=weak.clone();let manifest=manifest.clone();Box::pin(async move{let host=weak.upgrade().ok_or("Хост завершился")?;if method=="voice.event"{(host.hooks.event)(&manifest,&method,params);return Ok(serde_json::json!(true));}(host.hooks.request)("chatgpt".into(),method,params).await})});
@@ -320,6 +352,10 @@ impl Module {
     }
     async fn dispatch(&self, method: &str, params: Value) -> Result<Value, String> {
         match (&self.implementation, method) {
+            #[cfg(feature="smartlife")]
+            (Implementation::SmartLife(provider),"smartlife")=>provider.request(params).await,
+            #[cfg(feature="xiaomi")]
+            (Implementation::Xiaomi(provider),"xiaomi")=>provider.request(params).await,
             #[cfg(feature="chatgpt")]
             (Implementation::ChatGpt(provider),method)=>provider.request(method,params).await,
             #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
@@ -360,6 +396,10 @@ impl Module {
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.cancel.send_replace(true);
+        #[cfg(feature="smartlife")]
+        if let Implementation::SmartLife(provider)=&self.implementation{provider.stop();}
+        #[cfg(feature="xiaomi")]
+        if let Implementation::Xiaomi(provider)=&self.implementation{provider.stop();}
         #[cfg(any(feature="openai",feature="gemini",feature="grok",feature="elevenlabs"))]
         if let Implementation::Cloud(provider)=&self.implementation{provider.close();}
         #[cfg(feature="chatgpt")]
