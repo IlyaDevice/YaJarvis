@@ -164,7 +164,7 @@ impl RtcVoice {
                     Some(DataChannelEvent::OnMessage(message))=>{
                         if message.data.len()>4*1024*1024{break;}let Ok(event)=serde_json::from_slice::<Value>(&message.data)else{continue;};let kind=event["type"].as_str().unwrap_or("");let text=event["item"]["text"].as_str().or_else(||event["delta"].as_str()).unwrap_or("");
                         match kind {
-                            "session.created"|"session.updated"=>{
+                            "session.started"|"session.created"|"session.updated"=>{
                                 if let Some(model)=event["session"]["model"].as_str().filter(|model|model.starts_with("gpt-live-") && model.len()<=80 && model.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'-'|b'.'|b'_'))){
                                     emit(&services,&event_id,"model",model.into()).await;
                                 }

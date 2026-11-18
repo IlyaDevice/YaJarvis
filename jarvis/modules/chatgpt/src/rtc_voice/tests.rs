@@ -84,7 +84,7 @@ async fn call(network:Value, fallback: bool){
         server.await.unwrap();
         let channel=channel_rx.recv().await.unwrap();
         let actual = "gpt-live-1.1-codex-test";
-        channel.send_text(&json!({"type":"session.created","session":{"model":actual}}).to_string()).await.unwrap();
+        channel.send_text(&json!({"type":"session.started","session":{"model":actual}}).to_string()).await.unwrap();
         channel.send_text(&json!({"type":"session.input_transcript.added","item":{"text":"hello"}}).to_string()).await.unwrap();
         channel.send_text(&json!({"type":"delegation.created","item":{"id":"d1","content":[{"text":"test task"}]}}).to_string()).await.unwrap();
         loop{if let Some(DataChannelEvent::OnMessage(message))=channel.poll().await{let result:Value=serde_json::from_slice(&message.data).unwrap();if result["type"]=="delegation.context.append"{assert_eq!(result["content"][0]["text"],"done");break;}}}
