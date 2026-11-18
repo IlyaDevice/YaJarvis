@@ -361,7 +361,7 @@ impl Script {
             return None;
         }
         match self
-            .request("command", Value::String(super::native::command_text(text)))
+            .request("command", Value::String(super::command_text(text)))
             .await
         {
             Ok(Value::String(s)) => Some(s),
@@ -421,8 +421,8 @@ mod tests {
             zip.write_all(source.as_bytes()).unwrap();
         }
         let raw = zip.finish().unwrap().into_inner();
-        let host = Host::new(dir.clone(), Hooks::default(), None);
-        host.install(&raw, "file", false, false).await.unwrap();
+        let host = Host::new(dir.clone(), Hooks::default());
+        host.install(&raw, "file", false).await.unwrap();
         let answer = host.command("Джарвис, подбрось монетку!").await.unwrap();
         assert!(
             answer == "Выпало: орёл" || answer == "Выпало: решка",
@@ -447,7 +447,7 @@ mod tests {
         std::fs::write(plugin.join("main.lua"), source).unwrap();
         std::fs::write(plugin.join("plugin.json"),json!({"id":"demo","name":"Lua demo","version":"1","kind":"lua","category":"fun","main":"main.lua","permissions":permissions,
             "network_allow":["127.0.0.1"],"settings":[{"key":"answer","type":"text","default":"орел"}]}).to_string()).unwrap();
-        let host = Host::new(dir.clone(), hooks, None);
+        let host = Host::new(dir.clone(), hooks);
         host.load().await;
         (host, dir)
     }

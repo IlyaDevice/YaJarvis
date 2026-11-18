@@ -19,5 +19,8 @@ hex = "0.4"
 base64 = "0.22"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 
+[target.'cfg(all(target_arch = "arm", target_env = "musl"))'.dependencies]
+rquickjs = { version = "0.12", features = ["bindgen"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -24,6 +24,7 @@ mod plugins;
 pub mod state;
 mod talk;
 mod ui;
+mod update;
 mod vpn;
 
 use crate::{plugins::Host, settings::Store, vpn::Proxy};
@@ -53,6 +54,7 @@ pub struct Web {
     pub data_dir: PathBuf,
     pub started: Instant,
     pub telemetry: Arc<crate::telemetry::Telemetry>,
+    pub updater: crate::updates::Updater,
     wake_update:Arc<tokio::sync::Mutex<()>>,
     fails: Mutex<HashMap<IpAddr, auth::Fail>>,
     reset_at: Mutex<Option<Instant>>,
@@ -63,7 +65,8 @@ pub type App = Arc<Web>;
 impl Web {
     pub fn new(store: Store, plugins: Arc<Host>, proxy: Arc<Proxy>, data_dir: PathBuf, engine: Arc<crate::engine::Engine>) -> App {
         let telemetry=crate::telemetry::Telemetry::start(data_dir.clone());
-        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, wake_update:Arc::default(), started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
+        let updater = crate::updates::Updater::new(data_dir.clone(), store.clone(), plugins.clone());
+        Arc::new(Web { store, plugins, proxy, engine, data_dir, telemetry, updater, wake_update:Arc::default(), started: Instant::now(), fails: Mutex::default(), reset_at: Mutex::default() })
     }
 }
 
@@ -117,6 +120,10 @@ pub fn router(app: App) -> Router {
         .route_layer(middleware::from_fn_with_state(app.clone(), wake_profiles::require_plugin));
     let api = Router::new().merge(training)
         .route("/api/state", get(state::state))
+        .route("/api/update", get(update::get).put(update::put))
+        .route("/api/update/check", post(update::check))
+        .route("/api/update/install", post(update::install))
+        .route("/api/update/upload", put(update::upload).layer(DefaultBodyLimit::max(jarvis_station::MAX_BINARY as usize)))
         .route("/api/stats", get(diagnostics::stats))
         .route("/api/logs", get(diagnostics::logs))
         .route("/api/leds/preview", post(device::leds))
@@ -166,8 +173,6 @@ pub fn router(app: App) -> Router {
         .route("/api/memory/forget", post(memory::forget))
         .route("/api/memory/compact", post(memory::compact))
         .route("/api/chatgpt/newchat", post(memory::new_chat))
-        .route("/p/{id}/{*file}", get(plugins::page_file))
-        .route("/api/p/{id}/{*path}", any(plugins::page_proxy).layer(DefaultBodyLimit::max(16 << 20)))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
     Router::new()
         .route("/healthz", get(|| async {Json(json!({"ready":true,"version":crate::version(),"modules":crate::plugins::compiled_modules()}))}))
@@ -182,10 +187,9 @@ pub fn router(app: App) -> Router {
         .with_state(app)
 }
 
-/// Часть API, которая ещё живёт только в Go-версии.
 async fn not_ported(req: Request) -> Response {
-    log::info!("веб: {} {} — ещё не перенесено", req.method(), req.uri().path());
-    reply(StatusCode::NOT_IMPLEMENTED, json!({"error": "Эта функция ещё не перенесена в новое ядро"}))
+    log::debug!("веб: неизвестный маршрут {} {}", req.method(), req.uri().path());
+    reply(StatusCode::NOT_FOUND, json!({"error": "Неизвестный API"}))
 }
 
 fn local_ip(ip: IpAddr) -> bool {
@@ -226,6 +230,13 @@ async fn guard(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr
 pub async fn serve(app: App, addr: &str) -> std::io::Result<()> {
     let addr = if addr.starts_with(':') { format!("0.0.0.0{addr}") } else { addr.to_string() };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    if let Some(ready) = std::env::var_os("JARVIS_READY_PATH") {
+        if let Ok(module) = std::env::var("JARVIS_INSTALL_MODULE") {
+            app.plugins.install_module(&module).await.map_err(std::io::Error::other)?;
+        }
+        jarvis_station::atomic(std::path::Path::new(&ready), format!("{} {}", std::process::id(), crate::version()).as_bytes())?;
+    }
+    update::automatic(app.clone());
     log::info!("веб-настройки: http://<ip колонки>{}", &addr[addr.rfind(':').unwrap_or(0)..]);
     axum::serve(listener, router(app).into_make_service_with_connect_info::<SocketAddr>()).await
 }

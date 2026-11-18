@@ -1,17 +1,9 @@
 # Third-party components
 
-YaJavis uses the dependencies pinned in `jarvisd/go.mod`, `jarvisd/go.sum` and `installer/go.mod`. Their licenses apply separately from YaJavis's MIT license. Corresponding upstream source versions are identified by these files.
-
 The panel's visual design was inspired by **dimap's [yapanel](https://github.com/dimap/yapanel-web)** (MIT, copyright 2026 dimap). The attribution remains in `jarvisd/ui/app.css`; its license is preserved in `LICENSES/yapanel-LICENSE`. See [CREDITS.md](CREDITS.md) for the authors and technical references used throughout the project.
 
 - Lucide icons — ISC, https://github.com/lucide-icons/lucide; license preserved in `LICENSES/Lucide-LICENSE`.
 
-- Xray-core — MPL-2.0, https://github.com/XTLS/Xray-core. Used without local modifications; source is available at the version pinned in `go.mod`.
-- goja — MIT, https://github.com/dop251/goja.
-- Pion WebRTC — MIT, https://github.com/pion/webrtc.
-- coder/websocket — ISC, https://github.com/coder/websocket.
-- gopus — see upstream license, https://github.com/thesyncim/gopus.
-- Go and golang.org/x packages — BSD-style licenses, https://go.dev/LICENSE.
 - Manrope font — SIL Open Font License 1.1; upstream distribution https://github.com/google/fonts/tree/main/ofl/manrope.
 - openWakeWord — Apache-2.0, https://github.com/dscripka/openWakeWord. `models/oww.bin` is a converted feature extractor; its upstream feature models originate from Google's speech embedding work. It is not a bundled openWakeWord wake-word classifier. The custom Jarvis classifier weights are `models/wake.bin` and `models/wake_oww.bin`; raw training recordings are excluded.
 - YouTube player processing uses [yt-dlp/ejs](https://github.com/yt-dlp/ejs) at commit
@@ -38,4 +30,4 @@ Its REALITY TLS fork is vendored with upstream licenses in `jarvis/vendor/realit
 the Chrome 133 profile follows uTLS (BSD notice in `jarvis/modules/vpn/UTLS-LICENSE.txt`)
 and uses RustCrypto ML-KEM (MIT OR Apache-2.0).
 
-License texts for bundled fonts, model components and Go dependencies are collected under `LICENSES/`. Release archives include these notices alongside the binaries.
+License texts for bundled fonts, model components and bundled dependencies are collected under `LICENSES/`. Release archives include these notices alongside the binaries.

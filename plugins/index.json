@@ -2,47 +2,6 @@
   "api": 1,
   "plugins": [
     {
-      "id": "vpn",
-      "category": "system",
-      "name": "VPN (VLESS)",
-      "kind": "native",
-      "version": "1.0.0",
-      "icon": "shield",
-      "recommended": true,
-      "provides": [
-        "vpn"
-      ],
-      "auto": {
-        "settings": [
-          "vless"
-        ]
-      },
-      "description": "Отдельный туннель Xray для выбранных подключений. Без VPN ядро работает без этой зависимости."
-    },
-    {
-      "id": "home",
-      "name": "Умный дом",
-      "version": "1.0.0",
-      "description": "Яндекс Умный дом, Home Assistant, Xiaomi и Smart Life: устройства, сценарии и уборка комнат.",
-      "kind": "native",
-      "category": "home",
-      "icon": "home",
-      "provides": [
-        "homeassistant",
-        "xiaomi",
-        "smartlife",
-        "yandexhome"
-      ],
-      "auto": {
-        "settings": [
-          "home_assistant",
-          "xiaomi",
-          "tuya",
-          "yandex_token"
-        ]
-      }
-    },
-    {
       "id": "weather",
       "category": "info",
       "name": "Погода",

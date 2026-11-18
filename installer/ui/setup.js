@@ -1,6 +1,6 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
-const $$ = (s) => [...document.querySelectorAll(s)];
+
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let speaker = null;
 // Keep the wizard inside the viewport; its action stays visible when fields expand.
@@ -40,7 +40,7 @@ const TZ = [["Europe/Moscow", "Москва (UTC+3)"], ["Europe/Minsk", "Мин�
 TZ.sort((a, b) => (a[0] === "UTC" ? -1 : b[0] === "UTC" ? 1 : 0));
 $("#tz").innerHTML = TZ.map(([v, n]) => `<option value="${v}">${n}</option>`).join("");
 
-const mb = (kb) => Math.max(1, Math.round(kb / 1024));
+
 function speakerRow(sp, i) {
   const ok = !sp.problems?.length;
   const badge = !ok ? `<span class="badge bad">не подходит</span>` : sp.installed ? `<span class="badge up">Джарвис ${esc(sp.installed)}</span>` : `<span class="badge ok">можно ставить</span>`;
@@ -51,12 +51,12 @@ function speakerRow(sp, i) {
 
 $("#scan").addEventListener("click", async (e) => {
   $("#scan").disabled = true;
-  $("#scan-st").innerHTML = `<span class="radar" aria-hidden="true"><i></i><i></i></span> Ищу колонки с ADB в вашей сети…`;
+  $("#scan-st").innerHTML = `<span class="radar" aria-hidden="true"><i></i><i></i></span> Проверяю подключённые по ADB колонки…`;
   $("#found").innerHTML = "";
   try {
     const d = await api("GET", "/api/scan");
     const list = d.speakers || [];
-    $("#scan-st").textContent = list.length ? `Найдено: ${list.length}` : "Ничего не нашлось. Проверьте, что колонка разлочена и в той же сети, или введите IP вручную.";
+    $("#scan-st").textContent = list.length ? `Найдено: ${list.length}` : "Введите IP колонки, если она ещё не подключена по ADB.";
     $("#found").innerHTML = list.map(speakerRow).join("");
     list.forEach((s, i) => { const el = $("#found").children[i]; if (el) el.style.setProperty("--i", i); });
     window._list = list;
@@ -74,21 +74,12 @@ function tile(k, v, sub, pct, tone) {
   return `<div class="tile${tone ? " " + tone : ""}"><span class="k">${k}</span><span class="n">${v}</span>${pct != null ? `<span class="meter"><i style="--p:${Math.max(3, Math.min(100, pct))}%"></i></span>` : ""}<small>${sub}</small></div>`;
 }
 function drawSpace(sp) {
-  const clean = $("#clean").checked, addons = sp.addons || [];
-  const removing = new Set(clean ? addons.map((a) => a.id) : sp.auto_free || []);
-  let free = sp.free_mb * 1024;
-  if (clean || removing.size || sp.free_mb < sp.need_mb) free += sp.junk_kb || 0;
-  addons.forEach((a) => { if (removing.has(a.id)) free += a.kb; });
-  const after = Math.floor(free / 1024), short = sp.need_mb && after < sp.need_mb;
-  const pct = sp.need_mb ? (after / Math.max(sp.need_mb * 2, after)) * 100 : 50;
-  const changed = after !== sp.free_mb;
-  $("#tile-space").outerHTML = tile("Место на колонке", `${after}<small>МБ${changed ? ` · было ${sp.free_mb}` : ""}</small>`,
-    short ? `нужно ${sp.need_mb} МБ — не хватает` : `нужно ${sp.need_mb || "?"} МБ`, pct, short ? "bad" : "").replace('class="tile', 'id="tile-space" class="tile');
-  $$("#addons-list .ad").forEach((row) => row.classList.toggle("rm", removing.has(row.dataset.id)));
-  const total = addons.reduce((n, a) => n + a.kb, 0) + (sp.junk_kb || 0);
-  $("#clean-hint").textContent = clean ? `Удалим всё из списка${sp.junk_kb ? " и кэш голосов Джарвиса" : ""} — освободится около ${mb(total)} МБ. Root, ADB, SSH и сама Алиса не трогаются.`
-    : (sp.auto_free || []).length ? "Места не хватает — отмеченное удалим сами, остальное оставим. Включите, чтобы убрать всё."
-    : "Удалить всё из списка перед установкой. Root, ADB, SSH и сама Алиса не трогаются.";
+  const after = sp.staging_mb ?? sp.free_mb;
+  const short = after < sp.need_mb;
+  const changed = after > sp.free_mb;
+  $("#tile-space").outerHTML = tile("Место для установки", `${after}<small>МБ</small>`, short ? "Нужно " + sp.need_mb + " МБ" :
+    changed ? "Включая место от предыдущей копии" : "Нужно " + sp.need_mb + " МБ",
+    after / Math.max(sp.need_mb * 2, after) * 100, short ? "bad" : "").replace('class="tile', 'id="tile-space" class="tile');
   $("#to3").disabled = !!sp.problems?.length || short;
 }
 function show(sp) {
@@ -105,26 +96,25 @@ function show(sp) {
     [!(sp.problems || []).some((p) => /профил|init\.d|maind/.test(p)), "Автозапуск и Алиса", "найдены"],
   ];
   $("#sp-checks").innerHTML = checks.map(([ok, k, v], i) => `<li class="${ok ? "ok" : "bad"}" style="--i:${i}" title="${esc(v)}"><i aria-hidden="true"></i><span>${k}${ok ? "" : `<small>${v}</small>`}</span></li>`).join("");
-  $("#sp-info").innerHTML = [["IP", sp.ip], ["Модель", sp.model_id || "?"], ["Процессор", sp.arch || "?"], ["Алиса / микрофон", sp.userland || "?"], ["Root", sp.root ? "есть" : "нет"], ["Память", sp.ram_mb ? sp.ram_mb + " МБ" : "?"], ["Свободно места", sp.free_mb ? sp.free_mb + " МБ" : "?"], ["Джарвис", sp.installed || "не установлен"]]
+  $("#sp-info").innerHTML = [["IP", sp.ip], ["Модель", sp.model || "?"], ["Процессор", sp.arch || "?"], ["Алиса / микрофон", sp.userland || "?"], ["Root", sp.root ? "есть" : "нет"], ["Память", sp.ram_mb ? sp.ram_mb + " МБ" : "?"], ["Свободно места", sp.free_mb ? sp.free_mb + " МБ" : "?"], ["Джарвис", sp.installed || "не установлен"]]
     .map(([k, v]) => `<span>${k}</span><span>${esc(v)}</span>`).join("");
   $("#sp-problems").innerHTML = (sp.problems || []).map((p) => `<div class="problem">${esc(p)}</div>`).join("") + (sp.notes || []).map((n) => `<div class="note">${esc(n)}</div>`).join("");
-  const addons = sp.addons || [];
-  $("#sp-addons").classList.toggle("hidden", !addons.length && !sp.junk_kb);
-  $("#addons-sum").textContent = addons.length ? `${addons.length} — ${mb(addons.reduce((n, a) => n + a.kb, 0))} МБ` : "";
-  $("#addons-list").innerHTML = addons.map((a) => `<div class="ad" data-id="${esc(a.id)}"><span class="b"><b>${esc(a.name)}</b><small>${esc(a.about)}</small>${a.mic ? `<em>занимает микрофон</em>` : ""}</span><span class="sz">${mb(a.kb)} МБ</span><span class="tag">удалим</span></div>`).join("")
-    + (sp.junk_kb ? `<div class="ad junk" data-id="junk"><span class="b"><b>Кэш Джарвиса</b><small>озвучки и старые копии — настройки останутся</small></span><span class="sz">${mb(sp.junk_kb)} МБ</span><span class="tag">удалим</span></div>` : "");
-  $("#clean").checked = false;
   drawSpace(sp);
   $("#to3").textContent = sp.installed ? "Обновить" : "Дальше";
   $("#uninstall").classList.toggle("hidden", !sp.installed);
   step(2);
 }
-$("#clean").addEventListener("change", () => { drawSpace(speaker); $$("#addons-list .junk").forEach((r) => r.classList.toggle("rm", $("#clean").checked || (speaker.auto_free || []).length > 0)); });
 
 document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => step(+b.dataset.back)));
 $("#to3").addEventListener("click", () => {
   // при обновлении пароль и ключи уже на колонке — поля можно оставить пустыми
   $("#pw").placeholder = speaker.installed ? "Не менять" : "Пароль";
+  $("#tz-keep")?.remove();
+  if (speaker.installed) {
+    const option = new Option("Оставить как есть", "", true, true);
+    option.id = "tz-keep";
+    $("#tz").prepend(option);
+  }
   step(3);
 });
 
@@ -136,7 +126,7 @@ $("#install").addEventListener("click", async () => {
   const v = $("#vless").value.trim();
   if (v && !v.startsWith("vless://")) { $("#s3-err").textContent = "Ссылка должна начинаться с vless://"; return; }
   try {
-    await api("POST", "/api/install", { ip: speaker.ip, password: pw, openai: $("#openai").value.trim(), vless: v, timezone: $("#tz").value, clean: $("#clean").checked });
+    await api("POST", "/api/install", { ip: speaker.ip, password: pw, openai: $("#openai").value.trim(), vless: v, timezone: $("#tz").value });
     $("#pw").value = $("#pw2").value = $("#openai").value = "";
     run("Устанавливаю…");
   } catch (err) { $("#s3-err").textContent = err.message; }

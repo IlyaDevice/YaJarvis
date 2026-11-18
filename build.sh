@@ -1,41 +1,81 @@
 #!/bin/sh
-# Public release build. Never reads local settings or .env files.
+# Build release assets for Linux-based Stations. Desktop installers build natively.
 set -eu
 cd "$(dirname "$0")"
-VERSION=${VERSION:-0.9.70}
+: "${VERSION:=dev}" "${REPO:=newfpv/YaJavis}" "${ZIG:=zig}"
 VERSION=${VERSION#v}
-REPO=${REPO:-newfpv/YaJavis}
-GO=${GO:-go}
-ZIG=${ZIG:-zig}
-P=installer/payload
-mkdir -p build "$P"
-"$GO" run scripts/pack-google.go
-trap 'rm -f jarvisd/google_app_generated.go' EXIT
-LD="-s -w -buildid= -X main.version=$VERSION -X main.defaultRepo=$REPO"
-for arch in arm64 arm; do
-    name=arm64
-    [ "$arch" != arm ] || name=armv7
-    (cd jarvisd && CGO_ENABLED=0 GOOS=linux GOARCH=$arch GOARM=7 "$GO" build -trimpath -ldflags="$LD" -o "../$P/jarvisd-$name" .)
+export JARVIS_VERSION="$VERSION" JARVIS_UI="$PWD/jarvisd/ui" JARVIS_REPO="$REPO"
+out="$PWD/build/release"
+tools="$PWD/build/station-build"
+mkdir -p "$out" "$tools"
+ZIG=$(command -v "$ZIG")
+export ZIG
+cat > "$tools/cc" <<'EOF'
+#!/bin/sh
+original=$#
+while [ "$original" -gt 0 ]; do
+    case "$1" in --target=*) ;; *) set -- "$@" "$1" ;; esac
+    shift
+    original=$((original - 1))
 done
-"$ZIG" cc -target arm-linux-gnueabihf.2.30 -mcpu=cortex_a7 -shared -fPIC -O2 -s -o "$P/vqe_tap-armhf.so" station/vqe_tap.c -ldl
-"$ZIG" cc -target aarch64-linux-gnu.2.30 -shared -fPIC -O2 -s -o "$P/vqe_tap-arm64.so" station/vqe_tap.c -ldl
-"$ZIG" cc -target arm-linux-gnueabihf.2.30 -mcpu=cortex_a7 -O2 -s -o "$P/spotcmd" station/spotcmd.c -ldl
-tr -d '\r' < station/jarvisd.sh > "$P/jarvisd.sh"
-tr -d '\r' < station/S98jarvisd > "$P/S98jarvisd"
-cp models/wake.bin models/oww.bin models/wake_oww.bin "$P/"
-(cd installer && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "$GO" build -trimpath -ldflags="-s -w -buildid= -X main.version=$VERSION" -o ../build/JarvisSetup.exe .)
-if [ "${RELEASE:-0}" = 1 ]; then
-    R=build/release
-    mkdir -p "$R"
-    for t in windows/amd64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-        os=${t%/*}; arch=${t#*/}; ext=
-        [ "$os" != windows ] || ext=.exe
-        (cd installer && CGO_ENABLED=0 GOOS=$os GOARCH=$arch "$GO" build -trimpath -ldflags="-s -w -buildid= -X main.version=$VERSION" -o "../$R/JarvisSetup-$os-$arch$ext" .)
-    done
-    cp "$P/jarvisd-arm64" "$P/jarvisd-armv7" "$R/"
-    sed "s#__REPO__#$REPO#g" installer/install.sh | tr -d '\r' > "$R/install.sh"
-    sed "s#__REPO__#$REPO#g" installer/install.ps1 | tr -d '\r' > "$R/install.ps1"
-    tar -czf "$R/THIRD_PARTY_NOTICES.tar.gz" LICENSE LICENSES THIRD_PARTY.md CREDITS.md
-    "$GO" run scripts/pack-plugins.go "$R"   # официальные плагины: plugin-<id>.zip
-    (cd "$R" && sha256sum JarvisSetup-* jarvisd-* install.* plugin-*.zip THIRD_PARTY_NOTICES.tar.gz > SHA256SUMS)
-fi
+exec "$ZIG" cc -target "$JARVIS_ZIG_TARGET" ${JARVIS_ZIG_CPU:+-mcpu="$JARVIS_ZIG_CPU"} "$@"
+EOF
+cat > "$tools/ar" <<'EOF'
+#!/bin/sh
+exec "$ZIG" ar "$@"
+EOF
+chmod +x "$tools/cc" "$tools/ar"
+
+"$ZIG" cc -target arm-linux-gnueabihf.2.30 -mcpu=cortex_a7 -shared -fPIC -O2 -s -o "$tools/vqe_tap-armhf.so" station/vqe_tap.c -ldl
+"$ZIG" cc -target aarch64-linux-gnu.2.30 -shared -fPIC -O2 -s -o "$tools/vqe_tap-arm64.so" station/vqe_tap.c -ldl
+"$ZIG" cc -target arm-linux-gnueabihf.2.30 -mcpu=cortex_a7 -O2 -s -o "$tools/spotcmd" station/spotcmd.c -ldl
+
+manifest="$out/rust-builds.json"
+printf '{"version":"%s","builds":[' "$VERSION" > "$manifest"
+modules='["chatgpt","openai","gemini","grok","elevenlabs","homeassistant","yandexhome","smartlife","xiaomi","vpn","youtube","training"]'
+comma=
+for arch in ${STATION_ARCHES:-arm64 armv7}; do
+    case "$arch" in
+        arm64)
+            target=aarch64-unknown-linux-musl
+            export JARVIS_ZIG_TARGET=aarch64-linux-musl JARVIS_ZIG_CPU= JARVIS_CMAKE_CPU=aarch64
+            ;;
+        armv7)
+            target=armv7-unknown-linux-musleabihf
+            export JARVIS_ZIG_TARGET=arm-linux-musleabihf JARVIS_ZIG_CPU=cortex_a7 JARVIS_CMAKE_CPU=armv7
+            includes=$("$tools/cc" -E -v -x c /dev/null 2>&1 | sed -n '/^#include <\.\.\.>/,/^End of search list\./s/^ \(.*\)$/-isystem "\1"/p' | tr '\n' ' ')
+            test -n "$includes"
+            export BINDGEN_EXTRA_CLANG_ARGS_armv7_unknown_linux_musleabihf="-nostdinc $includes"
+            ;;
+        *) echo "Unknown Station architecture: $arch" >&2; exit 1 ;;
+    esac
+    env_target=$(printf '%s' "$target" | tr - _)
+    export "CC_$env_target=$tools/cc" "AR_$env_target=$tools/ar"
+    export "CMAKE_TOOLCHAIN_FILE_$env_target=$PWD/scripts/aarch64-musl.cmake" "CMAKE_GENERATOR_$env_target=Ninja"
+    export JARVIS_CMAKE_CC="$tools/cc" JARVIS_CMAKE_AR="$tools/ar"
+    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis -p jarvis-station --all-features)
+    release="${CARGO_TARGET_DIR:-$PWD/jarvis/target}/$target/release"
+    stage="$tools/$arch"
+    mkdir -p "$stage"
+    cp "$release/jarvis" "$stage/jarvisd"
+    cp "$release/jarvis-supervisor" "$stage/"
+    cp "$tools"/vqe_tap-*.so "$tools/spotcmd" models/wake.bin models/oww.bin models/wake_oww.bin "$stage/"
+    for file in jarvisd.sh S98jarvisd; do tr -d '\r' < "station/$file" > "$stage/$file"; done
+    rm -f "$out/station-$arch.zip"
+    (cd "$stage" && zip -q "$out/station-$arch.zip" jarvisd jarvis-supervisor vqe_tap-*.so spotcmd wake.bin oww.bin wake_oww.bin jarvisd.sh S98jarvisd)
+    cp "$stage/jarvisd" "$out/jarvisd-$arch"
+    bytes=$(wc -c < "$stage/jarvisd" | tr -d '[:space:]')
+    printf '%s{"arch":"%s","asset":"jarvisd-%s","modules":%s,"bytes":%s}' "$comma" "$arch" "$arch" "$modules" "$bytes" >> "$manifest"
+    comma=,
+    (cd jarvis && cargo build --locked --release --target "$target" -p jarvis)
+    cp "$release/jarvis" "$out/jarvisd-$arch-small"
+    bytes=$(wc -c < "$release/jarvis" | tr -d '[:space:]')
+    printf ',{"arch":"%s","asset":"jarvisd-%s-small","modules":[],"bytes":%s}' "$arch" "$arch" "$bytes" >> "$manifest"
+done
+printf ']}\n' >> "$manifest"
+for file in install.sh install.ps1; do
+    sed "s#__REPO__#$REPO#g" "installer/$file" | tr -d '\r' > "$out/$file"
+done
+tar -czf "$out/THIRD_PARTY_NOTICES.tar.gz" LICENSE LICENSES THIRD_PARTY.md CREDITS.md
+sh scripts/pack-plugins.sh "$out"
+(cd "$out" && sha256sum station-*.zip jarvisd-* install.* plugin-*.zip rust-builds.json THIRD_PARTY_NOTICES.tar.gz > SHA256SUMS)

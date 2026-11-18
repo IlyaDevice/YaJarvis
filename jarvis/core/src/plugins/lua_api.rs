@@ -63,7 +63,7 @@ pub fn install(
     )?;
     api.set(
         "normalize",
-        lua.create_function(|_, s: String| Ok(super::super::native::command_text(&s)))?,
+        lua.create_function(|_, s: String| Ok(super::super::command_text(&s)))?,
     )?;
     api.set(
         "random",

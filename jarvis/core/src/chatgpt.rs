@@ -3,7 +3,7 @@
 
 use crate::{
     journal::Journal,
-    plugins::{BoxFut, Host, Runtime, native::Native},
+    plugins::{BoxFut, Host, Runtime},
     session::{Dialog, Session, queue_mic, take_mic_caught_up},
     settings::{BACKEND_MODELS, Profile},
     tools::Tools,
@@ -77,7 +77,7 @@ pub struct ChatGptSession {
     pending: Mutex<Vec<i16>>,
     out_tx: Mutex<Option<SyncSender<Vec<i16>>>>,
     out_rx: Mutex<Option<Receiver<Vec<i16>>>>,
-    native: Mutex<Option<Runtime>>,
+    provider: Mutex<Option<Runtime>>,
     started: Mutex<Option<Receiver<Result<(), String>>>>,
     cancelled: AtomicBool,
     wake: tokio::sync::Notify,
@@ -110,7 +110,7 @@ impl ChatGptSession {
             pending: Mutex::default(),
             out_tx: Mutex::new(Some(tx)),
             out_rx: Mutex::new(Some(rx)),
-            native: Mutex::default(),
+            provider: Mutex::default(),
             started: Mutex::new(Some(srx)),
             cancelled: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
@@ -136,8 +136,7 @@ impl ChatGptSession {
             }
         };
         drop(host);
-        let pid = n.native().map(|n|n.pid());
-        *self.native.lock().unwrap() = Some(n.clone());
+        *self.provider.lock().unwrap() = Some(n.clone());
         SESSIONS.lock().unwrap().insert(self.id.clone(), Arc::downgrade(&self));
         let t0 = Instant::now();
         let open = async {
@@ -154,9 +153,6 @@ impl ChatGptSession {
             tokio::select! {
                 _ = self.wake.notified() => continue,
                 _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-            }
-            if pid.is_some_and(|pid|n.native().is_none_or(|n|n.pid()!=pid)) {
-                break; // плагин перезапустился — разговора на той стороне больше нет
             }
             // до 0,06 с за такт — втрое быстрее реального времени: звук, накопленный с момента слова и пока
             // открывался звонок, быстро уходит плагину, а тот догоняет, выкидывая паузы. По 0,1 с за такт
@@ -236,7 +232,7 @@ impl Session for ChatGptSession {
         }
     }
     fn say(&self, text: &str) -> Result<(), String> {
-        let n = self.native.lock().unwrap().clone().ok_or("ChatGPT not ready")?;
+        let n = self.provider.lock().unwrap().clone().ok_or("ChatGPT not ready")?;
         let p = json!({"id": self.id, "text": text});
         self.rt.block_on(async move { n.request("voice.say", p, Duration::from_secs(20)).await }).map(|_| ())
     }
@@ -251,17 +247,12 @@ impl Session for ChatGptSession {
 }
 
 /// Событие голосовой сессии от плагина chatgpt.
-pub fn voice_event(n: &Arc<Native>, p: Value) {
-    event(Some(n),p);
-}
-pub fn module_voice_event(p:Value){event(None,p);}
-fn event(native:Option<&Arc<Native>>,p:Value){
+pub fn module_voice_event(p: Value) {
     let id = p.get("id").or(p.get("ID")).and_then(Value::as_str).unwrap_or("");
     let kind = p.get("kind").or(p.get("Kind")).and_then(Value::as_str).unwrap_or("");
     let value = p.get("value").or(p.get("Value")).cloned().unwrap_or(Value::Null);
     let Some(s) = SESSIONS.lock().unwrap().get(id).and_then(Weak::upgrade) else { return };
-    let permitted=s.native.lock().unwrap().as_ref().is_some_and(|runtime|match native{Some(native)=>runtime.native().is_some_and(|n|Arc::ptr_eq(n,native)),None=>matches!(runtime,Runtime::Module(_))});
-    if s.cancelled.load(Ordering::SeqCst) || !permitted {
+    if s.cancelled.load(Ordering::SeqCst) || s.provider.lock().unwrap().is_none() {
         return;
     }
     let text = value.as_str().unwrap_or("");

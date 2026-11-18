@@ -3,54 +3,85 @@ on:
   push:
     tags: ['v[0-9]*']
 permissions:
-  contents: write
-  actions: write
+  contents: read
 jobs:
-  release:
+  station:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Require release notes
         run: test -s "docs/releases/${GITHUB_REF_NAME#v}.md"
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: jarvisd/go.mod
-          cache-dependency-path: '**/go.sum'
+      - run: rustup update stable
+      - run: rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
+      - run: sudo apt-get install -y libclang-dev
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-      - name: Test
-        run: |
-          (cd jarvisd && go test ./...)
-          (cd hardware && go test ./...)
-          (cd pluginsdk && go test -race ./...)
-          for p in plugins/*/src; do (cd "$p" && go test -race ./...) || exit 1; done
-          for f in jarvisd/ui/js/*.js; do cp "$f" /tmp/check.mjs && node --check /tmp/check.mjs || exit 1; done
-          node --check installer/ui/setup.js
-      - name: Check concurrency regressions
-        run: cd jarvisd && go test -race -run 'Test(PlayerConcurrent|SettingsSnapshot|STT|ServiceHTTPPool|TrainingExport|YouTubeWarm|MiotTypes|AliceMisses|JSPlugin|NativePlugin|PluginsEnsure|BrokenPlugin|OfficialPlugins|PluginUpload|Provider|Preview|Jitter|VPN)' ./...
-      - name: Build clean release
+      - run: cargo test --locked --workspace --all-features
+        working-directory: jarvis
+      - run: sh build.sh
         env:
           VERSION: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-          RELEASE: '1'
-          GDRIVE_CLIENT: ${{ secrets.GDRIVE_CLIENT }}
-          GDRIVE_SECRET: ${{ secrets.GDRIVE_SECRET }}
-        run: sh build.sh
-      - name: Test installer
-        run: cd installer && go test ./...
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station
+          path: build/release/
+          if-no-files-found: error
+  setup:
+    strategy:
+      matrix:
+        include:
+          - runner: windows-latest
+            asset: windows-amd64.exe
+            bin: jarvis-setup.exe
+          - runner: ubuntu-latest
+            asset: linux-amd64
+            bin: jarvis-setup
+          - runner: ubuntu-24.04-arm
+            asset: linux-arm64
+            bin: jarvis-setup
+          - runner: macos-15-intel
+            asset: darwin-amd64
+            bin: jarvis-setup
+          - runner: macos-15
+            asset: darwin-arm64
+            bin: jarvis-setup
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable
+      - shell: bash
+        run: |
+          export JARVIS_VERSION="${GITHUB_REF_NAME#v}" JARVIS_REPO="$GITHUB_REPOSITORY"
+          cd jarvis
+          cargo build --locked --release -p jarvis-setup
+          mkdir -p ../build/setup
+          cp "target/release/${{ matrix.bin }}" "../build/setup/JarvisSetup-${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-${{ matrix.asset }}
+          path: build/setup/
+          if-no-files-found: error
+  publish:
+    needs: [station, setup]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: build/release
+          merge-multiple: true
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "Release already published; keeping its verified assets."
-          else
+          (cd build/release && sha256sum JarvisSetup-* >> SHA256SUMS)
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" build/release/* --verify-tag --title "YaJavis $GITHUB_REF_NAME" --notes-file "docs/releases/${GITHUB_REF_NAME#v}.md"
           fi
-      - name: Install counter files
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
           sh scripts/counter-assets.sh "${GITHUB_REF_NAME#v}"
           gh workflow run stats.yml --ref main || true

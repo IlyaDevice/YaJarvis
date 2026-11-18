@@ -1,0 +1,681 @@
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::{Request, State},
+    http::{StatusCode, header},
+    middleware::{self, Next},
+    response::Response,
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    io::{Cursor, Read},
+    net::{Ipv4Addr, SocketAddr},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+const REPO: &str = match option_env!("JARVIS_REPO") {
+    Some(s) => s,
+    None => "newfpv/YaJavis",
+};
+const VERSION: &str = match option_env!("JARVIS_VERSION") {
+    Some(s) => s,
+    None => "dev",
+};
+const STAGE: &str = "/tmp/jarvis-setup-stage";
+const REQUIRED: &[&str] = &[
+    "jarvisd",
+    "jarvis-supervisor",
+    "jarvisd.sh",
+    "S98jarvisd",
+    "wake.bin",
+    "oww.bin",
+    "wake_oww.bin",
+    "vqe_tap-armhf.so",
+    "vqe_tap-arm64.so",
+];
+type App = Arc<Setup>;
+
+struct Setup {
+    token: String,
+    address: SocketAddr,
+    job: Mutex<Job>,
+    adb: PathBuf,
+}
+
+#[derive(Default, Serialize)]
+struct Job {
+    lines: Vec<String>,
+    done: bool,
+    error: String,
+    url: String,
+    #[serde(skip)]
+    busy: bool,
+}
+
+#[derive(Default, Serialize)]
+struct Speaker {
+    ip: String,
+    model: String,
+    arch: String,
+    userland: String,
+    installed: String,
+    root: bool,
+    android: bool,
+    free_mb: u64,
+    staging_mb: u64,
+    ram_mb: u64,
+    need_mb: u64,
+    problems: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Address {
+    ip: Ipv4Addr,
+}
+
+#[derive(Deserialize)]
+struct Install {
+    ip: Ipv4Addr,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    openai: String,
+    #[serde(default)]
+    vless: String,
+    #[serde(default)]
+    timezone: String,
+}
+
+struct Scratch(PathBuf);
+impl Scratch {
+    fn new() -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!("jarvis-setup-{}", token()?));
+        std::fs::create_dir(&path).map_err(|e| e.to_string())?;
+        Ok(Self(path))
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let port = std::env::var("JARVIS_SETUP_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+    let address = listener.local_addr()?;
+    let adb = std::env::var_os("JARVIS_ADB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "adb".into());
+    let app = Arc::new(Setup {
+        token: token()?,
+        address,
+        job: Mutex::default(),
+        adb,
+    });
+    let api = Router::new()
+        .route("/api/scan", get(scan))
+        .route("/api/check", post(check))
+        .route("/api/job", get(job))
+        .route("/api/install", post(install))
+        .route("/api/uninstall", post(uninstall))
+        .route_layer(middleware::from_fn_with_state(app.clone(), authorize));
+    let router = Router::new()
+        .merge(api)
+        .route("/token.js", get(token_js))
+        .fallback(get(ui))
+        .layer(middleware::from_fn_with_state(app.clone(), loopback))
+        .with_state(app);
+    let url = format!("http://{address}/");
+    println!("Установщик Джарвиса {VERSION}: {url}");
+    if std::env::var_os("JARVIS_SETUP_NOBROWSER").is_none() {
+        let (cmd, args) = if cfg!(windows) {
+            (
+                "rundll32",
+                vec!["url.dll,FileProtocolHandler", url.as_str()],
+            )
+        } else if cfg!(target_os = "macos") {
+            ("open", vec![url.as_str()])
+        } else {
+            ("xdg-open", vec![url.as_str()])
+        };
+        let _ = std::process::Command::new(cmd).args(args).spawn();
+    }
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
+async fn authorize(State(app): State<App>, request: Request, next: Next) -> Response {
+    if request
+        .headers()
+        .get("X-Token")
+        .and_then(|v| v.to_str().ok())
+        != Some(app.token.as_str())
+    {
+        return reply(
+            StatusCode::FORBIDDEN,
+            json!({"error":"Доступ только из установщика"}),
+        );
+    }
+    next.run(request).await
+}
+
+async fn loopback(State(app): State<App>, request: Request, next: Next) -> Response {
+    if request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        != Some(app.address.to_string().as_str())
+    {
+        return reply(
+            StatusCode::FORBIDDEN,
+            json!({"error":"Откройте адрес из окна установщика"}),
+        );
+    }
+    let mut res = next.run(request).await;
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    res.headers_mut().insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"));
+    res
+}
+
+fn token() -> Result<String, String> {
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(hex::encode(bytes))
+}
+
+async fn token_js(State(app): State<App>) -> Response {
+    let text = format!(
+        "window.TOKEN={};window.VERSION={};",
+        json!(app.token),
+        json!(VERSION)
+    );
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
+        .body(Body::from(text))
+        .unwrap()
+}
+
+async fn ui(request: Request) -> Response {
+    macro_rules! asset {
+        ($name:literal) => {
+            include_bytes!(concat!("../../../installer/ui/", $name)) as &[u8]
+        };
+    }
+    let (mime, content) = match request.uri().path() {
+        "/" | "/index.html" => ("text/html; charset=utf-8", asset!("index.html")),
+        "/setup.js" => ("text/javascript; charset=utf-8", asset!("setup.js")),
+        "/setup.css" => ("text/css; charset=utf-8", asset!("setup.css")),
+        "/manrope-cyrillic.woff2" => ("font/woff2", asset!("manrope-cyrillic.woff2")),
+        "/manrope-latin.woff2" => ("font/woff2", asset!("manrope-latin.woff2")),
+        "/screenshots/dashboard.png" => ("image/png", asset!("screenshots/dashboard.png")),
+        "/screenshots/connections.png" => ("image/png", asset!("screenshots/connections.png")),
+        "/screenshots/assistant.png" => ("image/png", asset!("screenshots/assistant.png")),
+        "/screenshots/charts.png" => ("image/png", asset!("screenshots/charts.png")),
+        _ => return Response::builder().status(404).body(Body::empty()).unwrap(),
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime)
+        .body(Body::from(content))
+        .unwrap()
+}
+
+fn reply(status: StatusCode, value: Value) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(value.to_string()))
+        .unwrap()
+}
+fn bad(message: impl Into<String>) -> Response {
+    reply(StatusCode::BAD_REQUEST, json!({"error":message.into()}))
+}
+
+impl Setup {
+    async fn adb(&self, args: &[&str], seconds: u64) -> Result<String, String> {
+        let mut cmd = tokio::process::Command::new(&self.adb);
+        let result = tokio::time::timeout(
+            Duration::from_secs(seconds),
+            cmd.args(args).kill_on_drop(true).output(),
+        )
+        .await
+        .map_err(|_| "ADB не ответил вовремя")?
+        .map_err(|_| "ADB не найден. Добавьте Platform Tools в PATH или укажите JARVIS_ADB")?;
+        if !result.status.success() {
+            return Err(format!(
+                "Команда ADB завершилась с ошибкой {}",
+                result.status
+            ));
+        }
+        Ok(String::from_utf8_lossy(&result.stdout).trim().to_owned())
+    }
+
+    async fn shell(&self, ip: Ipv4Addr, script: &str) -> Result<String, String> {
+        self.adb(&["-s", &format!("{ip}:5555"), "shell", script], 40)
+            .await
+    }
+
+    async fn inspect(&self, ip: Ipv4Addr) -> Result<Speaker, String> {
+        if !ip.is_private() {
+            return Err("Нужен IP вашей колонки в домашней сети".into());
+        }
+        self.adb(&["connect", &format!("{ip}:5555")], 10).await?;
+        let info = self.shell(ip, r#"id -u; uname -m; head -c 160 /proc/device-tree/model 2>/dev/null | tr -d '\000\n'; printf '\n'; df -k /data 2>/dev/null | awk 'END{print $4}'; awk '/MemTotal/{print $2}' /proc/meminfo; od -An -tu1 -N20 /system/vendor/quasar/maind 2>/dev/null | tr '\n' ' '; printf '\n'; if test -d /etc/init.d && command -v aplay >/dev/null && command -v start-stop-daemon >/dev/null; then echo ready; else echo missing; fi; du -k /data/opt/jarvisd/jarvisd.prev-rust 2>/dev/null | awk '{print $1}'"#).await?;
+        let fields: Vec<_> = info.lines().collect();
+        let field = |i: usize| fields.get(i).map_or("", |s| s.trim());
+        let root = field(0) == "0";
+        let arch = match field(1) {
+            "aarch64" | "arm64" => "arm64",
+            "armv7l" | "armv8l" => "armv7",
+            _ => "",
+        };
+        let bytes: Vec<_> = field(5)
+            .split_whitespace()
+            .map_while(|n| n.parse::<u8>().ok())
+            .collect();
+        let userland = if bytes.len() >= 20 && &bytes[..4] == b"\x7fELF" && bytes[5] == 1 {
+            match (bytes[4], u16::from_le_bytes([bytes[18], bytes[19]])) {
+                (1, 40) => "armhf",
+                (2, 183) => "arm64",
+                _ => "",
+            }
+        } else {
+            ""
+        };
+        let installed = self
+            .shell(
+                ip,
+                "test ! -x /data/opt/jarvisd/jarvisd || /data/opt/jarvisd/jarvisd version",
+            )
+            .await
+            .unwrap_or_default();
+        let free_kb = field(3).parse::<u64>().unwrap_or(0);
+        let rollback_kb = field(7).parse::<u64>().unwrap_or(0);
+        let need_mb = if installed.is_empty() { 19 } else { 14 };
+        let mut sp = Speaker {
+            ip: ip.to_string(),
+            model: field(2).into(),
+            arch: arch.into(),
+            userland: userland.into(),
+            installed,
+            root,
+            free_mb: free_kb / 1024,
+            staging_mb: (free_kb + rollback_kb) / 1024,
+            ram_mb: field(4).parse::<u64>().unwrap_or(0) / 1024,
+            need_mb,
+            ..Default::default()
+        };
+        let profile = self
+            .shell(ip, "cat /system/vendor/quasar/launch.json 2>/dev/null")
+            .await
+            .unwrap_or_default();
+        if !root {
+            sp.problems
+                .push("На выбранной колонке нужны разрешённый ADB и root".into());
+        }
+        if arch.is_empty()
+            || userland.is_empty()
+            || field(6) != "ready"
+            || !profile.contains("--platformd")
+        {
+            sp.problems.push(
+                "Не подтверждены Linux-прошивка, профиль maind или аудиоинтерфейс колонки".into(),
+            );
+        }
+        Ok(sp)
+    }
+
+    fn start(
+        self: &Arc<Self>,
+        work: impl std::future::Future<Output = Result<String, String>> + Send + 'static,
+    ) -> Response {
+        let mut job = self.job.lock().unwrap();
+        if job.busy {
+            return bad("Уже выполняется другая операция");
+        }
+        *job = Job {
+            busy: true,
+            ..Default::default()
+        };
+        let app = self.clone();
+        tokio::spawn(async move {
+            let result = work.await;
+            let mut job = app.job.lock().unwrap();
+            job.busy = false;
+            job.done = true;
+            match result {
+                Ok(url) => job.url = url,
+                Err(error) => job.error = error,
+            }
+        });
+        reply(StatusCode::OK, json!({"ok":true}))
+    }
+
+    fn log(&self, text: &str) {
+        self.job.lock().unwrap().lines.push(text.into());
+    }
+    async fn push(&self, ip: Ipv4Addr, path: &Path, address: &str) -> Result<(), String> {
+        let path = path.to_str().ok_or("Недопустимый путь к файлу")?;
+        self.adb(&["-s", &format!("{ip}:5555"), "push", path, address], 120)
+            .await?;
+        Ok(())
+    }
+}
+
+async fn scan(State(app): State<App>) -> Response {
+    let devices = match app.adb(&["devices"], 10).await {
+        Ok(d) => d,
+        Err(e) => return bad(e),
+    };
+    let mut speakers = Vec::new();
+    for line in devices.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let Some(ip) = fields
+            .next()
+            .and_then(|s| s.strip_suffix(":5555"))
+            .and_then(|s| s.parse::<Ipv4Addr>().ok())
+        else {
+            continue;
+        };
+        if fields.next() != Some("device") {
+            continue;
+        }
+        if let Ok(speaker) = app.inspect(ip).await {
+            speakers.push(speaker);
+        }
+    }
+    reply(StatusCode::OK, json!({"speakers":speakers}))
+}
+async fn check(State(app): State<App>, Json(new): Json<Address>) -> Response {
+    match app.inspect(new.ip).await {
+        Ok(s) => reply(StatusCode::OK, json!(s)),
+        Err(e) => bad(e),
+    }
+}
+async fn job(State(app): State<App>) -> Response {
+    reply(StatusCode::OK, json!(*app.job.lock().unwrap()))
+}
+async fn install(State(app): State<App>, Json(input): Json<Install>) -> Response {
+    let work = app.clone();
+    app.start(async move { install_on(&work, input).await })
+}
+async fn uninstall(State(app): State<App>, Json(input): Json<Address>) -> Response {
+    let work = app.clone();
+    app.start(async move {
+        let speaker = work.inspect(input.ip).await?;
+        if !speaker.root || speaker.installed.is_empty() {
+            return Err("Джарвис на колонке не найден".into());
+        }
+        work.shell(
+            input.ip,
+            "start-stop-daemon -S -b -x /bin/sh -- /data/opt/jarvisd/jarvisd.sh uninstall",
+        )
+        .await?;
+        Ok(String::new())
+    })
+}
+
+async fn payload(arch: &str) -> Result<Vec<u8>, String> {
+    let name = format!("station-{arch}.zip");
+    if let Some(path) = std::env::var_os("JARVIS_SETUP_PAYLOAD") {
+        return tokio::fs::read(PathBuf::from(path).join(&name))
+            .await
+            .map_err(|e| e.to_string());
+    }
+    let url = if VERSION == "dev" {
+        format!("https://github.com/{REPO}/releases/latest/download")
+    } else {
+        format!("https://github.com/{REPO}/releases/download/v{VERSION}")
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(100))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client
+        .get(format!("{url}/{name}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|_| "Пакет колонки отсутствует в релизе")?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > 40 << 20 {
+            return Err("Пакет больше допустимого размера".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let sums = client
+        .get(format!("{url}/SHA256SUMS"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|_| "Контрольные суммы релиза недоступны")?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let wanted =
+        jarvis_station::checksum(&sums, &name).ok_or("Отсутствует контрольная сумма пакета")?;
+    let scratch = Scratch::new()?;
+    let file = scratch.0.join(name);
+    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+    if jarvis_station::sha256(&file).map_err(|e| e.to_string())? != wanted {
+        return Err("Контрольная сумма пакета не совпала".into());
+    }
+    Ok(bytes)
+}
+
+fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let mut sums = BTreeMap::new();
+    for name in REQUIRED.iter().chain(std::iter::once(&"spotcmd")) {
+        let mut entry = match zip.by_name(name) {
+            Ok(e) => e,
+            Err(_) if *name == "spotcmd" => continue,
+            Err(_) => return Err(format!("В пакете отсутствует {name}")),
+        };
+        if !entry.is_file() || entry.is_symlink() || entry.size() > jarvis_station::MAX_BINARY {
+            return Err(format!("Некорректный файл {name}"));
+        }
+        let mut data = Vec::new();
+        entry
+            .by_ref()
+            .take(jarvis_station::MAX_BINARY + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| e.to_string())?;
+        if data.len() as u64 > jarvis_station::MAX_BINARY {
+            return Err(format!("Слишком большой файл {name}"));
+        }
+        let path = dir.join(name);
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        sums.insert(
+            name.to_string(),
+            jarvis_station::sha256(&path).map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(sums)
+}
+
+async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
+    let ip = input.ip;
+    app.log("Подключаюсь к выбранной колонке…");
+    let sp = app.inspect(ip).await?;
+    if !sp.problems.is_empty() {
+        return Err(sp.problems.join(". "));
+    }
+    if sp.staging_mb < sp.need_mb {
+        return Err("На колонке недостаточно места для установки".into());
+    }
+    if (sp.installed.is_empty() || !input.password.is_empty())
+        && !(6..=72).contains(&input.password.len())
+    {
+        return Err("Пароль панели должен содержать от 6 до 72 байт".into());
+    }
+    if !input.vless.is_empty() && !input.vless.starts_with("vless://") {
+        return Err("Нужна ссылка vless://".into());
+    }
+    app.log("Определена архитектура колонки. Загружаю пакет Rust…");
+    let temp = Scratch::new()?;
+    let sums = unpack(payload(&sp.arch).await?, &temp.0)?;
+    let stage = format!("{STAGE}-{}", token()?);
+    app.shell(ip, &format!("umask 077; mkdir {stage}")).await?;
+    let result = stage_install(app, input, &sp, &stage, &temp.0, &sums).await;
+    let _ = app.shell(ip, &format!("rm -rf {stage}")).await;
+    result
+}
+
+async fn stage_install(
+    app: &Setup,
+    input: Install,
+    sp: &Speaker,
+    stage: &str,
+    temp: &Path,
+    sums: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let ip = input.ip;
+    for (name, digest) in sums {
+        app.log(&format!("Копирую {name}"));
+        app.push(ip, &temp.join(name), &format!("{stage}/{name}"))
+            .await?;
+        let actual = app.shell(ip, &format!("sha256sum {stage}/{name}")).await?;
+        if actual.split_whitespace().next() != Some(digest.as_str()) {
+            return Err(format!("Файл {name} повреждён при передаче"));
+        }
+    }
+    for (id, requested, manifest) in [
+        (
+            "openai",
+            !input.openai.is_empty(),
+            include_str!("../../../plugins/openai/plugin.json"),
+        ),
+        (
+            "vpn",
+            !input.vless.is_empty(),
+            include_str!("../../../plugins/vpn-rust/plugin.json"),
+        ),
+    ] {
+        if requested {
+            let filename = format!("module-{id}.json");
+            let path = temp.join(&filename);
+            tokio::fs::write(&path, manifest)
+                .await
+                .map_err(|e| e.to_string())?;
+            app.push(ip, &path, &format!("{stage}/{filename}")).await?;
+        }
+    }
+    let password_hash = if input.password.is_empty() {
+        String::new()
+    } else {
+        bcrypt::hash(input.password, 10).map_err(|e| e.to_string())?
+    };
+    let seed = temp.join("seed.json");
+    jarvis_station::atomic(&seed, json!({"password_hash":password_hash,"openai_key":input.openai,"vless":input.vless,"timezone":input.timezone}).to_string().as_bytes()).map_err(|e| e.to_string())?;
+    app.push(ip, &seed, &format!("{stage}/seed.json")).await?;
+    app.shell(
+        ip,
+        &format!(
+            "chmod 700 {stage}/jarvisd {stage}/jarvis-supervisor; chmod 600 {stage}/seed.json"
+        ),
+    )
+    .await?;
+    let image = app.shell(ip, &format!("{stage}/jarvisd core-info")).await?;
+    let image: jarvis_station::Image =
+        serde_json::from_str(&image).map_err(|_| "Колонка не запускает Rust-сборку")?;
+    if image.format != jarvis_station::IDENTITY || image.arch != sp.arch {
+        return Err("Архитектура сборки не совпадает".into());
+    }
+    app.log("Добавляю автозапуск и проверяю, что панель поднимается…");
+    app.shell(
+        ip,
+        &install_script(stage, &sp.userland, &sums["jarvisd"], &image.version)?,
+    )
+    .await?;
+    let url = format!("http://{ip}:8080/");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    for _ in 0..35 {
+        if let Ok(response) = client.get(format!("{url}healthz")).send().await
+            && let Ok(status) = response.json::<Value>().await
+            && status["version"] == image.version
+            && status["ready"] == true
+            && app
+                .shell(ip, "test ! -e /data/opt/jarvisd/update-rust.json")
+                .await
+                .is_ok()
+        {
+            app.log("Готово. Панель Джарвиса отвечает");
+            return Ok(url);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err("Панель новой сборки не ответила. Служба вернёт предыдущую версию, если она была установлена".into())
+}
+
+fn install_script(
+    stage: &str,
+    userland: &str,
+    digest: &str,
+    version: &str,
+) -> Result<String, String> {
+    if !matches!(userland, "armhf" | "arm64")
+        || digest.len() != 64
+        || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        || !version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+        || version.is_empty()
+    {
+        return Err("Повреждён пакет установки".into());
+    }
+    let pending = json!({"version":version,"sha256":digest});
+    Ok(format!(
+        r#"set -eu
+d=/data/opt/jarvisd; s={stage}
+mkdir -p "$d"
+test ! -e "$d/update-rust.json"
+rm -f "$d/jarvisd.prev-rust"
+cp "$s/jarvisd" "$d/jarvisd.next-rust"
+chmod 755 "$d/jarvisd.next-rust"
+cp "$s/jarvis-supervisor" "$d/jarvis-supervisor.new"
+chmod 755 "$d/jarvis-supervisor.new"
+for name in wake.bin oww.bin wake_oww.bin; do test -e "$d/$name" || cp "$s/$name" "$d/$name"; done
+cp "$s/vqe_tap-{userland}.so" "$d/vqe_tap.so.new"
+if [ -f "$s/spotcmd" ]; then cp "$s/spotcmd" "$d/spotcmd"; chmod 755 "$d/spotcmd"; fi
+mount -o remount,rw /
+if ! cp "$s/S98jarvisd" /etc/init.d/S98jarvisd || ! chmod 755 /etc/init.d/S98jarvisd; then mount -o remount,ro /; exit 1; fi
+mount -o remount,ro /
+if [ -x "$d/jarvisd.sh" ]; then "$d/jarvisd.sh" stop; sleep 2; fi
+for id in openai vpn; do
+    if [ -f "$s/module-$id.json" ] && [ ! -e "$d/plugins/$id/plugin.json" ]; then
+        mkdir -p "$d/plugins/$id"
+        cp "$s/module-$id.json" "$d/plugins/$id/plugin.json"
+    fi
+done
+cp "$s/jarvisd.sh" "$d/jarvisd.sh"
+chmod 755 "$d/jarvisd.sh"
+mv "$d/jarvis-supervisor.new" "$d/jarvis-supervisor"
+mv "$d/vqe_tap.so.new" "$d/vqe_tap.so"
+cp "$s/seed.json" "$d/seed.json"
+chmod 600 "$d/seed.json"
+rm -f "$s/seed.json" "$d/disabled"
+printf '%s' '{pending}' > "$d/update-rust.tmp"
+mv "$d/update-rust.tmp" "$d/update-rust.json"
+sync
+"$d/jarvisd.sh" boot"#
+    ))
+}

@@ -4,7 +4,7 @@ import { $$, ICONS, act, api, esc, icon, tip, toast, upload } from "./core.js";
 import { S } from "./main.js";
 
 export const PL = { data: null, list: null, catErr: "", loading: false };
-export const PL_KIND = { js: "лёгкий, JS", lua: "Lua", native: "программа", module: "Модуль Rust" };
+export const PL_KIND = { lua: "Lua", module: "Модуль Rust" };
 export const plIcon = (n) => icon(ICONS[n] ? n : "puzzle");
 export const plSize = (b) => (b < 1048576 ? `${Math.max(1, Math.round(b / 1024))} КБ` : `${(b / 1048576).toFixed(1).replace(".", ",")} МБ`);
 export const plBadge = (official) => official ? `<span class="plg-b ok">${icon("shield")}официальный</span>` : `<span class="plg-b warn">неофициальный</span>`;
@@ -25,8 +25,7 @@ export async function plCatalog(fresh) {
 export function plInstalled(id) { return (PL.data?.installed || []).find((p) => p.id === id); }
 // plCatItem — запись каталога для установленного плагина (официальный — по id, сторонний — по репозиторию)
 export function plCatItem(p) {
-  return (PL.list || []).find((c) => c.id === p.id && (p.official ? c.official : c.repo === p.source)
-    && !(p.id === "training" && p.kind === "native" && c.kind === "module"));
+  return (PL.list || []).find((c) => c.id === p.id && (p.official ? c.official : c.repo === p.source));
 }
 export function plOfficial(id) { return (PL.list || []).find((c) => c.official && c.id === id); }
 export const plRepo = () => PL.data?.repo || S.repo || "newfpv/YaJavis";
@@ -136,7 +135,7 @@ async function waitModuleChange() {
       if (!state.composition_pending) { location.reload(); return true; }
     } catch { /* The speaker is restarting. */ }
   }
-  throw new Error("Изменение подготовлено. Оно применится, когда закончится разговор и остановится музыка");
+  throw new Error("Колонка не подтвердила применение изменений");
 }
 
 export async function plUpload(file, then) {

@@ -20,8 +20,8 @@
     <section id="s1" class="card">
       <span class="eyebrow">Начнём знакомство</span><h1>Найдём вашу<br> Станцию.</h1>
       <p class="lead">Выберите Станцию. Голос, музыку и умный дом настроим после установки.</p>
-      <div class="prerequisite"><span class="status-dot"></span><p>Колонка с root-доступом и ADB по сети.<br>Компьютер и Станция — в одной локальной сети.</p></div>
-      <button class="btn accent wide" id="scan">Найти колонку в сети <span aria-hidden="true">→</span></button>
+      <div class="prerequisite"><span class="status-dot"></span><p>Колонка с root-доступом и ADB по сети.<br>Установите Android Platform Tools. Компьютер и Станция должны быть в одной локальной сети.</p></div>
+      <button class="btn accent wide" id="scan">Показать подключённые колонки <span aria-hidden="true">→</span></button>
       <p class="scan-status" id="scan-st" role="status" aria-live="polite"></p>
       <div id="found"></div>
       <details class="manual"><summary>Указать IP вручную</summary><div class="row mt"><input type="text" id="ip" placeholder="192.168.1.50" aria-label="IP-адрес колонки"><button class="btn" id="ip-go">Проверить</button></div><p class="hint">IP есть в приложении «Дом с Алисой» → колонка → «Информация об устройстве».</p></details>
@@ -32,11 +32,6 @@
       <div class="tiles" id="sp-tiles"></div>
       <ul class="checks" id="sp-checks" aria-label="Проверка колонки"></ul>
       <div id="sp-problems"></div>
-      <section class="addons hidden" id="sp-addons" aria-labelledby="addons-title">
-        <div class="addons-h"><b id="addons-title">Что ещё стоит на колонке</b><small id="addons-sum"></small></div>
-        <div id="addons-list"></div>
-        <label class="sw clean"><input type="checkbox" id="clean"><span class="tr"></span><span class="sw-t"><b>Чистая установка</b><small id="clean-hint"></small></span></label>
-      </section>
       <details class="device-details"><summary>Технические сведения</summary><div class="kv" id="sp-info"></div></details>
       <div class="actions"><button class="btn ghost" data-back="1">Назад</button><button class="btn accent" id="to3">Продолжить</button></div><button class="btn danger hidden" id="uninstall">Удалить Джарвиса</button>
     </section>

@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    branches: [main]
+    branches: [main, rust]
   pull_request:
 permissions:
   contents: read
@@ -10,23 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: jarvisd/go.mod
-          cache-dependency-path: '**/go.sum'
-      - name: Go tests
-        # установщик встраивает payload, который появляется только после сборки, — его проверяет release.yml
+      - run: rustup update stable
+      - run: cargo test --locked --workspace --all-features
+        working-directory: jarvis
+      - run: cargo check --locked -p jarvis --no-default-features
+        working-directory: jarvis
+      - name: Check panel and installer assets
         run: |
-          (cd jarvisd && go vet ./... && go test ./...)
-          (cd hardware && go test ./...)
-          (cd pluginsdk && go vet ./... && go test -race ./...)
-          for p in plugins/*/src; do (cd "$p" && go vet ./... && go test -race ./...) || exit 1; done
-          go vet scripts/pack-plugins.go
-      - name: Race detector
-        run: cd jarvisd && go test -race -run 'Test(PlayerConcurrent|SettingsSnapshot|STT|ServiceHTTPPool|TrainingExport|YouTubeWarm|MiotTypes|AliceMisses|JSPlugin|NativePlugin|PluginsEnsure|BrokenPlugin|OfficialPlugins|PluginUpload|Provider|Preview|Jitter|VPN)' ./...
-      - name: Panel modules
-        run: |
-          for f in jarvisd/ui/js/*.js; do cp "$f" /tmp/check.mjs && node --check /tmp/check.mjs || exit 1; done
+          for f in jarvisd/ui/js/*.js; do node --input-type=module --check < "$f" || exit 1; done
           node --check installer/ui/setup.js
-      - name: Official plugins pack
-        run: go run scripts/pack-plugins.go /tmp/plugins
+          sh scripts/pack-plugins.sh /tmp/jarvis-plugins

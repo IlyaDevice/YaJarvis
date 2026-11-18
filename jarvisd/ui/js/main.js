@@ -124,7 +124,6 @@ export function renderStatus() {
 export const avatar = (p, big = false) => `<span class="av c${p.color || 1}${big ? " big" : ""}">${esc((p.name || "?").trim()[0] || "?")}</span>`;
 export const voiceName = (id) => (S.live_voices.find((v) => v.id === id)?.name) || id || "cedar";
 export const engineName = (p) => ({ gemini: "Gemini Live", chatgpt: "GPT-Live по подписке", grok: "Grok Voice" })[p.engine] || "GPT-Live";
-const isTrainingPage = (p) => p.plugin === "training" && p.id === "training";
 
 export function renderSide() {
   $("#upd-dot")?.classList.toggle("hidden", !S.update_available);
@@ -147,8 +146,7 @@ export function renderSide() {
   });
   // страницы плагинов — в меню «Колонка», только пока плагин стоит и работает
   const training = S.settings.wake_training ? `<a href="#training" data-page="training">${icon("mic")}Обучение</a>` : "";
-  const ext = training + (S.plugin_pages || []).filter((p) => !S.settings.wake_word || !isTrainingPage(p)).map((x) => `<a href="#ext/${esc(x.plugin)}/${esc(x.id)}" data-page="ext:${esc(x.plugin)}/${esc(x.id)}">${icon(ICONS[x.icon] ? x.icon : "puzzle")}${esc(x.title || x.id)}</a>`).join("");
-  if ($("#nav-ext").innerHTML !== ext) $("#nav-ext").innerHTML = ext;
+  if ($("#nav-ext").innerHTML !== training) $("#nav-ext").innerHTML = training;
   $$(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === page));
   navPill();
 }
@@ -173,16 +171,14 @@ export function route() {
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
   else if (h.startsWith("connections/")) { page = "connections"; viewConnections(); connOpen(h.slice(12)); }
   else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
-  else if (h === "wake-training" || (h === "ext/training/training" && S.settings.wake_word)) { location.replace("#training"); return; }
   else if (h === "training") {
-    if (!S.settings.wake_word) { location.replace("#ext/training/training"); return; }
     page = "training";
     v0.innerHTML = '<header class="ph"><h1>Обучение</h1></header>';
     if (S.settings.wake_training) {
       v0.insertAdjacentHTML("beforeend", '<div id="wake-training"></div>');
       void drawWakeTraining(v0.querySelector("#wake-training"));
-      if (S.settings.training_records || S.plugin_pages?.some(isTrainingPage)) {
-        loadExtStyle("training", "training", S.settings.training_records ? "/training.css" : undefined);
+      if (S.settings.training_records) {
+        if (!$("#training-css")) document.head.insertAdjacentHTML("beforeend", '<link id="training-css" rel="stylesheet" href="/training.css">');
         v0.insertAdjacentHTML("beforeend", '<div id="training-records"></div>');
         const records = v0.querySelector("#training-records");
         void import("./training.js").then((m) => m.drawTrainingRecords(records)).catch((error) => {
@@ -193,7 +189,6 @@ export function route() {
       v0.insertAdjacentHTML("beforeend", '<p class="note">Включите плагин «Обучение слова» в <a href="#connections/training">подключениях</a>.</p>');
     }
   }
-  else if (h.startsWith("ext/")) { page = "ext:" + h.slice(4); viewExt(h.slice(4)); }
   else {
     page = ["home", "player", "charts", "logs", "characters", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
     ({ home: viewHome, player: viewPlayer, charts: viewCharts, logs: viewLogs, characters: viewCharacters, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
@@ -202,30 +197,6 @@ export function route() {
   window.scrollTo(0, 0);
   const v = $("#view");          // одно появление на переход между страницами
   v.classList.remove("enter"); void v.offsetWidth; v.classList.add("enter");
-}
-
-// viewExt — страница плагина: модуль /p/<плагин>/<страница>.js, его default() рисует #view.
-async function viewExt(path) {
-  const [id, pg] = path.split("/");
-  const known = (S.plugin_pages || []).find((x) => x.plugin === id && x.id === pg);
-  if (!known) {
-    $("#view").innerHTML = `<header class="ph"><h1>Нет такой страницы</h1><p class="sub">Её приносит плагин, а он не установлен или выключен. Плагины — в <a class="lnk" href="#connections/plugins">«Подключениях»</a>.</p></header>`;
-    return;
-  }
-  loadExtStyle(id, pg);
-  try {
-    const mod = await import(`/p/${encodeURIComponent(id)}/${encodeURIComponent(pg)}.js`);
-    if (page === "ext:" + path) await mod.default();
-  } catch (e) {
-    $("#view").innerHTML = `<header class="ph"><h1>${esc(known.title || pg)}</h1></header><p class="err">Страница плагина не загрузилась: ${esc(e.message)}</p>`;
-  }
-}
-
-function loadExtStyle(id, pg, stylesheet) {
-  if (document.querySelector(`link[data-ext="${id}/${pg}"]`)) return;
-  const l = document.createElement("link");
-  l.rel = "stylesheet"; l.href = stylesheet || `/p/${encodeURIComponent(id)}/${encodeURIComponent(pg)}.css`; l.dataset.ext = `${id}/${pg}`;
-  document.head.append(l);
 }
 
 // ---------------------------------------------------------------- запуск

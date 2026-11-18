@@ -199,7 +199,7 @@ fn vpn_provider(host: &Host) -> Result<crate::plugins::Runtime, String> {
         .filter(|r| {
             matches!(
                 r,
-                crate::plugins::Runtime::Native(_) | crate::plugins::Runtime::Module(_)
+                crate::plugins::Runtime::Module(_)
             )
         })
         .cloned()
@@ -218,9 +218,8 @@ mod tests {
                 std::env::temp_dir().join(format!("jarvis-vpn-{}", crate::settings::rand_hex(6)));
             std::fs::create_dir_all(&dir).unwrap();
             let store = Store::open(dir.join("settings.json")).unwrap();
-            let host = Host::new(dir.clone(), crate::plugins::Hooks::default(), None);
+            let host = Host::new(dir.clone(), crate::plugins::Hooks::default());
             host.install_module("vpn").await.unwrap();
-            assert!(host.provider("vpn").unwrap().native().is_none());
             let proxy = Proxy::new(store.clone());
             let link = "vless://00112233-4455-6677-8899-aabbccddeeff@127.0.0.1:443";
             proxy.set_link(&host, link).await.unwrap();

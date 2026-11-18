@@ -1,22 +1,12 @@
 //! Плагины. Лежат в <data>/plugins/<id>/, включённость и настройки — в <data>/plugins.json (0600).
-//! Формат папок, plugin.json и plugins.json — тот же, что у Go-версии.
-//!
-//! Виды:
-//!   - native — отдельная программа: говорит с ядром строками JSON через stdin/stdout (native.rs, протокол pluginsdk);
-//!   - lua — скрипт с ограничениями памяти и выполнения внутри ядра (feature lua);
-//!   - js — старые лёгкие плагины: пока не запускаются (ждут перевода на Lua).
-//! Официальные модули Go-версии (chatgpt, home, vpn, youtube…) на переходный период запускает
-//! старый бинарник jarvisd (флаг -modules): он сам отдаёт нужный модуль по JARVIS_PLUGIN_ID.
+//! Модули Rust включаются при сборке, Lua исполняется в песочнице внутри ядра.
 
 pub mod catalog;
 pub mod coresvc;
 pub mod install;
-pub mod native;
-mod modules;
+pub(crate) mod modules;
 #[cfg(feature = "lua")]
 mod lua;
-#[cfg(test)]
-mod protocol_tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -32,6 +22,13 @@ use std::{
 pub const PLUGIN_API: i64 = 1;
 
 pub fn compiled_modules() -> Vec<String> { modules::manifests().into_iter().map(|m|m.id).collect() }
+
+#[cfg(feature = "lua")]
+pub fn command_text(text: &str) -> String {
+    let normalized = crate::fastcmd::norm_text(text);
+    normalized.strip_prefix("джарвис ").or_else(|| normalized.strip_prefix("jarvis "))
+        .unwrap_or(&normalized).trim().into()
+}
 
 pub fn valid_id(id: &str) -> bool {
     let b = id.as_bytes();
@@ -148,18 +145,18 @@ impl Manifest {
         if self.name.trim().is_empty() {
             return Err("у плагина нет name".into());
         }
-        if !["js", "native", "lua", "module"].contains(&self.kind.as_str()) {
-            return Err(r#"kind плагина — "lua", "js", "native" или "module""#.into());
+        if !["lua", "module"].contains(&self.kind.as_str()) {
+            return Err(r#"kind плагина — "lua" или "module""#.into());
         }
         if !valid_category(&self.category) {
             let ids: Vec<_> = CATEGORIES.iter().map(|c| c.0).collect();
             return Err(format!("category плагина — одна из: {}", ids.join(", ")));
         }
-        if self.provides("vpn") && !["native","module"].contains(&self.kind.as_str()) {
-            return Err("провайдер VPN должен быть нативным плагином".into());
+        if self.provides("vpn") && self.kind != "module" {
+            return Err("провайдер VPN должен быть модулем Rust".into());
         }
-        if !["native","module"].contains(&self.kind.as_str()) && integ.iter().any(|c| self.provides(c)) {
-            return Err("провайдер интеграции должен быть нативным плагином".into());
+        if self.kind != "module" && integ.iter().any(|c| self.provides(c)) {
+            return Err("провайдер интеграции должен быть модулем Rust".into());
         }
         if self.main.is_empty() || self.main.contains("..") || self.main.starts_with('/') || self.main.contains('\\') {
             return Err("main плагина — имя файла внутри архива".into());
@@ -246,7 +243,6 @@ impl Default for Hooks {
 
 #[derive(Clone)]
 pub enum Runtime {
-    Native(Arc<native::Native>),
     Module(Arc<modules::Module>),
     #[cfg(feature = "lua")]
     Lua(Arc<lua::Script>),
@@ -255,7 +251,6 @@ pub enum Runtime {
 impl Runtime {
     pub fn tools(&self) -> Vec<Value> {
         match self {
-            Runtime::Native(n) => n.tools(),
             Runtime::Module(_) => vec![],
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.tools(),
@@ -263,7 +258,6 @@ impl Runtime {
     }
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         match self {
-            Runtime::Native(n) => n.call_tool(name, args).await,
             Runtime::Module(_) => None,
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.call_tool(name, args).await,
@@ -271,7 +265,6 @@ impl Runtime {
     }
     pub async fn command(&self, text: &str) -> Option<String> {
         match self {
-            Runtime::Native(n) => n.command(text).await,
             Runtime::Module(_) => None,
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.command(text).await,
@@ -279,7 +272,6 @@ impl Runtime {
     }
     pub fn configure(&self, settings: Map<String, Value>) {
         match self {
-            Runtime::Native(n) => n.configure(settings),
             Runtime::Module(_) => {},
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.configure(settings),
@@ -287,7 +279,6 @@ impl Runtime {
     }
     pub fn status(&self) -> String {
         match self {
-            Runtime::Native(n) => n.status(),
             Runtime::Module(_) => "Встроенный модуль Rust".into(),
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.status(),
@@ -295,23 +286,13 @@ impl Runtime {
     }
     pub async fn stop(&self) {
         match self {
-            Runtime::Native(n) => n.stop().await,
             Runtime::Module(n) => n.stop().await,
             #[cfg(feature = "lua")]
             Runtime::Lua(n) => n.stop().await,
         }
     }
-    pub fn native(&self) -> Option<&Arc<native::Native>> {
-        match self {
-            Runtime::Native(n) => Some(n),
-            Runtime::Module(_) => None,
-            #[cfg(feature = "lua")]
-            Runtime::Lua(_) => None,
-        }
-    }
     pub async fn request(&self, method:&str, params:Value, timeout:Duration)->Result<Value,String> {
         match self {
-            Self::Native(n)=>n.request(method,params,timeout).await,
             Self::Module(n)=>n.request(method,params,timeout).await,
             #[cfg(feature="lua")]
             Self::Lua(_)=>Err("Lua-плагин не является провайдером подключения".into()),
@@ -319,7 +300,6 @@ impl Runtime {
     }
     pub async fn notify(&self, method:&str, params:Value)->Result<(),String> {
         match self {
-            Self::Native(n)=>n.notify(method,params).await,
             _=>self.request(method,params,Duration::from_secs(3)).await.map(|_|()),
         }
     }
@@ -341,8 +321,6 @@ pub struct Inner {
 pub struct Host {
     pub data_dir: PathBuf,
     pub hooks: Hooks,
-    /// Старый jarvisd с вшитыми модулями Go (переходный период).
-    pub modules_bin: Option<PathBuf>,
     pub inner: Mutex<Inner>,
     install_lock: tokio::sync::Mutex<()>,
     pub catalog: catalog::Cache,
@@ -377,13 +355,12 @@ impl Inner {
 impl Host {
     pub async fn install_module(self:&Arc<Self>,id:&str)->Result<Manifest,String> {
         let raw=modules::archive(id)?;
-        self.install(&raw,"core",true,false).await
+        self.install(&raw,"core",true).await
     }
-    pub fn new(data_dir: PathBuf, hooks: Hooks, modules_bin: Option<PathBuf>) -> Arc<Host> {
+    pub fn new(data_dir: PathBuf, hooks: Hooks) -> Arc<Host> {
         Arc::new(Host {
             data_dir,
             hooks,
-            modules_bin,
             inner: Mutex::default(),
             install_lock: tokio::sync::Mutex::new(()),
             catalog: catalog::Cache::default(),
@@ -412,6 +389,7 @@ impl Host {
     pub async fn load(self: &Arc<Self>) {
         let state: BTreeMap<String, Option<PluginState>> =
             std::fs::read(self.state_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let builtins = modules::manifests();
         let mut to_start = vec![];
         {
             let mut g = self.inner.lock().unwrap();
@@ -428,7 +406,7 @@ impl Host {
                     continue;
                 }
                 let dir = e.path();
-                let (m, broken) = match read_manifest(&dir) {
+                let (mut m, broken) = match read_manifest(&dir) {
                     Ok(m) if m.id == name => (m, String::new()),
                     res => {
                         let why = match &res {
@@ -448,9 +426,19 @@ impl Host {
                         )
                     }
                 };
+                let builtin = if broken.is_empty() && m.kind == "module" {
+                    builtins.iter().find(|manifest| manifest.id == m.id)
+                } else { None };
+                let builtin_state = builtin.is_some();
+                if let Some(manifest) = builtin { m = manifest.clone(); }
                 let later = broken.is_empty() && m.needs_newer_core();
                 let err = if later { format!("заработает после обновления Джарвиса до {}", m.min_core) } else { broken.clone() };
-                let enabled = g.state_mut(&m.id).enabled;
+                let state = g.state_mut(&m.id);
+                if builtin_state {
+                    state.source = "core".into();
+                    state.official = true;
+                }
+                let enabled = state.enabled;
                 if enabled && !later && broken.is_empty() {
                     to_start.push(m.id.clone());
                 }
@@ -471,27 +459,19 @@ impl Host {
     }
 
     pub async fn start(self: &Arc<Self>, id: &str) {
-        let (m, dir, settings, official) = {
+        let (m, dir, settings) = {
             let mut g = self.inner.lock().unwrap();
             let Some(p) = g.plugins.get(id) else { return };
-            let (mut m, dir) = (p.manifest.clone(), p.dir.clone());
-            if m.id == "training" && (m.kind == "module" || g.state.get(id).is_some_and(|s| s.official)) {
-                if let Some(module) = modules::manifests().into_iter().find(|module| module.id == "training") {
-                    m = module;
-                }
-            }
+            let (m, dir) = (p.manifest.clone(), p.dir.clone());
             if m.needs_newer_core() {
                 g.plugins.get_mut(id).unwrap().err = format!("заработает после обновления Джарвиса до {}", m.min_core);
                 return;
             }
             let settings = g.settings_of(id);
-            let official = g.state_mut(id).official;
-            (m, dir, settings, official)
+            (m, dir, settings)
         };
         let res: Result<Runtime, String> = match m.kind.as_str() {
-            "native" => native::Native::start(self.clone(), m.clone(), dir, settings, official).await.map(Runtime::Native),
             "module" => modules::Module::start(&m,Arc::downgrade(self)).map(|m|Runtime::Module(Arc::new(m))),
-            "js" => Err("JS-плагины в новом ядре заменяются на Lua — плагин ждёт перевода".into()),
             #[cfg(feature = "lua")]
             "lua" => lua::Script::start(self.clone(), m.clone(), dir, settings).await.map(Runtime::Lua),
             #[cfg(not(feature = "lua"))]
@@ -540,7 +520,6 @@ impl Host {
             && g.plugins.get("training").is_some_and(|p| {
                 p.manifest.provides("training") && match &p.rt {
                     Some(Runtime::Module(_)) => true,
-                    Some(Runtime::Native(native)) => native.serves_http(),
                     _ => false,
                 }
             })
@@ -605,7 +584,7 @@ impl Host {
             if !p.manifest.provides(cap) {
                 continue;
             }
-            if let Some(rt) = p.rt.as_ref().filter(|r|matches!(r,Runtime::Native(_) | Runtime::Module(_))) {
+            if let Some(rt) = p.rt.as_ref().filter(|r|matches!(r,Runtime::Module(_))) {
                 let current=(p.manifest.id==cap,p.manifest.kind=="module",g.state.get(&p.manifest.id).is_some_and(|s|s.official));
                 if rank.is_none_or(|r|current>r) {
                     rank=Some(current);
@@ -745,21 +724,7 @@ impl Host {
         json!({"installed": inst, "enabled": on})
     }
 
-    /// Страницы плагинов в меню панели.
-    pub fn pages(&self) -> Value {
-        let g = self.inner.lock().unwrap();
-        let mut out = vec![];
-        for p in g.plugins.values() {
-            let on = g.state.get(&p.manifest.id).is_some_and(|s| s.enabled);
-            if !on || p.manifest.kind != "native" || p.rt.as_ref().and_then(Runtime::native).is_none() {
-                continue;
-            }
-            for pg in p.manifest.pages.iter().filter(|pg| !pg.id.is_empty() && !pg.id.contains(['/', '.', '\\'])) {
-                out.push(json!({"plugin": p.manifest.id, "id": pg.id, "title": pg.title, "icon": pg.icon, "group": pg.group}));
-            }
-        }
-        Value::Array(out)
-    }
+
 }
 
 pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {

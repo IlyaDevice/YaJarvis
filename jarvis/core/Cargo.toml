@@ -27,6 +27,7 @@ name = "jarvis"
 path = "src/main.rs"
 
 [dependencies]
+jarvis-station = { path = "../station-runtime" }
 jarvis-wake-train = { path = "../modules/wake-train", optional = true }
 jarvis-youtube = { path = "../modules/youtube", optional = true }
 jarvis-chatgpt = { path = "../modules/chatgpt", optional = true }

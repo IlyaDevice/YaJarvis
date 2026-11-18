@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "dsp", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt", "modules/home-common", "modules/smartlife", "modules/xiaomi", "modules/youtube", "modules/wake-train"]
+members = ["core", "dsp", "station-runtime", "setup", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt", "modules/home-common", "modules/smartlife", "modules/xiaomi", "modules/youtube", "modules/wake-train"]
 default-members = ["core", "dsp"]
 exclude = ["vendor/reality-tls"]
 

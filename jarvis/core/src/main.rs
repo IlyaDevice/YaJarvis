@@ -29,6 +29,7 @@ mod rules;
 mod session;
 mod settings;
 mod tools;
+mod updates;
 mod telemetry;
 mod vpn;
 mod wake;
@@ -52,16 +53,14 @@ pub fn version() -> &'static str {
 }
 
 /// Флаги как у Go-версии: -data, -mic, -listen (jarvisd.sh запускает с ними).
-/// -modules — старый jarvisd с вшитыми модулями Go: на переходный период запускает chatgpt, home, vpn, youtube.
 struct Flags {
     data: PathBuf,
     mic: PathBuf,
     listen: String,
-    modules: Option<PathBuf>,
 }
 
 fn flags() -> Flags {
-    let mut f = Flags { data: "/data/opt/jarvisd".into(), mic: "/tmp/jarvisd/mic.sock".into(), listen: ":8080".into(), modules: None };
+    let mut f = Flags { data: "/data/opt/jarvisd".into(), mic: "/tmp/jarvisd/mic.sock".into(), listen: ":8080".into() };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let a = a.trim_start_matches('-');
@@ -74,17 +73,19 @@ fn flags() -> Flags {
             "data" => f.data = val().into(),
             "mic" => f.mic = val().into(),
             "listen" => f.listen = val(),
-            "modules" => f.modules = Some(val().into()),
             _ => {}
         }
-    }
-    if f.modules.is_none() {
-        f.modules = Some(f.data.join("jarvisd-modules"));
     }
     f
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("core-info") {
+        let image = jarvis_station::Image { format: jarvis_station::IDENTITY.into(), version: version().into(),
+            arch: jarvis_station::arch().into(), modules: plugins::compiled_modules() };
+        println!("{}", serde_json::to_string(&image).unwrap());
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("patch-launch") {
         let args: Vec<_> = std::env::args().skip(2).collect();
         let result = if args.len() == 4 {
@@ -126,7 +127,6 @@ fn main() {
         return;
     }
     log::info!("jarvis {} (ядро на Rust)", version());
-    let upgrade_from = plugins::catalog::detect_upgrade(&f.data); // до Store::open: он создаёт settings.json
     let store = match settings::Store::open(f.data.join("settings.json")) {
         Ok(s) => s,
         Err(e) => {
@@ -136,7 +136,7 @@ fn main() {
     };
     jlog::set_timezone(&store.with(|s| s.timezone.clone()));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio");
-    rt.block_on(run(f, store, upgrade_from));
+    rt.block_on(run(f, store));
 }
 
 /// Город, комната, язык, модель колонки — плагинам при запуске.
@@ -148,7 +148,7 @@ fn info(store: &settings::Store) -> Value {
     })
 }
 
-async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
+async fn run(f: Flags, store: settings::Store) {
     let proxy = vpn::Proxy::new(store.clone());
     let music = Arc::new(music::Music::default());
     let host_cell: Arc<std::sync::OnceLock<std::sync::Weak<plugins::Host>>> = Arc::default();
@@ -215,27 +215,19 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
             ..Default::default()
         }
     };
-    let host = plugins::Host::new(f.data.clone(), hooks, f.modules.clone());
+    let host = plugins::Host::new(f.data.clone(), hooks);
     let _ = host_cell.set(Arc::downgrade(&host));
     {
         let (host, proxy) = (host.clone(), proxy.clone());
-        tokio::spawn(async move {
+        let installing = std::env::var_os("JARVIS_INSTALL_MODULE").is_some();
+        if installing {
             host.load().await;
-            tokio::spawn(proxy.run(host.clone()));
-            // нужные этой версии официальные плагины; нет интернета — пробуем снова
-            let mut wait = 60;
-            while std::env::var_os("JARVIS_NO_AUTOINSTALL").is_none() {
-                let settings = serde_json::to_value(host_settings(&host)).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
-                match host.ensure_for(&format!("v{}", version()), false, &settings, &upgrade_from).await {
-                    Ok(_) => {
-                        plugins::catalog::mark_core_version(&host.data_dir);
-                        break;
-                    }
-                    Err(e) => log::info!("плагины: {e} — попробую через {wait} с"),
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-                wait = (wait * 2).min(3600);
+        }
+        tokio::spawn(async move {
+            if !installing {
+                host.load().await;
             }
+            tokio::spawn(proxy.run(host.clone()));
         });
     }
     {
@@ -344,9 +336,4 @@ async fn run(f: Flags, store: settings::Store, upgrade_from: String) {
         host.stop_all().await;
         std::process::exit(1);
     }
-}
-
-/// Настройки колонки картой — для правил автоустановки плагинов.
-fn host_settings(host: &plugins::Host) -> Value {
-    std::fs::read(host.data_dir.join("settings.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null)
 }

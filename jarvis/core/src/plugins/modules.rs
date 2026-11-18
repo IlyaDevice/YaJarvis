@@ -6,45 +6,29 @@ use std::{
     time::Duration,
 };
 
+const BUILTINS: &[(&str, bool)] = &[
+    (include_str!("../../../../plugins/chatgpt/plugin.json"), cfg!(feature = "chatgpt")),
+    (include_str!("../../../../plugins/openai/plugin.json"), cfg!(feature = "openai")),
+    (include_str!("../../../../plugins/gemini/plugin.json"), cfg!(feature = "gemini")),
+    (include_str!("../../../../plugins/grok/plugin.json"), cfg!(feature = "grok")),
+    (include_str!("../../../../plugins/elevenlabs/plugin.json"), cfg!(feature = "elevenlabs")),
+    (include_str!("../../../../plugins/homeassistant/plugin.json"), cfg!(feature = "homeassistant")),
+    (include_str!("../../../../plugins/yandexhome/plugin.json"), cfg!(feature = "yandexhome")),
+    (include_str!("../../../../plugins/smartlife/plugin.json"), cfg!(feature = "smartlife")),
+    (include_str!("../../../../plugins/xiaomi/plugin.json"), cfg!(feature = "xiaomi")),
+    (include_str!("../../../../plugins/vpn-rust/plugin.json"), cfg!(feature = "vpn")),
+    (include_str!("../../../../plugins/youtube/plugin.json"), cfg!(feature = "youtube")),
+    (include_str!("../../../../plugins/training/plugin.json"), cfg!(feature = "wake-training")),
+];
+
+pub fn catalog() -> impl Iterator<Item = (Manifest, bool)> {
+    BUILTINS.iter().map(|&(raw, compiled)| {
+        (serde_json::from_str(raw).expect("manifest module"), compiled)
+    })
+}
+
 pub fn manifests() -> Vec<Manifest> {
-    let mut out: Vec<Manifest> = Vec::new();
-    #[cfg(feature="chatgpt")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/chatgpt/plugin.json")).expect("manifest chatgpt"));
-    #[cfg(feature="openai")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/openai/plugin.json")).expect("manifest openai"));
-    #[cfg(feature="gemini")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/gemini/plugin.json")).expect("manifest gemini"));
-    #[cfg(feature="grok")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/grok/plugin.json")).expect("manifest grok"));
-    #[cfg(feature="elevenlabs")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/elevenlabs/plugin.json")).expect("manifest elevenlabs"));
-    #[cfg(feature = "homeassistant")]
-    out.push(
-        serde_json::from_str(include_str!(
-            "../../../../plugins/homeassistant/plugin.json"
-        ))
-        .expect("manifest homeassistant"),
-    );
-    #[cfg(feature = "yandexhome")]
-    out.push(
-        serde_json::from_str(include_str!("../../../../plugins/yandexhome/plugin.json"))
-            .expect("manifest yandexhome"),
-    );
-    #[cfg(feature = "smartlife")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/smartlife/plugin.json")).expect("manifest smartlife"));
-    #[cfg(feature = "xiaomi")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/xiaomi/plugin.json")).expect("manifest xiaomi"));
-    #[cfg(feature = "vpn")]
-    out.push(
-        serde_json::from_str(include_str!("../../../../plugins/vpn-rust/plugin.json"))
-            .expect("manifest vpn"),
-    );
-    #[cfg(feature = "youtube")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/youtube/plugin.json")).expect("manifest youtube"));
-    #[cfg(feature = "wake-training")]
-    out.push(serde_json::from_str(include_str!("../../../../plugins/training/plugin.json")).expect("manifest training"));
-    out.shrink_to_fit();
-    out
+    catalog().filter_map(|(m, compiled)| compiled.then_some(m)).collect()
 }
 
 pub fn archive(id: &str) -> Result<Vec<u8>, String> {
@@ -107,8 +91,8 @@ mod tests {
             .unwrap();
         zip.write_all(MANIFEST.as_bytes()).unwrap();
         let raw = zip.finish().unwrap().into_inner();
-        let host = Host::new(dir.clone(), Hooks::default(), None);
-        host.install(&raw, "file", false, false).await.unwrap();
+        let host = Host::new(dir.clone(), Hooks::default());
+        host.install(&raw, "core", true).await.unwrap();
         (host, dir)
     }
     fn cleanup(dir: std::path::PathBuf) {
@@ -137,10 +121,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        let host = Host::new(dir.clone(), hooks, None);
+        let host = Host::new(dir.clone(), hooks);
         host.install_module("yandexhome").await.unwrap();
         let provider = host.provider("yandexhome").unwrap();
-        assert!(provider.native().is_none());
         assert_eq!(
             provider
                 .request(
@@ -186,7 +169,6 @@ mod tests {
         #[cfg(feature = "homeassistant")]
         {
             let provider = host.provider("homeassistant").unwrap();
-            assert!(provider.native().is_none());
             assert_eq!(
                 provider
                     .request(
@@ -221,7 +203,7 @@ mod tests {
     async fn training_module_requires_installation_and_can_be_disabled() {
         let dir = std::env::temp_dir().join(format!("jarvis-module-{}", crate::settings::rand_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
-        let host = Host::new(dir.clone(), Hooks::default(), None);
+        let host = Host::new(dir.clone(), Hooks::default());
         assert!(!host.wake_training());
         host.install_module("training").await.unwrap();
         assert!(host.wake_training());

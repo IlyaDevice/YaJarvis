@@ -5,11 +5,6 @@ use crate::{settings::Store, vpn::Proxy};
 use serde_json::{Map, Value, json};
 use std::{path::PathBuf, sync::Arc};
 
-const TRAINING_SETTINGS: &[&str] = &[
-    "bg_url", "bg_user", "bg_pass", "bg_to", "gdrive_client", "gdrive_secret",
-    "gdrive_refresh", "gdrive_folder",
-];
-
 /// Убрать пустое (null, "", 0, false, пустые объекты) — так Go сравнивал структуры с omitempty.
 fn norm(v: &Value) -> Value {
     match v {
@@ -49,12 +44,6 @@ fn yt_auth(s: &crate::settings::Settings) -> Value {
 impl CoreServices {
     pub fn call(&self, id: &str, method: &str, params: &Value) -> Result<Value, String> {
         let official = (self.official)(id);
-        if id == "training" {
-            if !official {
-                return Err("official plugin required".into());
-            }
-            return self.training(method, params);
-        }
         if id == "chatgpt" && (method == "auth.get" || method == "auth.set") {
             if !official {
                 return Err("official plugin required".into());
@@ -75,25 +64,19 @@ impl CoreServices {
                 .map_err(|e| e.to_string())?;
             return Ok(true.into());
         }
-        if (id == "js" || id == "youtube") && official {
+        if id == "youtube" && official {
             let scope = params.get("service").or_else(|| params.get("Service")).and_then(Value::as_str).unwrap_or("");
             match method {
-                "network" if id == "js" || scope == "plugins" => return Ok(self.proxy.network_reply("plugins")),
+                "network" if scope == "plugins" => return Ok(self.proxy.network_reply("plugins")),
                 "info" => return Ok((self.info)()),
                 _ => {}
             }
         }
-        let mut service = match id {
+        let service = match id {
             "yandexhome"=>"yandex",
             "homeassistant" | "xiaomi" | "smartlife" | "youtube" | "chatgpt" | "openai" | "gemini" | "grok" | "elevenlabs" => id,
             _ => "",
         };
-        if id == "home" {
-            let scope = params.get("service").and_then(Value::as_str).unwrap_or("");
-            if ["homeassistant", "xiaomi", "smartlife", "yandex"].contains(&scope) {
-                service = scope;
-            }
-        }
         if service.is_empty() {
             return Err("у плагина нет доступа к этому сервису ядра".into());
         }
@@ -201,54 +184,6 @@ impl CoreServices {
                     Ok(b) => Ok(Value::String(b64(&b))),
                 }
             }
-            _ => Err("неизвестный сервис ядра".into()),
-        }
-    }
-    fn training(&self, method: &str, params: &Value) -> Result<Value, String> {
-        use crate::wake_profiles::{TUNED_MODEL, TUNED_PREV};
-        match method {
-            "wake.get" => {
-                let model = std::fs::read(self.data_dir.join(TUNED_MODEL))
-                    .or_else(|_| std::fs::read(self.data_dir.join("wake.bin")))
-                    .unwrap_or_default();
-                let prev = [TUNED_PREV, "wake.bin.prev"].iter().any(|name| self.data_dir.join(name).is_file());
-                Ok(json!({"model": b64(&model), "prev": prev,
-                    "sensitivity": self.store.with(|s| s.wake_sensitivity)}))
-            }
-            "config.get" => Ok(self.store.with(|s| {
-                let mut config = Map::new();
-                for key in TRAINING_SETTINGS {
-                    if let Some(value) = s.extra.get(*key) {
-                        config.insert((*key).into(), value.clone());
-                    }
-                }
-                config.insert("train_mode".into(), s.train_mode.into());
-                config.insert("train_limit_mb".into(), s.train_limit_mb.into());
-                config.insert("wake_sensitivity".into(), s.wake_sensitivity.into());
-                Value::Object(config)
-            })),
-            "config.set" => {
-                let input = params.as_object().ok_or("Нужен объект настроек обучения")?;
-                self.store.update(|s| -> std::io::Result<()> {
-                    for key in TRAINING_SETTINGS {
-                        if let Some(value) = input.get(*key) {
-                            if !value.is_string() {
-                                return Err(std::io::Error::other("Неверная настройка обучения"));
-                            }
-                            s.extra.insert((*key).into(), value.clone());
-                        }
-                    }
-                    if let Some(mode) = input.get("train_mode").and_then(Value::as_bool) {
-                        s.train_mode = mode;
-                    }
-                    if let Some(limit) = input.get("train_limit_mb").and_then(Value::as_i64) {
-                        s.train_limit_mb = limit.clamp(1, 200);
-                    }
-                    Ok(())
-                }).map_err(|error| error.to_string())?;
-                Ok(true.into())
-            }
-            "network" => Ok(self.proxy.network_reply("gdrive")),
             _ => Err("неизвестный сервис ядра".into()),
         }
     }

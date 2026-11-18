@@ -2,7 +2,7 @@
 import { $, Motion, act, api, esc, icon, sec } from "./core.js";
 import { S, page } from "./main.js";
 
-const train = () => S.settings.training_records ? "/api/train/records" : "/api/p/training/train";
+const TRAIN = "/api/train/records";
 const BACKGROUND = "/api/train/background";
 
 // ---------------------------------------------------------------- обучение слова
@@ -10,7 +10,7 @@ export const KIND = { pos: "Джарвис", false: "Не Джарвис", near:
 export const GUESS = { pos: "колонка решила, что звали", false: "колонка сработала, но решила, что зря", near: "колонка насторожилась, но не сработала" };
 export let T = null, skipped = new Set(), clipFilter = "all", clipLimit = 40;
 
-export const clipUrl = (x) => `${train()}/clip?kind=${x.kind}&name=${encodeURIComponent(x.name)}`;
+export const clipUrl = (x) => `${TRAIN}/clip?kind=${x.kind}&name=${encodeURIComponent(x.name)}`;
 export const clipWhen = (x) => new Date(x.time).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 export const clipProb = (x) => (x.name.match(/_p(\d+)/) || [])[1];
 export const clipSec = (x) => Math.max(0, (x.size - 44) / 32000);
@@ -20,7 +20,7 @@ export const queue = () => (T?.clips || []).filter((x) => !x.reviewed && x.kind 
 export async function drawTrainingRecords(panel = $("#training-records")) {
   if (!panel?.isConnected) return;
   let data;
-  try { data = await api("GET", train()); } catch (e) {
+  try { data = await api("GET", TRAIN); } catch (e) {
     if (panel.isConnected) panel.innerHTML = `<p class="err">${esc(e.message)}</p>`;
     return;
   }
@@ -39,7 +39,7 @@ export async function drawTrainingRecords(panel = $("#training-records")) {
 export function trainStepsHtml() {
   const c = T.counts || {};
   return `<div class="row"><div class="chips"><span class="chip k-pos">Джарвис <b id="c-pos">${c.pos || 0}</b></span><span class="chip k-false">Не Джарвис <b id="c-false">${c.false || 0}</b></span><span class="chip">Фон <b>${c.bg || 0}</b></span></div>
-      <span class="spacer"></span>${T.clips.length ? `<a class="btn primary" href="${train()}/download" download>Скачать записи</a>` : `<button class="btn" disabled>Скачать записи</button>`}</div>
+      <span class="spacer"></span>${T.clips.length ? `<a class="btn primary" href="${TRAIN}/download" download>Скачать записи</a>` : `<button class="btn" disabled>Скачать записи</button>`}</div>
     <ol class="steps">
       <li><b>Скачайте и распакуйте архив.</b> Записи уже разложены по вашим ответам.</li>
       <li><b>Дообучите модель.</b> В распакованной папке установите зависимости командой <code>pip install torch numpy</code> и запустите <code>python finetune.py</code>.</li>
@@ -75,12 +75,12 @@ function bindRecording(panel) {
   const mode = panel.querySelector("#train-capture");
   const limit = panel.querySelector("#train-limit");
   mode.onchange = () => act(mode, async () => {
-    try { await api("PUT", train(), { mode: mode.checked }); }
+    try { await api("PUT", TRAIN, { mode: mode.checked }); }
     catch (error) { mode.checked = !mode.checked; throw error; }
   });
   limit.onchange = () => act(limit, async () => {
     const mb = Number.parseInt(limit.value, 10);
-    try { await api("PUT", train(), { limit_mb: mb }); T.limit_mb = mb; }
+    try { await api("PUT", TRAIN, { limit_mb: mb }); T.limit_mb = mb; }
     catch (error) { limit.value = `${T.limit_mb} МБ`; throw error; }
   });
   const form = panel.querySelector("#train-bg");
@@ -222,8 +222,8 @@ export async function answer(a, btn) {
   RV.started = true;   // ответили — дальше записи сами играют по кругу
   if (a === "skip") { skipped.add(x.kind + "/" + x.name); drawReview(); return; }
   await act(btn, async () => {
-    await api("POST", train() + "/move", { kind: x.kind, name: x.name, to: a === "yes" ? "pos" : a === "no" ? "false" : "delete", reviewed: true });
-    T = await api("GET", train()); T.clips ||= [];
+    await api("POST", TRAIN + "/move", { kind: x.kind, name: x.name, to: a === "yes" ? "pos" : a === "no" ? "false" : "delete", reviewed: true });
+    T = await api("GET", TRAIN); T.clips ||= [];
   });
   const c = T.counts || {};
   if ($("#c-pos")) { $("#c-pos").textContent = c.pos || 0; $("#c-false").textContent = c.false || 0; }
@@ -260,7 +260,7 @@ export function drawClips() {
     const f = e.target.closest("[data-f]"), mv = e.target.closest("[data-mv]"), pl = e.target.closest("[data-play]");
     if (f) { clipFilter = f.dataset.f; clipLimit = 40; drawClips(); return; }
     if (e.target.closest("#cl-more")) { clipLimit += 40; drawClips(); return; }
-    if (e.target.closest("#t-clear")) { if (confirm("Удалить все записи для обучения? Сначала лучше скачать архив.")) act(null, async () => { await api("DELETE", train()); drawTrainingRecords(); }, "Записи удалены"); return; }
+    if (e.target.closest("#t-clear")) { if (confirm("Удалить все записи для обучения? Сначала лучше скачать архив.")) act(null, async () => { await api("DELETE", TRAIN); drawTrainingRecords(); }, "Записи удалены"); return; }
     if (pl) {
       const a = LIST.audio ||= new Audio();
       if (LIST.key === pl.dataset.play && !a.paused) a.pause();
@@ -269,8 +269,8 @@ export function drawClips() {
       return;
     }
     if (mv && !mv.classList.contains("on")) await act(mv, async () => {
-      await api("POST", train() + "/move", { kind: mv.dataset.k, name: mv.dataset.n, to: mv.dataset.mv, reviewed: true });
-      T = await api("GET", train()); T.clips ||= []; drawClips(); drawReview();
+      await api("POST", TRAIN + "/move", { kind: mv.dataset.k, name: mv.dataset.n, to: mv.dataset.mv, reviewed: true });
+      T = await api("GET", TRAIN); T.clips ||= []; drawClips(); drawReview();
     });
   };
 }

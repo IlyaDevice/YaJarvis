@@ -20,43 +20,21 @@ mic_on() {
     # профиль запуска Алисы с нашим vqe_tap.so; если не получилось — Джарвис работает без микрофона
     [ -f "$D/no-mic" ] && return 0
     mounted "$LAUNCH" && return 0
-    if "$D/jarvisd" patch-launch "$LAUNCH" "$RUN/launch.json" "$D/vqe_tap.so" "$RUN/mic.sock" 2>>"$LOG"; then
+    core="$D/jarvisd"
+    [ -x "$core" ] || core="$D/jarvisd.next-rust"
+    if "$core" patch-launch "$LAUNCH" "$RUN/launch.json" "$D/vqe_tap.so" "$RUN/mic.sock" 2>>"$LOG"; then
         mount --bind "$RUN/launch.json" "$LAUNCH"
     fi
 }
 
-# apply_update — jarvisd скачал и проверил новую версию в $RUN/jarvisd.next и вышел: подменяем файл.
-# Старый удаляем первым — на /data нет места на две копии (~30 МБ).
-apply_update() {
-    [ -f "$RUN/jarvisd.next" ] || return 0
-    echo "$(date) обновление: ставлю новую версию" >>"$LOG"
-    rm -f "$D/jarvisd"
-    if cp "$RUN/jarvisd.next" "$D/jarvisd" && chmod 755 "$D/jarvisd"; then
-        rm -f "$RUN/jarvisd.next"
-    else
-        echo "$(date) обновление: не удалось скопировать — пробую ещё раз" >>"$LOG"
-        sleep 2
-        rm -f "$D/jarvisd"
-        cp "$RUN/jarvisd.next" "$D/jarvisd" && chmod 755 "$D/jarvisd" && rm -f "$RUN/jarvisd.next"
-    fi
-    sync
-}
-
 loop() {
-    # перезапуск, если jarvisd упал; лог не растёт бесконечно
-    while [ ! -f "$D/disabled" ]; do
-        [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1048576 ] && mv -f "$LOG" "$LOG.1"
-        apply_update
-        "$D/jarvisd" -data "$D" -mic "$RUN/mic.sock" >>"$LOG" 2>&1 &
-        echo $! > "$PID"
-        wait $!
-        sleep 3
-    done
+    exec "$D/jarvis-supervisor" "$D" "$RUN" >>"$RUN/supervisor.log" 2>&1
 }
 
 start() {
     mkdir -p "$RUN"
     running "$LOOP" && return 0
+    [ -x "$D/jarvis-supervisor" ] || return 1
     # отдельный сеанс: не умирает вместе с adb/ssh, из которых запущен
     start-stop-daemon -S -b -m -p "$LOOP" -x /bin/sh -- "$D/jarvisd.sh" loop
 }
