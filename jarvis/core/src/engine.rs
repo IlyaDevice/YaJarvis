@@ -545,6 +545,7 @@ impl Engine {
         let mut out = None;
         let mut speaking = false;
         let mut checked = 0i64;
+        let mut checked_text = String::new();
         let mut ready_at = Instant::now();
         let mut last_voice: Option<Instant> = None;
         let _ = (sure, &clip);
@@ -648,12 +649,13 @@ impl Engine {
                 return close(&sess);
             }
             let (id, text, since) = x.dialog().utterance();
-            if id != 0 && id != checked && !x.handles_commands() {
+            if id != 0 && (id != checked || text != checked_text) && !x.handles_commands() {
                 let command = fastcmd::command_for_phrase(&text, &self.listener.phrase());
                 let schedule = fastcmd::alice_schedule(&command);
                 let quiet_for = self.st.lock().unwrap().last_loud.map(|time| time.elapsed()).unwrap_or(Duration::MAX);
                 if command_settled(schedule, since, quiet_for) {
                     checked = id;
+                    checked_text.clone_from(&text);
                     if schedule == fastcmd::AliceSchedule::Pending {
                         let question = fastcmd::ALICE_TIME_QUESTION;
                         x.dialog().annotate("уточнение", question);
