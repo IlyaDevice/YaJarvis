@@ -1,7 +1,7 @@
 //! Подсветка через /sys/class/leds: светодиоды с цветом в имени («micro:red:ring1») группируются по цвету.
 //! Перед своим режимом запоминаем, что горело у Алисы, и потом возвращаем как было.
 //!
-//! Кольцо живое: «слушаю» — белый свет плавно загорается и дышит; «думаю» — бирюзовый огонёк бежит
+//! Кольцо живое: «слушаю» — белый свет загорается сразу и дышит; «думаю» — бирюзовый огонёк бежит
 //! по кругу; «говорю» — фиолетовый свет вспыхивает в такт голосу.
 
 use crate::settings::LedSettings;
@@ -142,7 +142,7 @@ impl St {
 
     fn shape(&self, group: usize, t: f64) -> f64 {
         match self.mode {
-            Mode::Listening => (t / 0.25).min(1.0) * (0.5 + 0.5 * (0.5 + 0.5 * (2.0 * PI * t / 2.8).cos())),
+            Mode::Listening => 0.75 + 0.25 * (2.0 * PI * t / 2.8).cos(),
             Mode::Thinking => {
                 let n = self.groups.max(1) as f64;
                 let c = (2.0 * PI * (t * 1.2 - group as f64 / n)).cos();
@@ -173,7 +173,12 @@ impl St {
             }
             Mode::Listening | Mode::Speaking => {
                 let v = if self.mode == Mode::Speaking { self.level } else { self.hear };
-                if inner { (t / 0.2).min(1.0) * (0.2 + 0.8 * (v / 0.35).min(1.0)) } else { ((v - 0.3) / 0.35).clamp(0.0, 1.0) }
+                if inner {
+                    let onset = if self.mode == Mode::Listening { 1.0 } else { (t / 0.2).min(1.0) };
+                    onset * (0.2 + 0.8 * (v / 0.35).min(1.0))
+                } else {
+                    ((v - 0.3) / 0.35).clamp(0.0, 1.0)
+                }
             }
             Mode::Off => 0.0,
         }
