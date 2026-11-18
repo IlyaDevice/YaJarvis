@@ -1,5 +1,5 @@
 //! RFC 1928 UDP associations, tied to their authenticated TCP control connection.
-//! VLESS command 2 carries one fixed destination per stream with u16 packet lengths.
+//! Standard VLESS uses length-prefixed UDP. Vision uses one XUDP session per destination.
 use crate::{
     config::Config,
     protocol::{Address, Target},
@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
     sync::{Semaphore, mpsc},
     task::JoinSet,
@@ -23,6 +23,12 @@ use tokio::{
 // Reject larger packets rather than silently turn one datagram into several.
 const MAX_PACKET: usize = 8_190;
 const IDLE: Duration = Duration::from_secs(60);
+const XUDP_MAX_META: usize = 512;
+const XUDP_NEW: u8 = 1;
+const XUDP_KEEP: u8 = 2;
+const XUDP_END: u8 = 3;
+const XUDP_HEARTBEAT: u8 = 4;
+const XUDP_DATA: u8 = 1;
 
 pub(crate) fn decode(packet: &[u8]) -> Option<(Target, &[u8])> {
     if packet.get(..3)? != [0, 0, 0] {
@@ -90,10 +96,6 @@ pub(crate) async fn associate(
             return Ok(());
         }
     };
-    if config.vision {
-        crate::protocol::socks_reply(&mut control, 7).await?;
-        return Ok(());
-    }
     let relay = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
     let mut reply = vec![5, 0, 0, 1, 127, 0, 0, 1];
     reply.extend(relay.local_addr()?.port().to_be_bytes());
@@ -133,6 +135,37 @@ pub(crate) async fn associate(
     Ok(())
 }
 
+fn xudp_packet(target: &Target, payload: &[u8], first: bool) -> io::Result<Vec<u8>> {
+    let mut frame = Vec::with_capacity(payload.len() + 32);
+    frame.extend([0, 0, 0, 0, if first { XUDP_NEW } else { XUDP_KEEP }, XUDP_DATA]);
+    if first {
+        frame.push(2); // UDP address family follows in the VLESS endpoint encoding.
+        target.write_vless_endpoint(&mut frame)?;
+    }
+    let meta = ((frame.len() - 2) as u16).to_be_bytes();
+    frame[..2].copy_from_slice(&meta);
+    frame.extend((payload.len() as u16).to_be_bytes());
+    frame.extend(payload);
+    Ok(frame)
+}
+
+async fn xudp_read_meta(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<(u8, bool)> {
+    let len = reader.read_u16().await? as usize;
+    if !(4..=XUDP_MAX_META).contains(&len) {
+        return Err(io::Error::other("invalid XUDP frame length"));
+    }
+    let mut meta = [0; XUDP_MAX_META];
+    reader.read_exact(&mut meta[..len]).await?;
+    if meta[..2] != [0, 0] {
+        return Err(io::Error::other("unexpected XUDP session"));
+    }
+    match meta[2] {
+        XUDP_KEEP | XUDP_HEARTBEAT => Ok((meta[2], meta[3] & XUDP_DATA != 0)),
+        XUDP_END => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "XUDP session ended")),
+        _ => Err(io::Error::other("invalid XUDP frame status")),
+    }
+}
+
 async fn forward(
     config: Arc<Config>,
     tls: Arc<rustls::ClientConfig>,
@@ -147,9 +180,19 @@ async fn forward(
     )
     .await??;
     let (mut read, mut write) = tokio::io::split(io);
+    let vision = config.vision;
     let receive = async {
         let prefix = header(&target);
         loop {
+            let skip = if vision {
+                let (status, has_data) = tokio::time::timeout(IDLE, xudp_read_meta(&mut read)).await??;
+                if !has_data {
+                    continue;
+                }
+                status == XUDP_HEARTBEAT
+            } else {
+                false
+            };
             let size = tokio::time::timeout(IDLE, read.read_u16()).await?? as usize;
             if size > MAX_PACKET {
                 return Err(io::Error::other("VLESS UDP packet too large"));
@@ -157,13 +200,23 @@ async fn forward(
             let mut packet = prefix.clone();
             packet.resize(prefix.len() + size, 0);
             tokio::time::timeout(IDLE, read.read_exact(&mut packet[prefix.len()..])).await??;
-            relay.send_to(&packet, client).await?;
+            if !skip {
+                relay.send_to(&packet, client).await?;
+            }
         }
     };
     let send = async {
+        let mut first = true;
         while let Some(packet) = tokio::time::timeout(IDLE, packets.recv()).await? {
-            write.write_u16(packet.len() as u16).await?;
-            write.write_all(&packet).await?;
+            if vision {
+                if packet.is_empty() { continue; }
+                let frame = xudp_packet(&target, &packet, first)?;
+                write.write_all(&frame).await?;
+                first = false;
+            } else {
+                write.write_u16(packet.len() as u16).await?;
+                write.write_all(&packet).await?;
+            }
             write.flush().await?;
         }
         Ok::<(), io::Error>(())

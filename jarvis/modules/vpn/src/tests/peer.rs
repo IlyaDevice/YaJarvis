@@ -101,18 +101,21 @@ async fn chrome_reality_uses_real_mlkem_with_independent_xray_and_go_tls_cover()
 #[tokio::test]
 async fn reality_udp_interoperates_with_independent_xray() {
     if std::env::var_os("JARVIS_XRAY").is_none() { return; }
-    tokio::time::timeout(Duration::from_secs(15),async {
+    tokio::time::timeout(Duration::from_secs(20),async {
+      for vision in [false, true] {
         let (address,cover_task)=cover().await;let _cover=AbortTask(cover_task);
-        let (_peer,port,key)=start_peer(address,false).await.unwrap();
+        let (_peer,port,key)=start_peer(address,vision).await.unwrap();
         let echo=tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();let echo_port=echo.local_addr().unwrap().port();
         let _echo=AbortTask(tokio::spawn(async move {let mut buffer=[0;65535];loop{let (n,from)=echo.recv_from(&mut buffer).await.unwrap();echo.send_to(&buffer[..n],from).await.unwrap();}}));
-        let vpn=Vpn::new();let state=vpn.request(json!({"link":format!("vless://{UUID}@127.0.0.1:{port}?security=reality&pbk={key}&sid=0123456789abcdef&sni=vpn.example.org&fp=chrome")})).await.unwrap();
+        let flow = if vision { "&flow=xtls-rprx-vision" } else { "" };
+        let vpn=Vpn::new();let state=vpn.request(json!({"link":format!("vless://{UUID}@127.0.0.1:{port}?security=reality&pbk={key}&sid=0123456789abcdef&sni=vpn.example.org&fp=chrome{flow}")})).await.unwrap();
         let (mut control,udp,relay)=super::udp::association(&state).await;
-        for size in [1,1200,4096,8190] {
+        for size in [1,1200,4096,if vision { 7526 } else { 8190 }] {
             let payload:Vec<u8>=(0..size).map(|i|(i%251) as u8).collect();let packet=super::udp::packet("127.0.0.1",echo_port,&payload);
             udp.send_to(&packet,relay).await.unwrap();let mut response=vec![0;65535];let n=udp.recv(&mut response).await.unwrap();assert_eq!(n,packet.len(),"UDP payload size {size}");assert!(&response[..n]==packet.as_slice(),"UDP payload corrupted at size {size}");
         }
         vpn.stop().await;assert!(control.read_u8().await.is_err());
+      }
     }).await.unwrap();
 }
 

@@ -25,6 +25,7 @@ jobs:
           REPO: ${{ github.repository }}
           STATION_ARCHES: ${{ matrix.arch }}
           STATION_CORE_ONLY: ${{ startsWith(github.ref_name, 'preview-build/core-') && '1' || '0' }}
+          STATION_PLUGIN_IDS: ${{ startsWith(github.ref_name, 'preview-build/voice-') && 'vpn chatgpt' || '' }}
           JARVIS_PLUGIN_ASSETS: https://raw.githubusercontent.com/${{ github.repository }}/preview-assets-0.10.0
       - uses: actions/upload-artifact@v4
         with:

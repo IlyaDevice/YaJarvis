@@ -105,13 +105,13 @@ async fn udp_preserves_boundaries_remote_dns_and_control_lifetime() {
 }
 
 #[tokio::test]
-async fn udp_replacement_closes_association_and_vision_does_not_advertise_udp() {
+async fn udp_replacement_closes_association_and_vision_advertises_xudp() {
     tokio::time::timeout(Duration::from_secs(4),async{
         let vpn=Vpn::new();let state=vpn.request(json!({"link":format!("vless://{UUID}@127.0.0.1:9")})).await.unwrap();
         let (mut control,_,_)=association(&state).await;
         vpn.request(json!({"link":""})).await.unwrap();assert!(control.read_u8().await.is_err());
         let state=vpn.request(json!({"link":format!("vless://{UUID}@127.0.0.1:9?security=tls&flow=xtls-rprx-vision")})).await.unwrap();
-        assert_eq!(state["udp"],false);vpn.stop().await;
+        assert_eq!(state["udp"],true);vpn.stop().await;
     }).await.unwrap();
 }
 

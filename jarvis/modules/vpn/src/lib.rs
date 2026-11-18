@@ -117,7 +117,7 @@ impl Vpn {
         };
         let user = secret()?;
         let pass = secret()?;
-        let state = json!({"socks":addr.to_string(),"user":user,"pass":pass,"udp":!config.vision,"info":config.info()});
+        let state = json!({"socks":addr.to_string(),"user":user,"pass":pass,"udp":true,"info":config.info()});
         let mut active = self.active.lock().unwrap();
         if self.stopped.load(Ordering::SeqCst) {
             return Err("модуль VPN остановлен".into());

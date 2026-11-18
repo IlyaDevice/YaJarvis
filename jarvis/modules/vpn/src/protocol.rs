@@ -25,13 +25,18 @@ impl Target {
         self.vless_header_for(uuid, false)
     }
     pub fn vless_header_for(&self, uuid: &[u8; 16], udp: bool) -> io::Result<Vec<u8>> {
-        if self.port == 0 {
-            return Err(io::Error::other("zero target port"));
-        }
         let mut out = Vec::with_capacity(280);
         out.push(0);
         out.extend(uuid);
         out.extend([0, if udp { 2 } else { 1 }]); // no addons, UDP or TCP
+        self.write_vless_endpoint(&mut out)?;
+        Ok(out)
+    }
+
+    pub fn write_vless_endpoint(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        if self.port == 0 {
+            return Err(io::Error::other("zero target port"));
+        }
         out.extend(self.port.to_be_bytes());
         match &self.address {
             Address::Ip(IpAddr::V4(ip)) => {
@@ -48,7 +53,7 @@ impl Target {
             }
             _ => return Err(io::Error::other("invalid target domain")),
         }
-        Ok(out)
+        Ok(())
     }
 }
 

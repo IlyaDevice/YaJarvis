@@ -56,7 +56,12 @@ impl RtcVoice {
         let mut media=MediaEngine::default();let codec=RTCRtpCodec{mime_type:"audio/opus".into(),clock_rate:48000,channels:2,sdp_fmtp_line:"minptime=10;useinbandfec=1".into(),rtcp_feedback:vec![]};
         media.register_codec(RTCRtpCodecParameters{rtp_codec:codec.clone(),payload_type:111,..Default::default()},RtpCodecKind::Audio).map_err(|e|e.to_string())?;
         let registry=register_default_interceptors(rtc::interceptor::Registry::new(),&mut media).map_err(|e|e.to_string())?;
-        let setting=SettingEngineBuilder::new().with_network_types(if tcp_only{vec![rtc::ice::network_type::NetworkType::Tcp4]}else{vec![rtc::ice::network_type::NetworkType::Udp4,rtc::ice::network_type::NetworkType::Tcp4]}).build();
+        let mut setting=SettingEngineBuilder::new().with_network_types(if tcp_only{vec![rtc::ice::network_type::NetworkType::Tcp4]}else{vec![rtc::ice::network_type::NetworkType::Udp4,rtc::ice::network_type::NetworkType::Tcp4]});
+        if runtime.proxied() {
+            // mDNS is local multicast and cannot follow the authenticated SOCKS route.
+            setting = setting.with_multicast_dns_mode(rtc::ice::mdns::MulticastDnsMode::Disabled);
+        }
+        let setting = setting.build();
         let (stop,receiver)=tokio::sync::watch::channel(false);let gathered=Arc::new(tokio::sync::Notify::new());
         let handler=Arc::new(Handler{gathered:gathered.clone(),services:provider.services.clone(),id:id.clone(),stop:receiver.clone(),track:AtomicBool::new(false)});
         let pc:Arc<dyn PeerConnection>=Arc::new(PeerConnectionBuilder::new().with_configuration(RTCConfigurationBuilder::new().build()).with_setting_engine(setting).with_media_engine(media).with_interceptor_registry(registry).with_runtime(runtime).with_handler(handler).with_udp_addrs(if tcp_only{vec![]}else{vec!["0.0.0.0:0".to_string()]}).with_tcp_addrs(vec!["0.0.0.0:0".to_string()]).build().await.map_err(|e|e.to_string())?);

@@ -34,7 +34,7 @@
       "kind": "rust",
       "category": "assistant",
       "name": "ChatGPT по подписке",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "icon": "bolt",
       "description": "Вход в ChatGPT по подписке и голосовой разговор. Можно подключить VPN.",
       "min_core": "0.10.0"
@@ -124,7 +124,7 @@
       "kind": "rust",
       "category": "system",
       "name": "VPN",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "icon": "shield",
       "description": "Подключение по ссылке VLESS для выбранных сервисов.",
       "min_core": "0.10.0"

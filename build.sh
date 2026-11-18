@@ -53,9 +53,13 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     export "CC_$env_target=$tools/cc" "AR_$env_target=$tools/ar"
     export "CMAKE_TOOLCHAIN_FILE_$env_target=$PWD/scripts/aarch64-musl.cmake" "CMAKE_GENERATOR_$env_target=Ninja"
     export JARVIS_CMAKE_CC="$tools/cc" JARVIS_CMAKE_AR="$tools/ar"
+    release="${CARGO_TARGET_DIR:-$PWD/jarvis/target}/$target/release"
+    if [ -n "${STATION_PLUGIN_IDS:-}" ]; then
+        sh scripts/pack-official.sh "$out" "$arch" "$target" "$release" $STATION_PLUGIN_IDS
+        continue
+    fi
     (cd jarvis && cargo build --locked --release --target "$target" -p jarvis &&
         cargo build --locked --release --target "$target" -p jarvis-station)
-    release="${CARGO_TARGET_DIR:-$PWD/jarvis/target}/$target/release"
     stage="$tools/$arch"
     mkdir -p "$stage"
     cp "$release/jarvis" "$stage/jarvisd"
@@ -74,6 +78,10 @@ for arch in ${STATION_ARCHES:-arm64 armv7}; do
     comma=,
 done
 printf ']}\n' >> "$manifest"
+if [ -n "${STATION_PLUGIN_IDS:-}" ]; then
+    (cd "$out" && sha256sum plugin-*.zip > SHA256SUMS)
+    exit
+fi
 for file in install.sh install.ps1; do
     sed "s#__REPO__#$REPO#g" "installer/$file" | tr -d '\r' > "$out/$file"
 done
