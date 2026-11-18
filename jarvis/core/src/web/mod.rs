@@ -142,6 +142,8 @@ pub fn router(app: App) -> Router {
         .route("/api/journal", get(talk::journal))
         .route("/api/speaker/volume", post(talk::volume))
         .route("/api/music", get(music::get).post(music::post))
+        .route("/api/youtube", put(music::set_cookies).delete(music::clear_cookies))
+        .route("/api/youtube/login", post(music::youtube_login).delete(music::youtube_logout))
         .route("/api/vless", put(vpn::put))
         .route("/api/memory", get(memory::get).put(memory::put))
         .route("/api/memory/month", put(memory::month))

@@ -39,6 +39,8 @@ pub fn manifests() -> Vec<Manifest> {
         serde_json::from_str(include_str!("../../../../plugins/vpn-rust/plugin.json"))
             .expect("manifest vpn"),
     );
+    #[cfg(feature = "youtube")]
+    out.push(serde_json::from_str(include_str!("../../../../plugins/youtube/plugin.json")).expect("manifest youtube"));
     out.shrink_to_fit();
     out
 }
@@ -78,7 +80,9 @@ enum Implementation {
     Xiaomi(std::sync::Arc<jarvis_xiaomi::Xiaomi>),
     #[cfg(feature = "vpn")]
     Vpn(jarvis_vpn::Vpn),
-    #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "smartlife", feature = "xiaomi", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt")))]
+    #[cfg(feature = "youtube")]
+    Youtube(std::sync::Arc<jarvis_youtube::Youtube>),
+    #[cfg(not(any(feature = "homeassistant", feature = "yandexhome", feature = "smartlife", feature = "xiaomi", feature = "vpn",feature="openai",feature="gemini",feature="grok",feature="elevenlabs",feature="chatgpt",feature="youtube")))]
     Unavailable,
 }
 
@@ -281,6 +285,28 @@ impl Module {
             );
         }
         match m.main.as_str() {
+            #[cfg(feature = "youtube")]
+            "youtube" => {
+                let weak = host.clone();
+                let manifest = m.clone();
+                let data = host.upgrade().ok_or("Хост плагинов завершился")?.dir().join("youtube/data");
+                let services: jarvis_home_common::Callback = std::sync::Arc::new(move |method, params| {
+                    let weak = weak.clone();
+                    let manifest = manifest.clone();
+                    Box::pin(async move {
+                        let host = weak.upgrade().ok_or("Хост плагинов завершился")?;
+                        if matches!(method.as_str(), "music.state" | "music.play" | "music.related_end") {
+                            (host.hooks.event)(&manifest, &method, params);
+                            return Ok(Value::Null);
+                        }
+                        (host.hooks.request)("youtube".into(), method, params).await
+                    })
+                });
+                let service = std::sync::Arc::new(jarvis_youtube::Youtube::new(jarvis_home_common::Host::new(services, data)));
+                service.watch();
+                Ok(Self { host, stopped: AtomicBool::new(false), cancel: tokio::sync::watch::channel(false).0,
+                    implementation: Implementation::Youtube(service) })
+            }
             #[cfg(feature="smartlife")]
             "smartlife"=>{
                 let provider=std::sync::Arc::new(jarvis_smartlife::SmartLife::new(Self::home_services(&host,"smartlife")?));
@@ -352,6 +378,10 @@ impl Module {
     }
     async fn dispatch(&self, method: &str, params: Value) -> Result<Value, String> {
         match (&self.implementation, method) {
+            #[cfg(feature = "youtube")]
+            (Implementation::Youtube(service), "music") => service.music(params).await,
+            #[cfg(feature = "youtube")]
+            (Implementation::Youtube(service), "volume") => Ok(service.volume(&params)),
             #[cfg(feature="smartlife")]
             (Implementation::SmartLife(provider),"smartlife")=>provider.request(params).await,
             #[cfg(feature="xiaomi")]
@@ -396,6 +426,8 @@ impl Module {
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.cancel.send_replace(true);
+        #[cfg(feature = "youtube")]
+        if let Implementation::Youtube(service) = &self.implementation { service.stop().await; }
         #[cfg(feature="smartlife")]
         if let Implementation::SmartLife(provider)=&self.implementation{provider.stop();}
         #[cfg(feature="xiaomi")]

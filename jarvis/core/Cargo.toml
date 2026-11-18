@@ -19,12 +19,14 @@ gemini = ["dep:jarvis-cloud", "jarvis-cloud/gemini", "dep:futures-util"]
 grok = ["dep:jarvis-cloud", "jarvis-cloud/grok", "dep:futures-util"]
 elevenlabs = ["dep:jarvis-cloud", "jarvis-cloud/elevenlabs", "dep:futures-util"]
 chatgpt = ["dep:jarvis-chatgpt"]
+youtube = ["dep:jarvis-youtube", "dep:jarvis-home-common"]
 
 [[bin]]
 name = "jarvis"
 path = "src/main.rs"
 
 [dependencies]
+jarvis-youtube = { path = "../modules/youtube", optional = true }
 jarvis-chatgpt = { path = "../modules/chatgpt", optional = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
 jarvis-cloud = { path = "../modules/cloud", optional = true }

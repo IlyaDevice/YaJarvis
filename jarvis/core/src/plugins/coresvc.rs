@@ -86,7 +86,7 @@ impl CoreServices {
         if service.is_empty() {
             return Err("у плагина нет доступа к этому сервису ядра".into());
         }
-        if matches!(id,"xiaomi"|"smartlife") && !official && matches!(method,"config.get"|"config.set"|"legacy") {
+        if matches!(id,"xiaomi"|"smartlife"|"youtube") && !official && matches!(method,"config.get"|"config.set"|"legacy") {
             return Err("official plugin required".into());
         }
         let field = |svc: &str| match svc {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "dsp", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt", "modules/home-common", "modules/smartlife", "modules/xiaomi"]
+members = ["core", "dsp", "modules/homeassistant", "modules/yandexhome", "modules/vpn", "modules/cloud", "modules/chatgpt", "modules/home-common", "modules/smartlife", "modules/xiaomi", "modules/youtube"]
 default-members = ["core", "dsp"]
 exclude = ["vendor/reality-tls"]
 
@@ -26,4 +26,8 @@ incremental = false
 
 # Звук и нейросети слова считаются 100 раз в секунду: тут скорость важнее размера (векторизация NEON).
 [profile.release.package.jarvis-dsp]
+opt-level = 3
+
+# QuickJS parses long player scripts on the speaker.
+[profile.release.package.rquickjs-sys]
 opt-level = 3

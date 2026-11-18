@@ -48,3 +48,43 @@ pub async fn post(State(app): State<App>, Json(v): Json<Value>) -> Response {
         Err(e) => bad(e),
     }
 }
+
+pub async fn youtube_state(app: &App) -> Value {
+    let plugin = app.plugins.provider("youtube").is_ok();
+    if !plugin {
+        return json!({"plugin":false});
+    }
+    let mut state = app.engine.music.call(&app.plugins, "account", Value::Null).await
+        .unwrap_or_else(|_| json!({}));
+    if !state.is_object() {
+        state = json!({});
+    }
+    state["plugin"] = true.into();
+    state
+}
+
+async fn youtube_op(app: App, op: &str, args: Value) -> Response {
+    match app.engine.music.call(&app.plugins, op, args).await {
+        Ok(_) => reply(StatusCode::OK, youtube_state(&app).await),
+        Err(error) => bad(error),
+    }
+}
+
+pub async fn set_cookies(State(app): State<App>, Json(value): Json<Value>) -> Response {
+    let Some(cookies) = value["cookies"].as_str().filter(|v| !v.is_empty() && v.len() <= 200 << 10) else {
+        return bad("Нужен файл cookies.txt (до 200 КБ)");
+    };
+    youtube_op(app, "cookies_set", json!({"cookies":cookies})).await
+}
+
+pub async fn clear_cookies(State(app): State<App>) -> Response {
+    youtube_op(app, "cookies_clear", Value::Null).await
+}
+
+pub async fn youtube_login(State(app): State<App>) -> Response {
+    youtube_op(app, "account_begin", Value::Null).await
+}
+
+pub async fn youtube_logout(State(app): State<App>) -> Response {
+    youtube_op(app, "account_logout", Value::Null).await
+}

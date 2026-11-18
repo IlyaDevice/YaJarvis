@@ -182,7 +182,7 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
                     "plan": str_of(&s.chatgpt, "plan"), "email": str_of(&s.chatgpt, "email"),
                     "login": chatgpt_login, "chat": super::memory::chat_state(&app), "memory": memory_state(&s), "limited_until": crate::chatgpt::LIMITED_UNTIL.load(std::sync::atomic::Ordering::Relaxed)},
         "vless": vless,
-        "youtube": {"plugin": app.plugins.provider("youtube").is_ok()},
+        "youtube": super::music::youtube_state(&app).await,
         "home_assistant": {"url": str_of(ha, "url"), "configured": crate::settings::has_all(ha, &["url", "token"]),
                            "rooms": ha.get("rooms").cloned().unwrap_or(Value::Null)},
         "xiaomi": xiaomi,

@@ -1,0 +1,13 @@
+{
+  "id": "youtube",
+  "name": "YouTube",
+  "version": "1.0.0",
+  "description": "Поиск и воспроизведение YouTube, очередь, история и вход в аккаунт.",
+  "kind": "module",
+  "main": "youtube",
+  "api": 1,
+  "category": "media",
+  "icon": "music",
+  "provides": ["youtube"],
+  "author": "YaJarvis"
+}

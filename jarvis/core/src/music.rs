@@ -68,11 +68,14 @@ impl Music {
             "propose",
             "related",
             "resume_saved",
+            "respond",
             "next",
         ]
         .contains(&op)
         {
             70
+        } else if matches!(op, "cookies_set" | "account_begin") {
+            30
         } else {
             10
         };
@@ -88,6 +91,7 @@ impl Music {
             "propose",
             "related",
             "resume_saved",
+            "respond",
             "next",
             "respond",
         ]

@@ -43,6 +43,7 @@ cargo build --release --target aarch64-unknown-linux-musl --no-default-features
 ChatGPT поддерживает оба формата. Rust-модуль включает OAuth, Codex SSE и голосовой
 WebRTC с Opus. При выбранном VPN прямой UDP запрещён; для звонка нужен TCP ICE.
 OpenAI, Gemini, Grok и ElevenLabs также выделены в опциональные Rust-модули.
+YouTube, Xiaomi Home и Smart Life доступны через Cargo features `youtube`, `xiaomi` и `smartlife`.
 
 Сетевой маршрут облачного модуля приходит от хоста через сервис `network`.
 Встроенный Яндекс использует собственный HTTP-клиент с этим маршрутом и не
@@ -57,7 +58,7 @@ OpenAI, Gemini, Grok и ElevenLabs также выделены в опциона
 
 Оставшиеся этапы:
 
-- перенести реализации YouTube, Xiaomi и Smart Life;
+- перенести обучение и оставшиеся возможности плеера Алисы;
 - проверить реальные облачные звонки ChatGPT/OpenAI/Gemini/Grok, завершить ElevenLabs Realtime и резервирование ключей;
 - завершить Rust VPN: браузерный TLS fingerprint и остальные режимы из его README;
 - перенести подбор и атомарную замену сборки Rust при изменении набора модулей в панели;
