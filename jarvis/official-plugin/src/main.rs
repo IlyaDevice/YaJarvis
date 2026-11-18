@@ -45,7 +45,10 @@ impl Provider {
     fn start(id: &str, peer: Peer, params: &Value) -> std::result::Result<Self, String> {
         let services: Callback = Arc::new(move |method, params| {
             let peer = peer.clone();
-            Box::pin(async move { peer.call(&method, params, Duration::from_secs(20)).await })
+            Box::pin(async move {
+                let timeout = if method == "voice.brain" { 45 } else { 20 };
+                peer.call(&method, params, Duration::from_secs(timeout)).await
+            })
         });
         #[cfg(any(feature = "youtube", feature = "smartlife", feature = "xiaomi"))]
         let home = || -> std::result::Result<jarvis_home_common::Host, String> {
