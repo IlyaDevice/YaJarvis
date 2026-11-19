@@ -31,7 +31,7 @@ impl Voice {
         let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
         let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
         let start=match self.id.as_str(){
-            "gemini"=>crate::gemini::live_setup(model, voice, &format!("{instructions}\n{context}"), &settings.language, &defs),
+            "gemini"=>crate::gemini::live_setup(model, voice, &format!("{instructions}\n{context}"), &settings.language, &defs, tools.is_some() && p.web_search),
             "grok"=>json!({"type":"session.update","session":{"instructions":format!("{instructions}\n{context}"),"voice":voice,"turn_detection":{"type":"server_vad"},"audio":{"input":{"format":{"type":"audio/pcm","rate":24000}},"output":{"format":{"type":"audio/pcm","rate":24000}}},"tools":defs}}),
             _=>{let mut backend=defs.clone();if p.web_search{backend.push(json!({"type":"web_search"}));}json!({"type":"session.start","session":{"model":model,"instructions":instructions,"audio":{"format":{"type":"audio/pcm","rate":16000},"output":{"voice":voice}},"delegation":{"type":"responses","responses":{"model":if p.backend_model.is_empty(){crate::settings::BACKEND_MODELS[0]}else{&p.backend_model},"instructions":format!("{}\n{context}",crate::rules::BACKEND_RULES),"tools":backend,"tool_choice":"auto","reasoning":{"effort":crate::chatgpt::effort(&p.backend_model,&p.effort)}}}}})},
         };
@@ -84,6 +84,7 @@ impl Voice {
                     if ["session.output_transcript.delta","response.audio_transcript.delta","response.output_audio_transcript.delta"].contains(&kind){self.dialog.on_bot(event["delta"].as_str().unwrap_or(""));}
                     if ["session.output_audio.delta","response.audio.delta","response.output_audio.delta"].contains(&kind){self.audio(event["delta"].as_str().unwrap_or(""))?;speaking=true;}
                     if let Some(content)=event.get("serverContent"){
+                        if content.get("groundingMetadata").is_some(){log::debug!("Gemini Live: получены результаты поиска");}
                         if let Some(text)=content.pointer("/inputTranscription/text").and_then(Value::as_str){self.dialog.on_user(text);}
                         if let Some(text)=content.pointer("/outputTranscription/text").and_then(Value::as_str){self.dialog.on_bot(text);}
                         for part in content.pointer("/modelTurn/parts").and_then(Value::as_array).into_iter().flatten(){if let Some(data)=part.pointer("/inlineData/data").and_then(Value::as_str){self.audio(data)?;speaking=true;}}

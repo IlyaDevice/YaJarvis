@@ -38,6 +38,7 @@ fn patch_settings(s: &mut Settings, v: &Value) -> Result<(), std::io::Error> {
         .ok_or_else(|| invalid("Нужен объект настроек"))?;
     const ALLOWED: &[&str] = &[
         "wake_enabled",
+        "wake_reply_enabled",
         "wake_check",
         "vpn",
         "wake_sensitivity",
@@ -316,12 +317,14 @@ mod tests {
         s.vpn.insert("chatgpt".into(), true);
         patch_settings(
             &mut s,
-            &json!({"vpn":{"youtube":true},"volume":300,"radio":false}),
+            &json!({"vpn":{"youtube":true},"volume":300,"radio":false,"wake_reply_enabled":false}),
         )
         .unwrap();
         assert_eq!(s.password_hash, "secret");
         assert_eq!(s.volume, 100);
         assert!(s.radio_off);
+        assert!(!s.wake_reply_enabled);
+        assert!(s.wake_enabled);
         assert!(s.vpn["chatgpt"] && s.vpn["youtube"]);
         assert!(patch_settings(&mut s, &json!({"password_hash":"replace"})).is_err());
         assert!(patch_settings(&mut s, &json!({"timezone":"not-a-timezone"})).is_err());

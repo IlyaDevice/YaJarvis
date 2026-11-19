@@ -130,10 +130,23 @@ impl Provider {
             },
             _=>return Err(format!("{} не поддерживает операцию {op}",self.id)),
         };
-        let mut response=self.authenticate(request,key).send().await.map_err(|e|if e.is_timeout(){"Провайдер не ответил вовремя"}else{"Нет соединения с провайдером"}.to_string())?;
-        let status=response.status();let mut bytes=Vec::new();
+        let send_error = |error: reqwest::Error| {
+            if error.is_timeout() { "Провайдер не ответил вовремя" } else { "Нет соединения с провайдером" }.to_string()
+        };
+        let mut response = self.authenticate(request, key).send().await.map_err(send_error)?;
+        let mut status = response.status();
         let limit=if binary {16*1024*1024}else{4*1024*1024};
-        while let Some(chunk)=response.chunk().await.map_err(|_|"Оборван ответ провайдера")? {if bytes.len()+chunk.len()>limit{return Err("Слишком большой ответ провайдера".into());}bytes.extend(chunk);}
+        let mut bytes = read_body(&mut response, limit).await?;
+        if self.id == "gemini" && op == "text" && gemini_rejected_key(status, &bytes) {
+            // Match the working Live API credential transport and keep the same network route.
+            let url = self.base.join(&format!("v1beta/models/{model}:generateContent")).unwrap();
+            let mut response = client.post(url)
+                .query(&[("key", key)])
+                .json(&params["body"])
+                .send().await.map_err(send_error)?;
+            status = response.status();
+            bytes = read_body(&mut response, limit).await?;
+        }
         if !status.is_success(){
             let data:Value=serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             let message=data.pointer("/error/message").or_else(||data.pointer("/detail/message")).and_then(Value::as_str).unwrap_or("");
@@ -147,6 +160,79 @@ impl Provider {
             if !valid{return Err("Провайдер не подтвердил API-ключ".into());}
         }
         Ok(value)
+    }
+}
+
+async fn read_body(response: &mut reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "Оборван ответ провайдера")? {
+        if bytes.len() + chunk.len() > limit {
+            return Err("Слишком большой ответ провайдера".into());
+        }
+        bytes.extend(chunk);
+    }
+    Ok(bytes)
+}
+
+fn gemini_rejected_key(status: reqwest::StatusCode, bytes: &[u8]) -> bool {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return true;
+    }
+    if status != reqwest::StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let Ok(body) = serde_json::from_slice::<Value>(bytes) else { return false };
+    body["error"]["details"].as_array().is_some_and(|details| {
+        details.iter().any(|detail| detail["reason"] == "API_KEY_INVALID")
+    }) || body["error"]["message"].as_str().is_some_and(|message| {
+        message.to_ascii_lowercase().contains("api key not valid")
+    })
+}
+
+#[cfg(all(test, feature = "gemini"))]
+mod gemini_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn gemini_text_retries_rejected_header_using_live_key_transport() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut provider = Provider::new("gemini").unwrap();
+        provider.base = format!("http://{}/", listener.local_addr().unwrap()).parse().unwrap();
+        let server = tokio::spawn(async move {
+            for header_auth in [true, false] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut raw = Vec::new();
+                while !raw.ends_with(b"\r\n\r\n") {
+                    raw.push(socket.read_u8().await.unwrap());
+                    assert!(raw.len() < 8192);
+                }
+                let header = String::from_utf8(raw).unwrap().to_ascii_lowercase();
+                assert_eq!(header.contains("x-goog-api-key: test-key"), header_auth);
+                assert_eq!(header.contains("?key=test-key"), !header_auth);
+                assert!(!header.contains("authorization:"));
+                let length = header.lines().find_map(|line| line.strip_prefix("content-length:"))
+                    .unwrap().trim().parse().unwrap();
+                let mut body = vec![0; length];
+                socket.read_exact(&mut body).await.unwrap();
+                assert_eq!(body, br#"{"contents":[]}"#);
+                let (status, body) = if header_auth {
+                    ("400 Bad Request", r#"{"error":{"details":[{"reason":"API_KEY_INVALID"}]}}"#)
+                } else {
+                    ("200 OK", r#"{"candidates":[]}"#)
+                };
+                let http = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(http.as_bytes()).await.unwrap();
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let result = provider.request(json!({"op":"text","key":"test-key",
+                "model":"gemini-test","body":{"contents":[]}}), json!({})).await.unwrap();
+            assert_eq!(result, json!({"candidates":[]}));
+            server.await.unwrap();
+        }).await.unwrap();
+        assert!(!gemini_rejected_key(reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error":{"message":"Unknown name parameters"}}"#));
     }
 }
 

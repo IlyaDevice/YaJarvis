@@ -1,7 +1,7 @@
 {
   "id": "gemini",
   "name": "Gemini",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "kind": "rust",
   "main": "plugin",
   "api": 1,

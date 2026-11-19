@@ -46,6 +46,7 @@ struct St {
     last_loud: Option<Instant>,
     pending_wake: bool,
     echo: EchoWindow,
+    wake_echo: Option<wake_reply::WakeEcho>,
     input_at: Option<Instant>,
 }
 
@@ -262,7 +263,7 @@ impl Engine {
                 for raw in rx {
                     let training_enabled = e.host.wake_training();
                     if let Some(replacement)=e.listener.take_reload(&e.data,&e.store,training_enabled){det=replacement;}
-                    let (live, busy, muted_input) = {
+                    let (live, busy, muted_input, input) = {
                         let mut st = e.st.lock().unwrap();
                         // последние 3 с; буфер растёт до 6 с и сдвигается на месте — без лишних копий
                         if st.ring.len() + raw.len() > 6 * RATE {
@@ -276,9 +277,17 @@ impl Engine {
                         if st.holding && st.live.is_none() && st.hold.len() < 20 * RATE {
                             st.hold.extend_from_slice(&raw);
                         }
-                        (st.live.clone(), st.busy, st.echo.muted(Instant::now()))
+                        let now = Instant::now();
+                        if st.wake_echo.as_ref().is_some_and(|echo| echo.expired(now)) {
+                            st.wake_echo = None;
+                        }
+                        let input = st.wake_echo.as_ref().map_or_else(
+                            || std::borrow::Cow::Borrowed(raw.as_ref()),
+                            |echo| echo.filter(&raw, now),
+                        );
+                        (st.live.clone(), st.busy, st.echo.muted(now), input)
                     };
-                    if !muted_input && activity.observe(&raw, busy) {
+                    if !muted_input && activity.observe(&input, busy) {
                         let now = Instant::now();
                         e.st.lock().unwrap().input_at = Some(now);
                         if let Some(session) = &live {
@@ -324,9 +333,9 @@ impl Engine {
                             // Preserve the input clock for the provider's turn detector.
                             live.feed(&vec![0; raw.len()]);
                         } else if boost_db > 0 {
-                            live.feed(&boost(&raw, boost_db));
+                            live.feed(&boost(&input, boost_db));
                         } else {
-                            live.feed(&raw);
+                            live.feed(&input);
                         }
                         // «Джарвис» во время разговора — как у Алисы: сразу замолкает и слушает
                         let recent = e.st.lock().unwrap().last_wake.is_some_and(|t| t.elapsed() < Duration::from_millis(2500));
@@ -429,6 +438,7 @@ impl Engine {
             }
             st.busy = true;
             st.echo = EchoWindow::default();
+            st.wake_echo = None;
             st.last_wake = Some(Instant::now());
             st.aborted = false;
             st.hold.clear();
@@ -470,6 +480,7 @@ impl Engine {
                     st.hold.clear();
                     st.holding = false;
                     st.echo = EchoWindow::default();
+                    st.wake_echo = None;
                     q
                 };
                 e.reset_wake.store(true, Ordering::Relaxed);
@@ -506,6 +517,9 @@ impl Engine {
         }
         if p.engine == "gemini" {
             text += "\n\nЕсли человек только позвал тебя или пока думает и тянет «эээ», «ааа», дождись продолжения. Отвечай, когда он закончил мысль.";
+            if p.web_search {
+                text += " Используй Google Search, если просят поискать или нужны актуальные сведения. Если поиск ничего не нашёл, скажи об этом.";
+            }
         }
         match &self.tools.memory {
             // общая память разговора: у всех ассистентов, переживает перезапуск
@@ -647,7 +661,7 @@ impl Engine {
                 self.leds.set(Mode::Thinking); // соединяюсь с моделью — бегущий огонёк
             }
             let x = self.new_session(&s, &p);
-            let reply = if by_word && sure { self.cached_wake_reply(&p) } else { None };
+            let reply = if by_word && sure && s.wake_reply_enabled { self.cached_wake_reply(&p) } else { None };
             if reply.is_some() {
                 // Network setup is already in progress while giving a joined phrase a head start.
                 std::thread::sleep(wake_reply::FOLLOW_ON_GAP);
@@ -660,9 +674,7 @@ impl Engine {
                 let before = if matches!(p.engine.as_str(), "chatgpt" | "gemini") {
                     preroll.len().saturating_sub(RATE * 4 / 5)
                 } else { 0 };
-                if let Some(sample) = &reply {
-                    st.echo.played_with_tail(Instant::now(), &sample.pcm, sample.rate, wake_reply::REPLY_ECHO_TAIL);
-                } else {
+                if reply.is_none() {
                     let mut first = preroll[before..].to_vec();
                     first.extend_from_slice(&st.hold);
                     x.feed(&boost(&first, s.mic_boost_db));

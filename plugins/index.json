@@ -54,7 +54,7 @@
       "kind": "rust",
       "category": "assistant",
       "name": "Gemini",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "icon": "bolt",
       "description": "Текстовые запросы и живой голос через Gemini API.",
       "min_core": "0.10.0"
