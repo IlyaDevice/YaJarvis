@@ -34,6 +34,7 @@ pub trait Session: Send + Sync {
 #[derive(Default)]
 struct DState {
     last_activity: Option<Instant>,
+    last_input: Option<Instant>,
     delegations: i32,
     turn: i64,
     turn_user: String,
@@ -213,7 +214,11 @@ impl Dialog {
 
     /// Разговор закончен: обе стороны молчат idle_s и движок ничем не занят. Модель только что
     /// пообещала «сейчас поищу» — она ищет на своей стороне: ждём дольше.
-    pub fn idle(&self, mut idle_s: f64) -> bool {
+    pub fn idle(&self, idle_s: f64) -> bool {
+        self.idle_at(idle_s, Instant::now())
+    }
+
+    fn idle_at(&self, mut idle_s: f64, now: Instant) -> bool {
         let st = self.st.lock().unwrap();
         let bot = st.turn_bot.trim();
         if !bot.is_empty() && !bot.contains('?') {
@@ -222,7 +227,17 @@ impl Dialog {
                 idle_s = idle_s.max(25.0);
             }
         }
-        st.delegations == 0 && st.last_activity.is_none_or(|t| t.elapsed().as_secs_f64() > idle_s)
+        st.delegations == 0
+            && st.last_activity.max(st.last_input).is_none_or(|t| now.saturating_duration_since(t).as_secs_f64() > idle_s)
+    }
+
+    /// Local microphone activity can arrive well before the provider's transcription.
+    pub fn heard_input(&self, at: Instant) {
+        self.st.lock().unwrap().last_input = Some(at);
+    }
+
+    pub fn heard_input_since(&self, since: Instant) -> bool {
+        self.st.lock().unwrap().last_input.is_some_and(|at| at >= since)
     }
 
     /// Сколько раз человек что-то сказал в этом разговоре.
@@ -284,5 +299,21 @@ mod tests {
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].answer, "Сейчас поищу.");
         assert_eq!(last_sentence("Да. Сейчас включу!"), " Сейчас включу");
+    }
+
+    #[test]
+    fn local_speech_extends_timeout_without_a_transcript() {
+        let dialog = Dialog::new(Arc::new(Journal::default()), "Gemini", "");
+        let start = Instant::now();
+        dialog.st.lock().unwrap().last_activity = Some(start);
+        assert!(dialog.idle_at(8.0, start + Duration::from_secs(9)));
+        let input = start + Duration::from_secs(7);
+        dialog.heard_input(input);
+        assert!(dialog.heard_input_since(start));
+        assert!(!dialog.heard_input_since(input + Duration::from_millis(1)));
+        assert!(!dialog.idle_at(8.0, start + Duration::from_secs(9)));
+        assert!(dialog.idle_at(8.0, start + Duration::from_secs(16)));
+        assert_eq!(dialog.user_turns(), 0);
+        assert_eq!(dialog.utterance().0, 0);
     }
 }

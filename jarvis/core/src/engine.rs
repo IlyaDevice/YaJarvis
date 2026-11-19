@@ -79,6 +79,29 @@ pub fn loud(pcm: &[i16]) -> bool {
     pcm.iter().any(|&v| !(-600..=600).contains(&v))
 }
 
+struct InputActivity {
+    background: f32,
+}
+
+impl InputActivity {
+    fn observe(&mut self, pcm: &[i16], listening: bool) -> bool {
+        let mut active = false;
+        for frame in pcm.chunks(RATE / 50).filter(|frame| frame.len() >= RATE / 250) {
+            let level = frame.iter().map(|v| u32::from(v.unsigned_abs())).sum::<u32>() as f32 / frame.len() as f32;
+            let threshold = (self.background * 2.8).max(140.0) as u16;
+            let speech = level > (self.background * 2.25).max(50.0)
+                && frame.iter().filter(|v| v.unsigned_abs() > threshold).count() >= frame.len() / 8;
+            if !speech || !listening {
+                // Learn the room's background without absorbing sustained speech into it.
+                let step = (level - self.background).clamp(-self.background, self.background.max(20.0));
+                self.background += step * 0.05;
+            }
+            active |= speech;
+        }
+        active
+    }
+}
+
 /// Копия звука с усилением db (с ограничением по краям шкалы).
 pub fn boost(pcm: &[i16], db: i64) -> Vec<i16> {
     if db <= 0 {
@@ -190,6 +213,7 @@ impl Engine {
             .spawn(move || {
                 let (_, rx) = e.mic.subscribe(256);
                 let mut batch = crate::training_io::AudioBatch::default();
+                let mut activity = InputActivity { background: 24.0 };
                 for raw in rx {
                     let training_enabled = e.host.wake_training();
                     if let Some(replacement)=e.listener.take_reload(&e.data,&e.store,training_enabled){det=replacement;}
@@ -209,6 +233,11 @@ impl Engine {
                         }
                         (st.live.clone(), st.busy)
                     };
+                    if activity.observe(&raw, busy)
+                        && let Some(session) = &live
+                    {
+                        session.dialog().heard_input(Instant::now());
+                    }
                     if busy || live.is_some() {
                         e.leds.hear(peak(&raw) / 9000.0);
                     }
@@ -548,6 +577,7 @@ impl Engine {
         let mut speaking = false;
         let mut checked = 0i64;
         let mut checked_text = String::new();
+        let opening_at = Instant::now();
         let mut ready_at = Instant::now();
         let mut last_voice: Option<Instant> = None;
         let _ = (sure, &clip);
@@ -643,7 +673,11 @@ impl Engine {
                 return close(&sess);
             }
             // разговор открыт сразу по слову, а человек так ничего и не сказал — слово сработало зря
-            if by_word && checked == 0 && x.dialog().user_turns() == 0 && ready_at.elapsed() > Duration::from_secs(5) && !last_voice.is_some_and(|t| t > ready_at) {
+            if by_word && checked == 0 && x.dialog().user_turns() == 0
+                && ready_at.elapsed() > Duration::from_secs(5)
+                && !last_voice.is_some_and(|t| t > ready_at)
+                && !x.dialog().heard_input_since(opening_at)
+            {
                 log::info!("Джарвис: ложное срабатывание (никто ничего не сказал) — молчу");
                 self.player.stop(true);
                 x.dialog().annotate("ложное срабатывание", "");
@@ -977,5 +1011,25 @@ mod tests {
         assert!(super::loud(&[0, 700]) && !super::loud(&[600, -600]));
         assert_eq!(super::boost(&[1000], 6)[0], 1995);
         assert_eq!(super::peak(&[-32768, 5]), 32768.0);
+    }
+
+    #[test]
+    fn input_activity_detects_quiet_speech_and_ignores_ambient_noise_and_spikes() {
+        let mut detector = super::InputActivity { background: 24.0 };
+        let background: Vec<i16> = (0..320).map(|i| if i % 2 == 0 { 36 } else { -36 }).collect();
+        for _ in 0..100 {
+            assert!(!detector.observe(&background, false));
+        }
+        let mut spike = background.clone();
+        spike[80] = i16::MAX;
+        assert!(!detector.observe(&spike, true));
+        let quiet_speech: Vec<i16> = (0..320).map(|i| {
+            ((i as f32 * std::f32::consts::TAU * 180.0 / 16_000.0).sin() * 180.0) as i16
+        }).collect();
+        assert!(!super::loud(&quiet_speech));
+        for _ in 0..500 {
+            assert!(detector.observe(&quiet_speech, true));
+        }
+        assert!(!detector.observe(&background, true));
     }
 }
