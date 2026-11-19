@@ -18,20 +18,18 @@
     <ol class="steps" aria-label="Этапы установки"><li data-s="1">Колонка</li><li data-s="2">Проверка</li><li data-s="3">Настройки</li><li data-s="4">Установка</li></ol>
     <section id="s1" class="card"></section>
     <section id="s2" class="card hidden"></section>
-    <section id="s3" class="card hidden">
-      <span class="eyebrow">Последний штрих</span><h1>Почти готово.</h1><p class="lead">Придумайте пароль. Сервисы и голос можно добавить позже.</p>
-      <div class="f"><label for="pw">Пароль панели · от 6 символов</label><div class="password-row"><input type="password" id="pw" autocomplete="new-password" placeholder="Пароль"><input type="password" id="pw2" autocomplete="new-password" placeholder="Повторите" aria-label="Повторите пароль"></div><small>Защитит доступ к настройкам колонки.</small></div>
-      <div class="f"><label for="tz">Часовой пояс</label><select id="tz"></select></div>
-      <p class="hint">После установки панель предложит выбрать и настроить плагины.</p>
-      <p class="err" id="s3-err" role="alert"></p><div class="actions"><button class="btn ghost" data-back="2">Назад</button><button class="btn accent" id="install">Установить <span aria-hidden="true">→</span></button></div>
-    </section>
+    <section id="s3" class="card hidden"></section>
     <section id="s4" class="card install-card hidden" aria-live="polite">
-      <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br> Джарвиса.</h1>
-      <p class="lead" id="job-description">Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями справа.</p>
-      <ol class="stages" id="stages" aria-label="Этапы установки"></ol>
-      <progress id="install-progress" aria-label="Ход установки" max="100"></progress><p id="job-status" class="job-status" role="status">Подключаемся к колонке…</p>
-      <details class="job-details" id="job-details"><summary>Технический журнал</summary><pre class="log" id="log"></pre></details>
-      <div class="finish-actions"><a class="btn accent wide hidden" id="open" target="_blank" rel="noopener">Открыть панель Джарвиса <span aria-hidden="true">↗</span></a><button class="btn ghost wide hidden" id="again">Другая колонка</button></div>
+      <div class="step-body">
+        <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br> Джарвиса.</h1>
+        <p class="lead" id="job-description">Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями справа.</p>
+        <ol class="stages" id="stages" aria-label="Этапы установки"></ol>
+        <progress id="install-progress" aria-label="Ход установки" max="100"></progress><p id="job-status" class="job-status" role="status">Подключаемся к колонке…</p>
+        <details class="job-details" id="job-details"><summary>Технический журнал</summary><pre class="log" id="log"></pre></details>
+      </div>
+      <div class="step-footer">
+        <div class="finish-actions"><a class="btn accent wide hidden" id="open" target="_blank" rel="noopener">Открыть панель Джарвиса <span aria-hidden="true">↗</span></a><button class="btn ghost wide hidden" id="again">Другая колонка</button></div>
+      </div>
     </section>
     <p class="foot">Не закрывайте программу до завершения установки.</p>
   </div>

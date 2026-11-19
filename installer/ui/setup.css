@@ -60,19 +60,11 @@ summary { font-size: 14px; color: var(--dim); cursor: pointer; list-style: none;
 summary::before { content: "+"; margin-right: 8px; color: var(--dim2); }
 details[open] > summary::before { content: "−"; }
 .optional summary span { color: var(--dim2); margin-left: 6px; }
-.optional[open] .f { margin-top: 18px; }
-.hint, .f small { color: var(--dim2); font-size: 14px; line-height: 1.6; }
-.hint { margin-top: 12px; }
+.hint { margin-top: 12px; color: var(--dim2); font-size: 14px; line-height: 1.6; }
 input, select, textarea { width: 100%; min-width: 0; padding: 12px 14px; min-height: 48px; color: var(--fg); background: #111116b3; border: 1px solid #ffffff15; border-radius: 12px; outline: none; font-size: 16px; transition: border-color .2s, box-shadow .2s; }
 input:focus, select:focus, textarea:focus { border-color: #f77b2caa; box-shadow: 0 0 0 3px #f77b2c12; }
 input::placeholder, textarea::placeholder { color: var(--dim2); }
 textarea { resize: vertical; min-height: 80px; }
-.f { display: grid; gap: 8px; margin-bottom: 18px; }
-.f label { color: #d5d1df; font-size: 15px; }
-.f small { display: none; }
-.password-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.err { margin-top: 10px; font-size: 14px; color: var(--bad); }
-.err:empty { display: none; }
 .foot { display: none; }
 .bottom-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; color: var(--dim2); font-size: 13px; }
 .bottom-bar a:hover { color: var(--fg); }
@@ -126,7 +118,6 @@ progress:not([value]) { background: linear-gradient(90deg,var(--raise),#f77b2c88
   .step-footer { padding: 0 26px 20px; }
   h1 { font-size: 36px; margin-top: 8px; }
   .lead { margin-bottom: 14px; }
-  .f { margin-bottom: 14px; }
 }
 @media (max-width: 800px) {
   .wrap { padding: 14px 18px 10px; grid-template-rows: 44px minmax(0,1fr) 20px; gap: 14px; }
@@ -148,8 +139,6 @@ progress:not([value]) { background: linear-gradient(90deg,var(--raise),#f77b2c88
   .bottom-bar > span { display: none; }
   .bottom-bar { justify-content: center; }
   .optional summary span { display: none; }
-  #s3 .step-body { padding-top: 16px; padding-bottom: 16px; }
-  #s3 .f { margin-bottom: 12px; }
   .install-card .step-body { padding-top: 16px; padding-bottom: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {

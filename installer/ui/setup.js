@@ -1,22 +1,13 @@
 import "/token.js";
 import { mount } from "svelte";
-import { get, writable } from "svelte/store";
+import { writable } from "svelte/store";
 import DeviceCheck from "./DeviceCheck/DeviceCheck.svelte";
+import InstallSettings from "./InstallSettings/InstallSettings.svelte";
 import Showcase from "./Showcase/Showcase.svelte";
 import SpeakerDiscovery from "./SpeakerDiscovery/SpeakerDiscovery.svelte";
 
 const $ = (s) => document.querySelector(s);
 const selectedSpeaker = writable(null);
-
-// Keep the wizard inside the viewport; its action stays visible when fields expand.
-document.querySelectorAll("#s3, #s4").forEach(card => {
-  const action = card.querySelector(".actions, .finish-actions");
-  const body = document.createElement("div"), footer = document.createElement("div");
-  body.className = "step-body"; footer.className = "step-footer";
-  if (action) footer.append(action);
-  body.append(...card.childNodes);
-  card.append(body, footer);
-});
 
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: { "Content-Type": "application/json", "X-Token": window.TOKEN }, body: body ? JSON.stringify(body) : undefined });
@@ -38,44 +29,11 @@ function step(n) {
 }
 
 $("#ver").textContent = window.VERSION || "";
-const TZ = [["Europe/Moscow", "Москва (UTC+3)"], ["Europe/Minsk", "Минск (UTC+3)"], ["Europe/Kaliningrad", "Калининград (UTC+2)"], ["Europe/Samara", "Самара (UTC+4)"],
-  ["Asia/Yekaterinburg", "Екатеринбург (UTC+5)"], ["Asia/Almaty", "Алматы (UTC+5)"], ["Asia/Omsk", "Омск (UTC+6)"], ["Asia/Novosibirsk", "Новосибирск (UTC+7)"],
-  ["Asia/Krasnoyarsk", "Красноярск (UTC+7)"], ["Asia/Irkutsk", "Иркутск (UTC+8)"], ["Asia/Yakutsk", "Якутск (UTC+9)"], ["Asia/Vladivostok", "Владивосток (UTC+10)"],
-  ["Europe/Kyiv", "Киев"], ["Europe/Berlin", "Берлин"], ["UTC", "UTC"]];
-TZ.sort((a, b) => (a[0] === "UTC" ? -1 : b[0] === "UTC" ? 1 : 0));
-$("#tz").innerHTML = TZ.map(([v, n]) => `<option value="${v}">${n}</option>`).join("");
-
 
 function selectSpeaker(speaker) {
   selectedSpeaker.set(speaker);
   step(2);
 }
-
-document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => step(+b.dataset.back)));
-function showSettings(speaker) {
-  // при обновлении пароль и ключи уже на колонке — поля можно оставить пустыми
-  $("#pw").placeholder = speaker.installed ? "Не менять" : "Пароль";
-  $("#tz-keep")?.remove();
-  if (speaker.installed) {
-    const option = new Option("Оставить как есть", "", true, true);
-    option.id = "tz-keep";
-    $("#tz").prepend(option);
-  }
-  step(3);
-}
-
-$("#install").addEventListener("click", async () => {
-  const speaker = get(selectedSpeaker);
-  const pw = $("#pw").value;
-  $("#s3-err").textContent = "";
-  if (!speaker.installed && pw.length < 6) { $("#s3-err").textContent = "Придумайте пароль — минимум 6 символов"; return; }
-  if (pw && pw !== $("#pw2").value) { $("#s3-err").textContent = "Пароли не совпадают"; return; }
-  try {
-    await api("POST", "/api/install", { ip: speaker.ip, password: pw, timezone: $("#tz").value });
-    $("#pw").value = $("#pw2").value = "";
-    run("Устанавливаю…");
-  } catch (err) { $("#s3-err").textContent = err.message; }
-});
 
 const STAGES = [["Подключение", /Подключаюсь|Определена|Найден Джарвис/], ["Место", /Стираю|Удаляю|Свободно на колонке/], ["Файлы", /Копирую|%$/],
   ["Автозапуск", /Выключаю|Добавляю автозапуск/], ["Запуск панели", /Проверяю запуск панели/], ["Готово", /Готово/]];
@@ -131,8 +89,17 @@ mount(DeviceCheck, {
     api,
     selectedSpeaker,
     onBack: () => step(1),
-    onContinue: showSettings,
+    onContinue: () => step(3),
     onUninstalled: () => run("Удаляю…"),
+  },
+});
+mount(InstallSettings, {
+  target: $("#s3"),
+  props: {
+    api,
+    selectedSpeaker,
+    onBack: () => step(2),
+    onStarted: () => run("Устанавливаю…"),
   },
 });
 step(1);

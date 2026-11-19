@@ -1,0 +1,38 @@
+.field {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.field label {
+  color: #d5d1df;
+  font-size: 15px;
+}
+
+.passwordRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.error {
+  margin-top: 10px;
+  color: var(--bad);
+  font-size: 14px;
+}
+
+@media (max-height: 760px) and (min-width: 801px) {
+  .field {
+    margin-bottom: 14px;
+  }
+}
+
+@media (max-width: 800px) {
+  form.body {
+    padding-block: 16px;
+  }
+
+  .field {
+    margin-bottom: 12px;
+  }
+}
