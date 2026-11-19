@@ -15,7 +15,7 @@ const PHRASES: &[&str] = &[
     "Я тут.",
     "Угу.",
     "Ага.",
-    "Слышу.",
+    "Говори.",
     "На связи.",
     "Да, слушаю.",
     "Хм?",
@@ -52,14 +52,17 @@ impl Engine {
         let engine = Arc::downgrade(self);
         self.rt.spawn(async move {
             tokio::time::sleep(Duration::from_secs(12)).await;
+            let mut attempt = 0;
             while let Some(engine) = engine.upgrade() {
-                let _ = tokio::task::spawn_blocking(move || engine.prepare_wake_replies()).await;
+                let _ = tokio::task::spawn_blocking(move || engine.prepare_wake_replies(attempt))
+                    .await;
+                attempt = attempt.wrapping_add(1);
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
         });
     }
 
-    fn prepare_wake_replies(&self) {
+    fn prepare_wake_replies(&self, attempt: usize) {
         let settings = self.store.get();
         let profile = settings.active_profile();
         if !settings.wake_enabled
@@ -70,7 +73,7 @@ impl Engine {
             return;
         }
         let directory = self.data.join("wake-replies");
-        let pending: Vec<_> = PHRASES
+        let mut pending: Vec<_> = PHRASES
             .iter()
             .filter_map(|&phrase| {
                 let path = directory.join(reply_name(&profile, phrase));
@@ -80,6 +83,9 @@ impl Engine {
         if pending.is_empty() {
             return;
         }
+        // A timed-out session is closed, so a late reply can't be saved under another phrase.
+        let start = attempt % pending.len();
+        pending.rotate_left(start);
         let cancelled = || {
             self.talking()
                 || self.player.playing()
@@ -125,7 +131,7 @@ impl Engine {
                     &*session,
                     &output,
                     phrase,
-                    Duration::from_secs(7),
+                    Duration::from_secs(10),
                     cancelled,
                 )?;
                 let bytes = if short_enough(&sample) {
