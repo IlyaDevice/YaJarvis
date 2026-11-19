@@ -66,7 +66,8 @@ export function viewProfile(id) {
     ${!isNew && !active ? `<button class="btn" id="p-activate" data-tip="Этот ассистент будет отвечать на «Джарвис»">Сделать активным</button>` : ""}
     ${!isNew && !active ? `<button class="btn ghost danger" id="p-del">Удалить</button>` : ""}<span class="dirty hidden" id="dirty">есть несохранённые изменения</span></div>`;
 
-  const mark = () => { setDirty(true); $("#dirty").classList.remove("hidden"); };
+  let revision = 0;
+  const mark = () => { revision++; setDirty(true); $("#dirty").classList.remove("hidden"); };
   $("#p-llm-plugin")?.addEventListener("change", mark);
   const effortOptions = (model) => S.model_efforts?.[model] || S.efforts;
   const refreshEffortOptions = () => {
@@ -156,7 +157,8 @@ export function viewProfile(id) {
     await reload(); p.voice = r.id; drawVoices(); mark();
   }, "Голос создан — послушайте его кнопкой рядом"));
 
-  $("#p-save").addEventListener("click", (e) => act(e.target, async () => {
+  const save = $("#p-save");
+  save.addEventListener("click", () => act(save, async () => {
     Object.assign(p, { name: $("#p-name").value.trim(), prompt: $("#p-prompt").value, backend_model: $("#p-model").value,
       priority: $("#p-priority").checked, web_search: $("#p-web").checked, idle_s: +$("#p-idle").value || 8, mode: "live",
       volume: +$("#p-vol").value,
@@ -165,9 +167,25 @@ export function viewProfile(id) {
     p.mode=p.engine==="elevenlabs"?"classic":"live";
     if(p.engine==="eleven_realtime"){p.live_model=$("#p-eleven-rtmodel").value;if(!p.tts_voice)throw new Error("Выберите голос ElevenLabs");}
     if(p.engine==="elevenlabs"){p.llm_model=p.backend_model;p.tts_model=$("#p-tts-model").value;p.stt_engine="elevenlabs";p.stt_model=$("#p-stt-model").value;if(!p.tts_voice)throw new Error("Выберите голос ElevenLabs");}
+    const savedRevision = revision;
     const r = await api("PUT", "/api/profile", p);
-    setDirty(false); await reload();
-    if (isNew) go("#p/" + r.id); else route();
+    await reload();
+    if (!save.isConnected) return;
+    if (isNew) {
+      setDirty(false);
+      go("#p/" + r.id);
+      return;
+    }
+    const stored = S.profiles.find((profile) => profile.id === r.id);
+    if (stored) $("#view h1").textContent = stored.name;
+    if (revision === savedRevision) {
+      if (stored) {
+        $("#p-name").value = stored.name;
+        $("#p-idle").value = stored.idle_s;
+      }
+      setDirty(false);
+      $("#dirty").classList.add("hidden");
+    }
   }, "Сохранено"));
   $("#p-activate")?.addEventListener("click", (e) => act(e.target, async () => { await api("POST", "/api/active", { id: p.id }); await reload(); route(); }, `Теперь отвечает «${p.name}»`));
   $("#p-del")?.addEventListener("click", (e) => { if (!confirm(`Удалить ассистента «${p.name}»?`)) return; act(e.target, async () => { await api("DELETE", "/api/profile?id=" + encodeURIComponent(p.id)); setDirty(false); await reload(); go("#home"); }, "Удалено"); });

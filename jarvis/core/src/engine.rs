@@ -43,6 +43,37 @@ struct St {
     last_wake: Option<Instant>,
     last_loud: Option<Instant>,
     pending_wake: bool,
+    echo: EchoWindow,
+}
+
+const ECHO_TAIL: Duration = Duration::from_millis(450);
+
+#[derive(Default)]
+struct EchoWindow {
+    queued_until: Option<Instant>,
+    mute_until: Option<Instant>,
+}
+
+impl EchoWindow {
+    fn played(&mut self, now: Instant, pcm: &[i16], rate: usize) {
+        let start = self.queued_until.map_or(now, |end| end.max(now));
+        let end = start + Duration::from_secs_f64(pcm.len() as f64 / rate as f64);
+        self.queued_until = Some(end);
+        if peak(pcm) > 100.0 {
+            self.mute_until = Some(end + ECHO_TAIL);
+        }
+    }
+
+    fn muted(&self, now: Instant) -> bool {
+        self.mute_until.is_some_and(|until| until > now)
+    }
+
+    fn stopped(&mut self, now: Instant) {
+        self.queued_until = None;
+        if self.muted(now) {
+            self.mute_until = Some(now + ECHO_TAIL);
+        }
+    }
 }
 
 pub struct Engine {
@@ -217,7 +248,7 @@ impl Engine {
                 for raw in rx {
                     let training_enabled = e.host.wake_training();
                     if let Some(replacement)=e.listener.take_reload(&e.data,&e.store,training_enabled){det=replacement;}
-                    let (live, busy) = {
+                    let (live, busy, muted_input) = {
                         let mut st = e.st.lock().unwrap();
                         // последние 3 с; буфер растёт до 6 с и сдвигается на месте — без лишних копий
                         if st.ring.len() + raw.len() > 6 * RATE {
@@ -231,9 +262,9 @@ impl Engine {
                         if st.holding && st.live.is_none() && st.hold.len() < 20 * RATE {
                             st.hold.extend_from_slice(&raw);
                         }
-                        (st.live.clone(), st.busy)
+                        (st.live.clone(), st.busy, st.echo.muted(Instant::now()))
                     };
-                    if activity.observe(&raw, busy)
+                    if !muted_input && activity.observe(&raw, busy)
                         && let Some(session) = &live
                     {
                         session.dialog().heard_input(Instant::now());
@@ -273,7 +304,14 @@ impl Engine {
                         batch.reset();
                     }
                     if let Some(live) = live {
-                        live.feed(&if boost_db > 0 { boost(&raw, boost_db) } else { raw.to_vec() });
+                        if muted_input {
+                            // Preserve the input clock for the provider's turn detector.
+                            live.feed(&vec![0; raw.len()]);
+                        } else if boost_db > 0 {
+                            live.feed(&boost(&raw, boost_db));
+                        } else {
+                            live.feed(&raw);
+                        }
                         // «Джарвис» во время разговора — как у Алисы: сразу замолкает и слушает
                         let recent = e.st.lock().unwrap().last_wake.is_some_and(|t| t.elapsed() < Duration::from_millis(2500));
                         if hit && !recent {
@@ -374,6 +412,7 @@ impl Engine {
                 return;
             }
             st.busy = true;
+            st.echo = EchoWindow::default();
             st.last_wake = Some(Instant::now());
             st.aborted = false;
             st.hold.clear();
@@ -414,6 +453,7 @@ impl Engine {
                     st.aborted = false;
                     st.hold.clear();
                     st.holding = false;
+                    st.echo = EchoWindow::default();
                     q
                 };
                 e.reset_wake.store(true, Ordering::Relaxed);
@@ -646,7 +686,9 @@ impl Engine {
                         if !self.player.playing() && loud(&pcm) {
                             let _ = self.start_voice(&*x); // после перебивания плеер был остановлен
                         }
-                        let _ = self.player.write(&pcm);
+                        if self.player.write(&pcm).is_ok() && p.engine == "gemini" {
+                            self.st.lock().unwrap().echo.played(Instant::now(), &pcm, x.rate());
+                        }
                         if loud(&pcm) {
                             if p.engine == "gemini" && last_voice.is_none() {
                                 log::info!("Gemini: первый голос через {:.2} с от открытия разговора", opening_at.elapsed().as_secs_f64());
@@ -664,6 +706,7 @@ impl Engine {
             if x.interrupted() {
                 while out.try_recv().is_ok(){}
                 self.player.stop(true);
+                self.st.lock().unwrap().echo.stopped(Instant::now());
                 speaking = false;
                 self.leds.set(Mode::Listening);
             }
@@ -940,6 +983,7 @@ impl Engine {
         log::info!("Джарвис: перебили словом — замолкаю");
         sess.dialog().mute();
         self.player.stop(true);
+        self.st.lock().unwrap().echo.stopped(Instant::now());
         self.leds.set(Mode::Listening);
     }
 
@@ -1039,5 +1083,21 @@ mod tests {
             assert!(detector.observe(&quiet_speech, true));
         }
         assert!(!detector.observe(&background, true));
+    }
+
+    #[test]
+    fn echo_guard_covers_queued_audio_and_reopens_after_explicit_interrupt() {
+        let now = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        let mut echo = super::EchoWindow::default();
+        assert!(!echo.muted(now));
+        let half_second = vec![1500; 12_000];
+        echo.played(now, &half_second, 24_000);
+        echo.played(now + ms(10), &half_second, 24_000);
+        assert!(echo.muted(now + ms(1200)));
+        assert!(!echo.muted(now + ms(1451)));
+        echo.stopped(now + ms(300));
+        assert!(echo.muted(now + ms(749)));
+        assert!(!echo.muted(now + ms(751)));
     }
 }
