@@ -6,35 +6,9 @@
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#111116">
 <title>YaJavis — установка Джарвиса</title>
-<link rel="stylesheet" href="setup.css">
 <script type="module" src="setup.js"></script>
 </head>
 <body>
-<main class="wrap">
-  <header class="topbar"><a class="brand" href="#" aria-label="YaJavis"><span class="logo"></span><span>YaJavis<small>Установка Джарвиса</small></span></a>
-    <div class="top-meta"><span class="ver" id="ver"></span><a href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">Проект на GitHub <span aria-hidden="true">↗</span></a></div></header>
-  <div class="setup-grid">
-  <div class="wizard">
-    <ol class="steps" aria-label="Этапы установки"><li data-s="1">Колонка</li><li data-s="2">Проверка</li><li data-s="3">Настройки</li><li data-s="4">Установка</li></ol>
-    <section id="s1" class="card"></section>
-    <section id="s2" class="card hidden"></section>
-    <section id="s3" class="card hidden"></section>
-    <section id="s4" class="card install-card hidden" aria-live="polite">
-      <div class="step-body">
-        <div class="install-orb" id="install-orb" aria-hidden="true"><span></span></div><span class="eyebrow">YaJavis на вашей Станции</span><h1 id="s4-title">Устанавливаем<br> Джарвиса.</h1>
-        <p class="lead" id="job-description">Переносим файлы и готовим всё для первого разговора. Пока можно познакомиться с возможностями справа.</p>
-        <ol class="stages" id="stages" aria-label="Этапы установки"></ol>
-        <progress id="install-progress" aria-label="Ход установки" max="100"></progress><p id="job-status" class="job-status" role="status">Подключаемся к колонке…</p>
-        <details class="job-details" id="job-details"><summary>Технический журнал</summary><pre class="log" id="log"></pre></details>
-      </div>
-      <div class="step-footer">
-        <div class="finish-actions"><a class="btn accent wide hidden" id="open" target="_blank" rel="noopener">Открыть панель Джарвиса <span aria-hidden="true">↗</span></a><button class="btn ghost wide hidden" id="again">Другая колонка</button></div>
-      </div>
-    </section>
-    <p class="foot">Не закрывайте программу до завершения установки.</p>
-  </div>
-  </div>
-  <footer class="bottom-bar"><span>Установка на вашу колонку · Без отдельного сервера</span><a href="https://github.com/newfpv/YaJavis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">Авторы и благодарности</a></footer>
-</main>
+  <div id="installer"></div>
 </body>
 </html>
