@@ -61,27 +61,27 @@ try {
     }
     $null = New-Item -ItemType Directory -Force -Path $out, $tools
 
-    Write-LfFile (Join-Path $tools 'cc.ps1') @'
-$zigArgs = 'cc', '-target', $env:JARVIS_ZIG_TARGET
-if ($env:JARVIS_ZIG_CPU) {
-    $zigArgs += "-mcpu=$env:JARVIS_ZIG_CPU"
-}
+    # Preserve arguments such as -IC:/path, which PowerShell -File interprets as parameters.
+    Write-LfFile (Join-Path $tools 'zig.py') @'
+import os
+import subprocess
+import sys
 
-# cc-rs passes a Clang target triple. Use the equivalent Zig target above.
-$compilerArgs = @($args | Where-Object { $_ -cnotlike '--target=*' })
-& $env:ZIG @zigArgs @compilerArgs
-exit $LASTEXITCODE
-'@
-    Write-LfFile (Join-Path $tools 'ar.ps1') @'
-& $env:ZIG ar @args
-exit $LASTEXITCODE
+tool, *args = sys.argv[1:]
+command = [os.environ["ZIG"], tool]
+if tool == "cc":
+    command.extend(["-target", os.environ["JARVIS_ZIG_TARGET"]])
+    cpu = os.environ.get("JARVIS_ZIG_CPU")
+    if cpu:
+        command.append(f"-mcpu={cpu}")
+    # cc-rs passes a Clang target triple. Use the equivalent Zig target above.
+    args = [arg for arg in args if not arg.startswith("--target=")]
+sys.exit(subprocess.call(command + args))
 '@
     $cc = Join-Path $tools 'cc.cmd'
     $ar = Join-Path $tools 'ar.cmd'
-    # Cargo and Ninja start the PowerShell wrappers through CMD.
-    $launcher = @('@echo off', 'powershell.exe -NoLogo -NoProfile -NonInteractive -File "%~dpn0.ps1" %*')
-    [IO.File]::WriteAllLines($cc, $launcher, $utf8)
-    [IO.File]::WriteAllLines($ar, $launcher, $utf8)
+    [IO.File]::WriteAllLines($cc, @('@echo off', 'python "%~dp0zig.py" cc %*'), $utf8)
+    [IO.File]::WriteAllLines($ar, @('@echo off', 'python "%~dp0zig.py" ar %*'), $utf8)
 
     $armhf = '-target', 'arm-linux-gnueabihf.2.30', '-mcpu=cortex_a7'
     Invoke-BuildTool $zig cc @armhf -shared -fPIC -O2 -s -o (Join-Path $tools 'vqe_tap-armhf.so') station/vqe_tap.c -ldl
