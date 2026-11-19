@@ -143,6 +143,7 @@ impl Destination {
             &name,
             "Проверка подключения YaJavis\n".as_bytes().to_vec(),
             "text/plain; charset=utf-8",
+            false,
         )
         .await?;
         if self.provider == "nextcloud" {
@@ -168,7 +169,7 @@ impl Destination {
         Ok(())
     }
 
-    async fn put(&self, name: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), String> {
+    async fn put(&self, name: &str, bytes: Vec<u8>, content_type: &str, idempotent: bool) -> Result<(), String> {
         let response = self
             .request(Method::PUT, name)?
             .header("Content-Type", content_type)
@@ -177,10 +178,25 @@ impl Destination {
             .send()
             .await
             .map_err(|e| net::short(&e))?;
-        if !response.status().is_success() {
+        if !(response.status().is_success() || idempotent && response.status() == StatusCode::PRECONDITION_FAILED) {
             return Err(cloud_error(response.status()));
         }
         Ok(())
+    }
+}
+
+pub struct ShortUpload {
+    destination: Arc<Destination>,
+    cancel: tokio::sync::watch::Receiver<u64>,
+}
+
+impl ShortUpload {
+    pub async fn put(mut self, name: &str, zip: Vec<u8>) -> Result<(), String> {
+        tokio::select! {
+            biased;
+            _ = self.cancel.changed() => Err("Подключение к облаку изменилось".into()),
+            result = self.destination.put(name, zip, "application/zip", true) => result,
+        }
     }
 }
 
@@ -221,6 +237,7 @@ pub struct Recorder {
     config: PathBuf,
     state: Mutex<State>,
     cancel: tokio::sync::watch::Sender<u64>,
+    cancel_short: tokio::sync::watch::Sender<u64>,
     configuring: tokio::sync::Mutex<()>,
 }
 
@@ -237,6 +254,7 @@ impl Recorder {
                 ..State::default()
             }),
             cancel: tokio::sync::watch::channel(0).0,
+            cancel_short: tokio::sync::watch::channel(0).0,
             configuring: tokio::sync::Mutex::new(()),
         }
     }
@@ -259,6 +277,7 @@ impl Recorder {
         fs::create_dir_all(self.config.parent().unwrap()).map_err(|e| e.to_string())?;
         write_atomic(&self.config, &bytes, 0o600).map_err(|e| e.to_string())?;
         s.destination = Some(Arc::new(destination));
+        self.cancel_short.send_modify(|n| *n = n.wrapping_add(1));
         s.error.clear();
         Ok(())
     }
@@ -273,6 +292,7 @@ impl Recorder {
         }
         s.stop();
         s.destination = None;
+        self.cancel_short.send_modify(|n| *n = n.wrapping_add(1));
         s.error.clear();
         self.cancel.send_modify(|n| *n = n.wrapping_add(1));
         Ok(())
@@ -323,6 +343,13 @@ impl Recorder {
         s.closed = true;
         s.stop();
         self.cancel.send_modify(|n| *n = n.wrapping_add(1));
+        self.cancel_short.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    pub fn short_upload(&self) -> Option<ShortUpload> {
+        let state = self.state.lock().unwrap();
+        let destination = state.destination.clone()?;
+        (!state.closed).then(|| ShortUpload { destination, cancel: self.cancel_short.subscribe() })
     }
 
     pub fn status(&self) -> Value {
@@ -380,7 +407,7 @@ impl Recorder {
                 Ok(Ok(zip)) => tokio::select! {
                     biased;
                     _ = cancel.changed() => return,
-                    result = destination.put(&archive, zip, "application/zip") => result,
+                    result = destination.put(&archive, zip, "application/zip", false) => result,
                 },
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(e) => Err(e.to_string()),

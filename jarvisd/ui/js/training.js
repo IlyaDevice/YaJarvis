@@ -48,10 +48,16 @@ export function trainStepsHtml() {
 }
 
 function recordingHtml() {
-  return `${sec("Короткие записи", "Колонка сохраняет примеры «Джарвиса» для разметки. Лимит применяется к новым записям.",
+  const offload = T.offload || {};
+  const archiveNote = offload.connected
+    ? "Когда лимит заполнен, 10 самых старых непроверенных записей отправляются в подключённое облако одним ZIP."
+    : "Подключите облако ниже, чтобы старые записи при заполнении лимита уходили туда пачками по 10.";
+  return `${sec("Короткие записи", "Колонка сохраняет примеры «Джарвиса» для разметки.",
     `<label class="sw"><input id="train-capture" type="checkbox"${T.mode ? " checked" : ""}><span class="tr"></span>Собирать примеры</label>
      <div class="f"><label for="train-limit">Лимит на колонке <b class="val">${(T.used_kb / 1024).toFixed(1)} МБ занято</b></label>
      <select id="train-limit">${[1, 2, 3, 4, 5].map((mb) => `<option${mb === T.limit_mb ? " selected" : ""}>${mb} МБ</option>`).join("")}</select></div>
+     <p class="note">${archiveNote}${offload.running ? " Отправляю…" : ""}${offload.sent ? ` Отправлено записей: ${Number(offload.sent)}.` : ""}</p>
+     ${offload.connected && offload.error ? `<p class="note err">${esc(offload.error)}. Записи остались на колонке.</p>` : ""}
      ${T.legacy_kb ? `<p class="note">Старый архив занимает ${(T.legacy_kb / 1024).toFixed(1)} МБ.</p>` : ""}`)}
   ${sec("Длительная запись фона", "Колонка сама отправляет сжатые записи в облако. Каждая порция занимает примерно минуту и хранится в памяти до отправки.",
     `<form id="bg-connect" class="train-bg" hidden>
