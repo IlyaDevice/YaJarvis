@@ -10,7 +10,7 @@ pub struct Voice {
     cancelled:AtomicBool,close:tokio::sync::Notify,interrupted:AtomicBool,
 }
 impl Voice {
-    pub fn open(rt:&tokio::runtime::Handle,host:Arc<Host>,tools:Arc<Tools>,journal:Arc<Journal>,settings:Settings,profile:Profile,instructions:String)->Arc<Self>{
+    pub fn open(rt:&tokio::runtime::Handle,host:Arc<Host>,tools:Option<Arc<Tools>>,journal:Arc<Journal>,settings:Settings,profile:Profile,instructions:String)->Arc<Self>{
         let id=match profile.engine.as_str(){""|"live"=>"openai","eleven_realtime"=>"elevenlabs",id=>id}.to_string();
         let (tx,rx)=sync_channel(128);let (ready,ready_rx)=sync_channel(1);let (commands,command_rx)=tokio::sync::mpsc::channel(16);
         let me=Arc::new(Self{id:id.clone(),dialog:Dialog::new(journal,&id,&profile.live_model),rt:rt.clone(),pending:Mutex::default(),output:Mutex::new(Some(tx)),audio:Mutex::new(Some(rx)),ready:Mutex::new(Some(ready_rx)),commands,cancelled:AtomicBool::new(false),close:tokio::sync::Notify::new(),interrupted:AtomicBool::new(false)});
@@ -20,13 +20,14 @@ impl Voice {
             run.output.lock().unwrap().take();run.cancelled.store(true,Ordering::SeqCst);
         });me
     }
-    async fn run(&self,host:Arc<Host>,tools:Arc<Tools>,settings:Settings,p:Profile,instructions:String,ready:SyncSender<Result<(),String>>,mut commands:tokio::sync::mpsc::Receiver<String>)->Result<(),String>{
+    async fn run(&self,host:Arc<Host>,tools:Option<Arc<Tools>>,settings:Settings,p:Profile,instructions:String,ready:SyncSender<Result<(),String>>,mut commands:tokio::sync::mpsc::Receiver<String>)->Result<(),String>{
         let provider=host.provider(&self.id)?;
         let key=match self.id.as_str(){"openai"=>&settings.openai_key,"gemini"=>&settings.gemini_key,"grok"=>&settings.grok_key,"elevenlabs"=>&settings.elevenlabs_key,_=>return Err("Этот движок требует классический режим".into())};
+        let prepare=async { match &tools { Some(tools)=>tools.prepare().await, None=>(String::new(), vec![]) } };
         let ((context,defs),mut socket)=if self.id=="elevenlabs"{
-            let (context,defs)=tools.prepare().await;let session=eleven_session(&p,&format!("{instructions}\n{context}"),&defs);
+            let (context,defs)=prepare.await;let session=eleven_session(&p,&format!("{instructions}\n{context}"),&defs);
             let socket=Link::open(provider,key,session).await?;((context,defs),socket)
-        }else{tokio::try_join!(async{Ok::<_,String>(tools.prepare().await)},Link::open(provider,key,Value::Null))?};
+        }else{tokio::try_join!(async{Ok::<_,String>(prepare.await)},Link::open(provider,key,Value::Null))?};
         let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
         let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
         let start=match self.id.as_str(){
@@ -97,7 +98,8 @@ impl Voice {
                         let call_id=call[if self.id=="gemini"{"id"}else{"call_id"}].as_str().unwrap_or("").to_string();
                         if call_id.is_empty() || call_id.len()>256{return Err("Нет ID голосового инструмента".into());}
                         if !seen.insert(call_id.clone()){continue;}if seen.len()>1024{return Err("Слишком много инструментов в разговоре".into());}
-                        let tools=tools.clone();let id=self.id.clone();let declared=defs.iter().any(|d|d["name"]==call["name"]);self.dialog.working(1);
+                        let Some(tools)=tools.clone() else {continue;};
+                        let id=self.id.clone();let declared=defs.iter().any(|d|d["name"]==call["name"]);self.dialog.working(1);
                         let handle=tasks.spawn(async move{
                             let name=call["name"].as_str().unwrap_or("");let arguments=call["arguments"].as_str().map(str::to_string).unwrap_or_else(||call["args"].to_string());
                             let result=if declared{tokio::time::timeout(Duration::from_secs(15),tools.call(name,&arguments)).await.unwrap_or_else(|_|"Инструмент не ответил вовремя".into())}else{"Этот инструмент не был объявлен".into()};

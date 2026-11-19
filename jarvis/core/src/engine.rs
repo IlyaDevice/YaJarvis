@@ -26,9 +26,11 @@ use std::{
 };
 
 const RATE: usize = 16000;
-const INTERRUPTED: &str = "озвучку прервали";
+pub(crate) const INTERRUPTED: &str = "озвучку прервали";
 #[path="text.rs"]
 mod text;
+#[path="voice_preview.rs"]
+pub(crate) mod voice_preview;
 
 #[derive(Default)]
 struct St {
@@ -61,6 +63,7 @@ pub struct Engine {
     training_until: Mutex<Option<Instant>>,
     speech_epoch: AtomicU64,
     saying: AtomicBool,
+    previews: voice_preview::Previews,
     cmds: std::sync::OnceLock<crate::cmdspot::CmdSpotter>,
 }
 
@@ -164,7 +167,7 @@ impl Engine {
     ) -> Arc<Engine> {
         Arc::new(Engine { store, host, mic, player, leds, journal, tools, music, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false),
             recording_word: AtomicBool::new(false), training_until: Mutex::new(None),
-            speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), cmds: Default::default() })
+            speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), previews: Default::default(), cmds: Default::default() })
     }
 
     /// Слушать микрофон в своём потоке: слово, звук в разговор, перебивание.
@@ -474,7 +477,7 @@ impl Engine {
     fn new_session(&self, s: &Settings, p: &Profile) -> Arc<dyn Session> {
         if p.is_classic(){return crate::classic_voice::Classic::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p),self.listener.phrase());}
         if ["","live","openai","gemini","grok","eleven_realtime"].contains(&p.engine.as_str()) {
-            return crate::cloud_voice::Voice::open(&self.rt,self.host.clone(),self.tools.clone(),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));
+            return crate::cloud_voice::Voice::open(&self.rt,self.host.clone(),Some(self.tools.clone()),self.journal.clone(),s.clone(),p.clone(),self.instructions(s,p));
         }
         chatgpt::ChatGptSession::open(
             &self.rt,

@@ -123,6 +123,7 @@ pub fn router(app: App) -> Router {
         .route("/api/stats", get(diagnostics::stats))
         .route("/api/logs", get(diagnostics::logs))
         .route("/api/leds/preview", post(device::leds))
+        .route("/api/preview", post(talk::preview))
         .route("/api/password", put(auth::change_password))
         .route("/api/settings", put(config::settings))
         .route("/api/keys", put(keys::put))

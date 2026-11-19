@@ -140,8 +140,11 @@ export function viewProfile(id) {
     if (play) { // последнее нажатие побеждает: ответ прошлой пробы не перекрывает новую
       e.stopPropagation(); const n = ++previewSeq; play.disabled = true;
       try {
-        const r = await api("POST", "/api/preview", { voice: play.dataset.play, engine: p.engine, tts_model: $("#p-tts-model").value });
-        if (n === previewSeq && !r.interrupted) toast(r.cached ? "Играет на колонке" : "Прозвучало на колонке и сохранено");
+        const liveModel = { gemini: "#p-gmodel", eleven_realtime: "#p-eleven-rtmodel" }[p.engine];
+        const r = await api("POST", "/api/preview", { voice: play.dataset.play, engine: p.engine,
+          tts_model: p.engine === "elevenlabs" ? $("#p-tts-model").value : "",
+          live_model: liveModel ? $(liveModel).value : "" });
+        if (n === previewSeq && !r.interrupted) toast("Образец прозвучал на колонке");
       } catch (err) { if (n === previewSeq) toast(err.message, true); } finally { play.disabled = false; }
       return;
     }

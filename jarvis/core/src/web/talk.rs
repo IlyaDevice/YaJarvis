@@ -3,6 +3,18 @@
 use super::{App, ok, reply};
 use axum::{extract::State, http::StatusCode, response::Response};
 use serde_json::json;
+
+pub async fn preview(
+    State(app): State<App>,
+    axum::Json(request): axum::Json<crate::engine::voice_preview::Request>,
+) -> Response {
+    match app.engine.clone().preview(request).await {
+        Ok(cached) => reply(StatusCode::OK, json!({"ok": true, "cached": cached})),
+        Err(error) if error == crate::engine::INTERRUPTED =>
+            reply(StatusCode::OK, json!({"ok": true, "interrupted": true})),
+        Err(error) => super::bad(error),
+    }
+}
 pub async fn say(State(app):State<App>,axum::Json(value):axum::Json<serde_json::Value>)->Response {
     let Some(text)=value["text"].as_str().map(str::trim).filter(|t|!t.is_empty() && t.len()<=16000)else{return super::bad("Текст: от 1 до 16000 байт");};
     let text=text.to_string();let speak=value["speak"].as_bool().unwrap_or(true);let engine=app.engine.clone();
