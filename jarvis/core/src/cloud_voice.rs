@@ -31,12 +31,17 @@ impl Voice {
         let model=if p.live_model.is_empty(){match self.id.as_str(){"gemini"=>"gemini-3.8-live","grok"=>"grok-voice-latest",_=>"gpt-live-1"}}else{&p.live_model};
         let voice=if p.voice.is_empty(){match self.id.as_str(){"gemini"=>"Kore","grok"=>"Ara",_=>"cedar"}}else{&p.voice};
         let start=match self.id.as_str(){
-            "gemini"=>crate::gemini::live_setup(model, voice, &format!("{instructions}\n{context}"), &defs),
+            "gemini"=>crate::gemini::live_setup(model, voice, &format!("{instructions}\n{context}"), &settings.language, &defs),
             "grok"=>json!({"type":"session.update","session":{"instructions":format!("{instructions}\n{context}"),"voice":voice,"turn_detection":{"type":"server_vad"},"audio":{"input":{"format":{"type":"audio/pcm","rate":24000}},"output":{"format":{"type":"audio/pcm","rate":24000}}},"tools":defs}}),
             _=>{let mut backend=defs.clone();if p.web_search{backend.push(json!({"type":"web_search"}));}json!({"type":"session.start","session":{"model":model,"instructions":instructions,"audio":{"format":{"type":"audio/pcm","rate":16000},"output":{"voice":voice}},"delegation":{"type":"responses","responses":{"model":if p.backend_model.is_empty(){crate::settings::BACKEND_MODELS[0]}else{&p.backend_model},"instructions":format!("{}\n{context}",crate::rules::BACKEND_RULES),"tools":backend,"tool_choice":"auto","reasoning":{"effort":crate::chatgpt::effort(&p.backend_model,&p.effort)}}}}})},
         };
         if self.id!="elevenlabs"{send(&mut socket,start).await?;}
-        let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(100));
+        let gemini = self.id == "gemini";
+        // Send the real-time stream every 40 ms. Drain up to 160 ms per tick
+        // while catching up with speech captured during setup.
+        let (tick_ms, silence, limit) = if gemini { (40, 640, 2_560) } else { (100, 1_600, 4_800) };
+        let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(tick_ms));
+        if gemini { interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
         let mut handles=std::collections::HashMap::<String,tokio::task::AbortHandle>::new();let mut seen=std::collections::HashSet::new();
         let mut pending_calls=Vec::<Value>::new();
         let mut up=jarvis_dsp::audio::Upsampler::new(3);let mut phase=0;let mut speaking=false;
@@ -54,7 +59,7 @@ impl Voice {
                     if matches!(self.id.as_str(),"grok"|"elevenlabs"){send(&mut socket,json!({"type":"response.create"})).await?;}
                 },
                 _=interval.tick(),if started=>{
-                    let mut pcm=take_mic(&mut self.pending.lock().unwrap(),4800);if pcm.is_empty(){pcm.resize(1600,0);}
+                    let mut pcm=take_mic(&mut self.pending.lock().unwrap(),limit);if pcm.is_empty(){pcm.resize(silence,0);}
                     if matches!(self.id.as_str(),"grok"|"elevenlabs"){let input=up.run(&pcm);pcm=input.iter().skip(phase).step_by(2).copied().collect();phase=(phase+input.len())%2;}
                     let data=B64.encode(pcm.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>());
                     let value=match self.id.as_str(){"gemini"=>json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":data}}}),"grok"|"elevenlabs"=>json!({"type":"input_audio_buffer.append","audio":data}),_=>json!({"type":"session.input_audio.append","audio":data})};send(&mut socket,value).await?;

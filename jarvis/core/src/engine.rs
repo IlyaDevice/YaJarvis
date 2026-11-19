@@ -592,7 +592,9 @@ impl Engine {
                 let mut st = self.st.lock().unwrap();
                 // The wake word has already been detected. Avoid replaying seconds of
                 // old audio into the subscription call before the first real question.
-                let before = if p.engine == "chatgpt" { preroll.len().saturating_sub(RATE * 4 / 5) } else { 0 };
+                let before = if matches!(p.engine.as_str(), "chatgpt" | "gemini") {
+                    preroll.len().saturating_sub(RATE * 4 / 5)
+                } else { 0 };
                 let mut first = preroll[before..].to_vec();
                 first.extend_from_slice(&st.hold);
                 x.feed(&boost(&first, s.mic_boost_db));
@@ -612,6 +614,9 @@ impl Engine {
             }
             *out = x.take_audio();
             *ready_at = Instant::now();
+            if p.engine == "gemini" {
+                log::info!("Gemini: разговор готов за {:.2} с", opening_at.elapsed().as_secs_f64());
+            }
             x.dialog().touch();
             self.leds.set(Mode::Listening);
             true
@@ -643,6 +648,9 @@ impl Engine {
                         }
                         let _ = self.player.write(&pcm);
                         if loud(&pcm) {
+                            if p.engine == "gemini" && last_voice.is_none() {
+                                log::info!("Gemini: первый голос через {:.2} с от открытия разговора", opening_at.elapsed().as_secs_f64());
+                            }
                             last_voice = Some(Instant::now());
                         }
                         self.leds.level(peak(&pcm) / 9000.0);

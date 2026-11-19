@@ -16,7 +16,7 @@ pub(crate) fn declarations(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, tools: &[Value]) -> Value {
+pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, language: &str, tools: &[Value]) -> Value {
     let mut setup = json!({
         "model": format!("models/{model}"),
         "generationConfig": {
@@ -27,6 +27,15 @@ pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, tools: &[
         "inputAudioTranscription": {},
         "outputAudioTranscription": {}
     });
+    let language_code = match language {
+        "ru" => Some("ru-RU"),
+        "en" => Some("en-US"),
+        "uk" => Some("uk-UA"),
+        _ => None,
+    };
+    if let Some(code) = language_code {
+        setup["inputAudioTranscription"]["languageCodes"] = json!([code]);
+    }
     let functions = declarations(tools);
     if !functions.is_empty() {
         setup["tools"] = json!([{"functionDeclarations": functions}]);
@@ -52,6 +61,7 @@ mod tests {
             "model",
             "voice",
             "instructions",
+            "ru",
             &[
                 json!({"type": "function", "name": "edit_memory", "description": "Edit", "parameters": schema}),
                 json!({"type": "web_search"}),
@@ -63,10 +73,15 @@ mod tests {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0]["parametersJsonSchema"], schema);
         assert!(functions[0].get("parameters").is_none());
+        assert_eq!(setup["setup"]["inputAudioTranscription"], json!({"languageCodes": ["ru-RU"]}));
         assert!(
-            live_setup("model", "voice", "instructions", &[])["setup"]
+            live_setup("model", "voice", "instructions", "", &[])["setup"]
                 .get("tools")
                 .is_none()
+        );
+        assert_eq!(
+            live_setup("model", "voice", "instructions", "", &[])["setup"]["inputAudioTranscription"],
+            json!({}),
         );
     }
 }
