@@ -1,6 +1,6 @@
 // Общее: помощники, иконки, запросы к колонке, сообщения, пружины, ползунки, плашка переключателей.
 import { S, reload, route, showGate } from "./main.js";
-// Веб-настройки Джарвиса на колонке. Без библиотек; CSP запрещает inline-стили и обработчики.
+// Веб-настройки Джарвиса на колонке. CSP запрещает inline-стили и обработчики.
 
 export const $ = (s, el = document) => el.querySelector(s);
 export const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -53,10 +53,17 @@ export const sec = (title, desc, body, id = "", after = "") => `<section class="
 export let dirty = false;     // несохранённые правки на странице (менять только через setDirty: модули не могут писать в чужие переменные)
 export function setDirty(v) { dirty = v; }
 
-export async function api(method, url, body) {
-  const r = await fetch(url, { method, headers: { "Content-Type": "application/json", "X-Jarvis": "1" }, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" });
+export async function api(method, url, body, { signal } = {}) {
+  const r = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json", "X-Jarvis": "1" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin",
+    signal,
+  });
   let d = {};
   try { d = await r.json(); } catch { /* пусто */ }
+  signal?.throwIfAborted();
   if (r.status === 401 || r.status === 428) { showGate(d.setup); throw new Error(d.error || "Нужно войти"); }
   if (!r.ok) throw new Error(d.error || `Ошибка ${r.status}`);
   return d;
