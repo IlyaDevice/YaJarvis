@@ -28,6 +28,8 @@ pub struct Script {
     chat: bool,
     status: Arc<Mutex<String>>,
     stopped: Arc<AtomicBool>,
+    /// Закрывается, когда поток плагина завершился: после stop() таймеры уже ничего не пишут.
+    exited: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 struct Vm {
@@ -266,6 +268,7 @@ impl Script {
     ) -> Result<Arc<Self>, String> {
         let (tx, mut rx) = mpsc::channel(16);
         let (ready, wait) = oneshot::channel();
+        let (exit_tx, exited) = oneshot::channel::<()>();
         let status = Arc::new(Mutex::new(String::new()));
         let stopped = Arc::new(AtomicBool::new(false));
         let (st, stop) = (status.clone(), stopped.clone());
@@ -274,6 +277,7 @@ impl Script {
         std::thread::Builder::new()
             .name(format!("lua-{}", m.id))
             .spawn(move || {
+                let _exit = exit_tx; // уходит последним, после vm: тогда stop() знает, что поток закончил
                 let (vm, defs, commands, chat) = match Vm::open(
                     host,
                     &m,
@@ -318,6 +322,7 @@ impl Script {
                     }
                 }
                 stop.store(true, Ordering::Relaxed);
+                drop(vm); // таймеры и хранилище закрываются до сигнала о выходе
             })
             .map_err(|e| e.to_string())?;
         let (tools, commands, chat) = wait.await.map_err(|e| e.to_string())??;
@@ -328,6 +333,7 @@ impl Script {
             chat,
             status,
             stopped,
+            exited: Mutex::new(Some(exited)),
         }))
     }
     pub fn tools(&self) -> Vec<Value> {
@@ -405,6 +411,11 @@ impl Script {
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
         let _ = self.tx.try_send(Request::Stop);
+        // дождаться, пока поток доработает текущий вызов или таймер (их время и так ограничено)
+        let exited = self.exited.lock().unwrap().take();
+        if let Some(rx) = exited {
+            let _ = tokio::time::timeout(Duration::from_secs(2), rx).await;
+        }
     }
 }
 
