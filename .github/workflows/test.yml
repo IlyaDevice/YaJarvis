@@ -10,6 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
       - run: rustup update stable
       - run: cargo test --locked --workspace --all-features
         working-directory: jarvis
@@ -26,8 +32,4 @@ jobs:
           strip target/debug/plugin-smoke
           cd ..
           python3 scripts/test-official-plugins.py jarvis/target/debug/jarvis jarvis/target/debug/plugin-smoke
-      - name: Check panel and installer assets
-        run: |
-          for f in jarvisd/ui/js/*.js; do node --input-type=module --check < "$f" || exit 1; done
-          node --check installer/ui/setup.js
-          sh scripts/pack-plugins.sh /tmp/jarvis-plugins
+      - run: sh scripts/pack-plugins.sh /tmp/jarvis-plugins

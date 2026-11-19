@@ -12,6 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: ${{ !startsWith(github.ref_name, 'preview-build/voice-') }}
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies for the panel built by build.sh
+        if: ${{ !startsWith(github.ref_name, 'preview-build/voice-') }}
+        run: npm ci
       - run: rustup update stable
       - run: rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
       - if: ${{ matrix.arch == 'armv7' && !startsWith(github.ref_name, 'preview-build/core-') }}

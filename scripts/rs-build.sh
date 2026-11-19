@@ -7,7 +7,9 @@ set -eu
 cd "$(dirname "$0")/.."
 VER="${1:-dev}"
 export JARVIS_VERSION="$VER"
-export JARVIS_UI="${JARVIS_UI:-$PWD/jarvisd/ui}"
+if [ -z "${JARVIS_UI:-}" ]; then
+    npm run build:panel
+fi
 # C-код (ring): zig. cc-rs добавляет --target=aarch64-unknown-linux-musl, а zig такой триплет не понимает,
 # поэтому нужна обёртка (ZCC), которая его убирает и ставит -target aarch64-linux-musl.
 if [ -n "${ZCC:-}" ]; then

@@ -22,6 +22,8 @@ use std::{
 mod adb;
 mod discovery;
 
+include!(concat!(env!("OUT_DIR"), "/ui_files.rs"));
+
 const REPO: &str = match option_env!("JARVIS_REPO") {
     Some(s) => s,
     None => "newfpv/YaJavis",
@@ -262,26 +264,23 @@ async fn token_js(State(app): State<App>) -> Response {
 }
 
 async fn ui(request: Request) -> Response {
-    macro_rules! asset {
-        ($name:literal) => {
-            include_bytes!(concat!("../../../installer/ui/", $name)) as &[u8]
-        };
-    }
-    let (mime, content) = match request.uri().path() {
-        "/" | "/index.html" => ("text/html; charset=utf-8", asset!("index.html")),
-        "/setup.js" => ("text/javascript; charset=utf-8", asset!("setup.js")),
-        "/setup.css" => ("text/css; charset=utf-8", asset!("setup.css")),
-        "/manrope-cyrillic.woff2" => ("font/woff2", asset!("manrope-cyrillic.woff2")),
-        "/manrope-latin.woff2" => ("font/woff2", asset!("manrope-latin.woff2")),
-        "/screenshots/dashboard.png" => ("image/png", asset!("screenshots/dashboard.png")),
-        "/screenshots/connections.png" => ("image/png", asset!("screenshots/connections.png")),
-        "/screenshots/assistant.png" => ("image/png", asset!("screenshots/assistant.png")),
-        "/screenshots/charts.png" => ("image/png", asset!("screenshots/charts.png")),
-        _ => return Response::builder().status(404).body(Body::empty()).unwrap(),
+    let path = request.uri().path().strip_prefix('/').unwrap_or("");
+    let name = if path.is_empty() { "index.html" } else { path };
+    let Some((_, content)) = UI.iter().find(|(asset, _)| *asset == name) else {
+        return Response::builder().status(404).body(Body::empty()).unwrap();
+    };
+    let mime = match name.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
     };
     Response::builder()
         .header(header::CONTENT_TYPE, mime)
-        .body(Body::from(content))
+        .body(Body::from(*content))
         .unwrap()
 }
 

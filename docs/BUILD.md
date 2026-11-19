@@ -2,13 +2,27 @@
 
 Для сборки пакетов колонки нужны Git, актуальный стабильный Rust, Zig, CMake, Ninja, Python 3 и tar. Сборка официальных плагинов под ARMv7 также использует libclang для привязок QuickJS.
 
+### Веб-интерфейсы
+
+Для сборки интерфейсов используйте Node.js 24, как в CI. Из корня репозитория запустите `npm ci`, затем одну из команд.
+
+| Команда | Результат |
+| --- | --- |
+| `npm run build:installer` | Установщик в `build/ui/installer` |
+| `npm run build:panel` | Панель колонки в `build/ui/panel` |
+| `npm run build` | Оба интерфейса |
+
+Cargo встраивает эти файлы в соответствующий бинарник. Если запускаете Cargo напрямую, сначала соберите нужный интерфейс. Для тестов всего Cargo workspace соберите оба. После изменения исходников интерфейса повторите его сборку перед запуском Cargo. `build.sh`, `build.ps1` и `scripts/rs-build.sh` собирают панель сами после установки npm-зависимостей. Node.js нужен только для сборки.
+
 ### Linux и macOS
 
 Для `build.sh` также нужны POSIX shell, zip и sha256sum. На macOS команда `sha256sum` входит в GNU coreutils. Из корня проекта выполните следующие команды.
 
 ```sh
 rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
+npm ci
 VERSION=0.10.0 sh build.sh
+npm run build:installer
 cargo test --manifest-path jarvis/Cargo.toml --locked --workspace --all-features
 cargo build --manifest-path jarvis/Cargo.toml --locked --release -p jarvis-setup
 ```
@@ -21,8 +35,10 @@ cargo build --manifest-path jarvis/Cargo.toml --locked --release -p jarvis-setup
 
 ```powershell
 rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
+npm ci
 $env:VERSION = '0.10.0'
 .\build.ps1
+npm run build:installer
 cargo test --manifest-path .\jarvis\Cargo.toml --locked --workspace --all-features
 cargo build --manifest-path .\jarvis\Cargo.toml --locked --release -p jarvis-setup
 ```

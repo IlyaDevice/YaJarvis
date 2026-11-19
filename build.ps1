@@ -52,7 +52,9 @@ try {
     Set-BuildEnv JARVIS_VERSION $version
     Set-BuildEnv JARVIS_REPO $repo
     Set-BuildEnv JARVIS_PLUGIN_REF $ref
-    Set-BuildEnv JARVIS_UI (Join-Path $PSScriptRoot 'jarvisd/ui')
+    if (-not $env:JARVIS_UI) {
+        Invoke-BuildTool npm.cmd run build:panel
+    }
     if ($arches -contains 'armv7' -and -not $coreOnly -and -not $env:LIBCLANG_PATH) {
         $llvmBin = Join-Path $env:ProgramFiles 'LLVM/bin'
         if (Test-Path -LiteralPath (Join-Path $llvmBin 'libclang.dll') -PathType Leaf) {
