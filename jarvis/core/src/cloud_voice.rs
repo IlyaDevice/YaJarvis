@@ -58,7 +58,7 @@ impl Voice {
                     let value=match self.id.as_str(){"gemini"=>json!({"clientContent":{"turns":[{"role":"user","parts":[{"text":format!("Произнеси дословно: {text}")}]}],"turnComplete":true}}),"grok"|"elevenlabs"=>json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Произнеси дословно: {text}")}]}}),_=>json!({"type":"session.commentary.append","delegation_id":null,"content":text})};send(&mut socket,value).await?;
                     if matches!(self.id.as_str(),"grok"|"elevenlabs"){send(&mut socket,json!({"type":"response.create"})).await?;}
                 },
-                _=interval.tick(),if started=>{
+                _=interval.tick(),if started && (!gemini || tools.is_some())=>{
                     let mut pcm=take_mic(&mut self.pending.lock().unwrap(),limit);if pcm.is_empty(){pcm.resize(silence,0);}
                     if matches!(self.id.as_str(),"grok"|"elevenlabs"){let input=up.run(&pcm);pcm=input.iter().skip(phase).step_by(2).copied().collect();phase=(phase+input.len())%2;}
                     let data=B64.encode(pcm.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>());

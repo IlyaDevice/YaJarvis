@@ -24,6 +24,12 @@ pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, language:
             "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}
         },
         "systemInstruction": {"parts": [{"text": instructions}]},
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {
+                "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                "silenceDurationMs": 750
+            }
+        },
         "inputAudioTranscription": {},
         "outputAudioTranscription": {}
     });
@@ -74,6 +80,7 @@ mod tests {
         assert_eq!(functions[0]["parametersJsonSchema"], schema);
         assert!(functions[0].get("parameters").is_none());
         assert_eq!(setup["setup"]["inputAudioTranscription"], json!({"languageCodes": ["ru-RU"]}));
+        assert_eq!(setup["setup"]["realtimeInputConfig"]["automaticActivityDetection"]["silenceDurationMs"], 750);
         assert!(
             live_setup("model", "voice", "instructions", "", &[])["setup"]
                 .get("tools")

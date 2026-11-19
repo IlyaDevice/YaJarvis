@@ -85,14 +85,14 @@ impl Request {
     }
 }
 
-struct Sample {
-    rate: usize,
-    boost: f64,
-    pcm: Vec<i16>,
+pub(super) struct Sample {
+    pub rate: usize,
+    pub boost: f64,
+    pub pcm: Vec<i16>,
 }
 
 impl Sample {
-    fn encode(&self) -> Vec<u8> {
+    pub(super) fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER + self.pcm.len() * 2);
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&(self.rate as u32).to_le_bytes());
@@ -130,7 +130,7 @@ impl Sample {
         })
     }
 
-    fn read(path: &Path) -> Option<Self> {
+    pub(super) fn read(path: &Path) -> Option<Self> {
         let mut bytes = Vec::new();
         File::open(path)
             .ok()?
@@ -204,13 +204,13 @@ impl Engine {
             {
                 log::warn!("Кеш пробы голоса: {error}");
             } else {
-                prune(&directory, &path);
+                prune(&directory, &path, CACHE_BUDGET);
             }
         }
         Ok(from_cache)
     }
 
-    fn preview_session(&self, settings: Settings, profile: Profile) -> Arc<dyn Session> {
+    pub(super) fn preview_session(&self, settings: Settings, profile: Profile) -> Arc<dyn Session> {
         let journal = Arc::new(Journal::default());
         match profile.engine.as_str() {
             "chatgpt" => chatgpt::ChatGptSession::open(
@@ -296,10 +296,30 @@ fn capture(session: &dyn Session, cancelled: &impl Fn() -> bool) -> Result<Sampl
         return Err(INTERRUPTED.into());
     }
     ready?;
-    session.say(PHRASE)?;
     let output = session
         .take_audio()
         .ok_or("Нет звука от голосового движка")?;
+    capture_phrase(
+        session,
+        &output,
+        PHRASE,
+        Duration::from_secs(25).saturating_sub(started.elapsed()),
+        cancelled,
+    )
+}
+
+pub(super) fn capture_phrase(
+    session: &dyn Session,
+    output: &std::sync::mpsc::Receiver<Vec<i16>>,
+    text: &str,
+    limit: Duration,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Sample, String> {
+    let started = Instant::now();
+    if cancelled() {
+        return Err(INTERRUPTED.into());
+    }
+    session.say(text)?;
     let mut sample = Sample {
         rate: session.rate(),
         boost: session.out_boost(),
@@ -310,7 +330,7 @@ fn capture(session: &dyn Session, cancelled: &impl Fn() -> bool) -> Result<Sampl
         if cancelled() {
             return Err(INTERRUPTED.into());
         }
-        if started.elapsed() > Duration::from_secs(25) {
+        if started.elapsed() > limit {
             return Err("Голосовой движок не успел произнести образец".into());
         }
         if last_audio.is_some_and(|(at, _)| at.elapsed() >= Duration::from_millis(900)) {
@@ -338,6 +358,10 @@ fn capture(session: &dyn Session, cancelled: &impl Fn() -> bool) -> Result<Sampl
 }
 
 fn cache_name(profile: &Profile) -> String {
+    sample_name(profile, PHRASE)
+}
+
+pub(super) fn sample_name(profile: &Profile, phrase: &str) -> String {
     let live_model = if profile.engine == "chatgpt" {
         "gpt-live-1.1-codex"
     } else {
@@ -349,13 +373,13 @@ fn cache_name(profile: &Profile) -> String {
         &profile.tts_model,
         live_model,
         crate::version(),
-        PHRASE,
+        phrase,
     );
     let data = serde_json::to_vec(&identity).expect("voice sample key");
     format!("{}.pcm", hex::encode(Sha256::digest(data)))
 }
 
-fn prune(directory: &Path, newest: &Path) {
+pub(super) fn prune(directory: &Path, newest: &Path, budget: u64) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -373,7 +397,7 @@ fn prune(directory: &Path, newest: &Path) {
     files.sort_unstable();
     let mut kept = 0;
     for (_, _, size, path) in files.into_iter().rev() {
-        if kept + size <= CACHE_BUDGET {
+        if kept + size <= budget {
             kept += size;
         } else if fs::remove_file(path).is_err() {
             kept += size;

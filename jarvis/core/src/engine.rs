@@ -31,6 +31,8 @@ pub(crate) const INTERRUPTED: &str = "озвучку прервали";
 mod text;
 #[path="voice_preview.rs"]
 pub(crate) mod voice_preview;
+#[path="wake_reply.rs"]
+mod wake_reply;
 
 #[derive(Default)]
 struct St {
@@ -44,6 +46,7 @@ struct St {
     last_loud: Option<Instant>,
     pending_wake: bool,
     echo: EchoWindow,
+    input_at: Option<Instant>,
 }
 
 const ECHO_TAIL: Duration = Duration::from_millis(450);
@@ -56,11 +59,15 @@ struct EchoWindow {
 
 impl EchoWindow {
     fn played(&mut self, now: Instant, pcm: &[i16], rate: usize) {
+        self.played_with_tail(now, pcm, rate, ECHO_TAIL);
+    }
+
+    fn played_with_tail(&mut self, now: Instant, pcm: &[i16], rate: usize, tail: Duration) {
         let start = self.queued_until.map_or(now, |end| end.max(now));
         let end = start + Duration::from_secs_f64(pcm.len() as f64 / rate as f64);
         self.queued_until = Some(end);
         if peak(pcm) > 100.0 {
-            self.mute_until = Some(end + ECHO_TAIL);
+            self.mute_until = Some(end + tail);
         }
     }
 
@@ -69,9 +76,13 @@ impl EchoWindow {
     }
 
     fn stopped(&mut self, now: Instant) {
+        self.stopped_with_tail(now, ECHO_TAIL);
+    }
+
+    fn stopped_with_tail(&mut self, now: Instant, tail: Duration) {
         self.queued_until = None;
         if self.muted(now) {
-            self.mute_until = Some(now + ECHO_TAIL);
+            self.mute_until = Some(now + tail);
         }
     }
 }
@@ -95,6 +106,7 @@ pub struct Engine {
     speech_epoch: AtomicU64,
     saying: AtomicBool,
     previews: voice_preview::Previews,
+    wake_reply_sequence: AtomicU64,
     cmds: std::sync::OnceLock<crate::cmdspot::CmdSpotter>,
 }
 
@@ -221,11 +233,13 @@ impl Engine {
     ) -> Arc<Engine> {
         Arc::new(Engine { store, host, mic, player, leds, journal, tools, music, listener, data, rt, st: Mutex::default(), reset_wake: AtomicBool::new(false),
             recording_word: AtomicBool::new(false), training_until: Mutex::new(None),
-            speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), previews: Default::default(), cmds: Default::default() })
+            speech_epoch: AtomicU64::new(0), saying: AtomicBool::new(false), previews: Default::default(),
+            wake_reply_sequence: AtomicU64::new(0), cmds: Default::default() })
     }
 
     /// Слушать микрофон в своём потоке: слово, звук в разговор, перебивание.
     pub fn run(self: &Arc<Self>, mut det: Box<dyn Wake>) {
+        self.start_wake_reply_cache();
         let w = Arc::downgrade(self);
         if let Some(c) = crate::cmdspot::CmdSpotter::new(
             &self.data,
@@ -264,10 +278,12 @@ impl Engine {
                         }
                         (st.live.clone(), st.busy, st.echo.muted(Instant::now()))
                     };
-                    if !muted_input && activity.observe(&raw, busy)
-                        && let Some(session) = &live
-                    {
-                        session.dialog().heard_input(Instant::now());
+                    if !muted_input && activity.observe(&raw, busy) {
+                        let now = Instant::now();
+                        e.st.lock().unwrap().input_at = Some(now);
+                        if let Some(session) = &live {
+                            session.dialog().heard_input(now);
+                        }
                     }
                     if busy || live.is_some() {
                         e.leds.hear(peak(&raw) / 9000.0);
@@ -488,6 +504,9 @@ impl Engine {
         if s.is_night() {
             text += "\n\nСейчас ночь, в доме могут спать: отвечай коротко и спокойно, без длинных списков.";
         }
+        if p.engine == "gemini" {
+            text += "\n\nЕсли человек только позвал тебя или пока думает и тянет «эээ», «ааа», дождись продолжения. Отвечай, когда он закончил мысль.";
+        }
         match &self.tools.memory {
             // общая память разговора: у всех ассистентов, переживает перезапуск
             Some(m) => text += &crate::memory::instructions(m, p.engine == "chatgpt"),
@@ -628,21 +647,38 @@ impl Engine {
                 self.leds.set(Mode::Thinking); // соединяюсь с моделью — бегущий огонёк
             }
             let x = self.new_session(&s, &p);
-            {
+            let reply = if by_word && sure { self.cached_wake_reply(&p) } else { None };
+            if reply.is_some() {
+                // Network setup is already in progress while giving a joined phrase a head start.
+                std::thread::sleep(wake_reply::FOLLOW_ON_GAP);
+            }
+            let reply = {
                 let mut st = self.st.lock().unwrap();
+                let reply = reply.filter(|_| !st.aborted && st.input_at.is_none_or(|at| at < opening_at));
                 // The wake word has already been detected. Avoid replaying seconds of
                 // old audio into the subscription call before the first real question.
                 let before = if matches!(p.engine.as_str(), "chatgpt" | "gemini") {
                     preroll.len().saturating_sub(RATE * 4 / 5)
                 } else { 0 };
-                let mut first = preroll[before..].to_vec();
-                first.extend_from_slice(&st.hold);
-                x.feed(&boost(&first, s.mic_boost_db));
+                if let Some(sample) = &reply {
+                    st.echo.played_with_tail(Instant::now(), &sample.pcm, sample.rate, wake_reply::REPLY_ECHO_TAIL);
+                } else {
+                    let mut first = preroll[before..].to_vec();
+                    first.extend_from_slice(&st.hold);
+                    x.feed(&boost(&first, s.mic_boost_db));
+                }
                 st.hold.clear();
                 st.holding = false;
                 st.live = Some(x.clone());
-            }
+                reply
+            };
             *sess = Some(x.clone());
+            if let Some(sample) = reply {
+                self.play_wake_reply(&sample);
+            }
+            if self.st.lock().unwrap().aborted {
+                return false;
+            }
             if let Err(e) = x.ready(Duration::from_secs(12)) {
                 log::info!("разговор не открылся: {e}");
                 x.dialog().finish_turn(&format!("разговор не открылся: {}", short(&e)));
