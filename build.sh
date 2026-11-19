@@ -4,7 +4,10 @@ set -eu
 cd "$(dirname "$0")"
 : "${VERSION:=dev}" "${REPO:=newfpv/YaJavis}" "${ZIG:=zig}"
 VERSION=${VERSION#v}
-export JARVIS_VERSION="$VERSION" JARVIS_UI="$PWD/jarvisd/ui" JARVIS_REPO="$REPO"
+export JARVIS_VERSION="$VERSION" JARVIS_REPO="$REPO"
+if [ -z "${STATION_PLUGIN_IDS:-}" ] && [ -z "${JARVIS_UI:-}" ]; then
+    npm run build:panel
+fi
 out="$PWD/build/release"
 tools="$PWD/build/station-build"
 mkdir -p "$out" "$tools"

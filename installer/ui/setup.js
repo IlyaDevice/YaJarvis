@@ -1,4 +1,7 @@
-"use strict";
+import "/token.js";
+import { mount } from "svelte";
+import Showcase from "./Showcase/Showcase.svelte";
+
 const $ = (s) => document.querySelector(s);
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -183,42 +186,6 @@ function run(title) {
 $("#again").addEventListener("click", () => { $("#log").textContent = ""; step(1); });
 step(1);
 
-// Product tour is local to the installer and does not contact external services.
-const tourSlides = [
-  { image: "dashboard", title: "Всё под рукой.", text: "Диалог, музыка и состояние Станции — на одной странице.", alt: "Главная панель YaJavis" },
-  { image: "connections", title: "Вы выбираете, с кем говорить.", text: "Подключите OpenAI, Gemini, Grok или ElevenLabs и устройства умного дома.", alt: "Подключения AI и умного дома" },
-  { image: "assistant", title: "Голос и характер — ваши.", text: "Выберите голос, модель и характер. Создавайте разных ассистентов и переключайте их в панели.", alt: "Настройки голосового ассистента" },
-  { image: "charts", title: "Понимайте свою Станцию.", text: "Память, процессор, температура и Wi-Fi — всё состояние Станции в браузере.", alt: "Графики состояния колонки" },
-];
-let tourIndex = 0, tourPaused = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-function drawTour() {
-  const slide = tourSlides[tourIndex];
-  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    [$("#tour-image"), $(".tour-copy")].forEach(el => {
-      el.getAnimations().forEach(a => a.cancel());
-      el.animate([{opacity: 0, transform: "translateY(8px)"}, {opacity: 1, transform: "translateY(0)"}], {duration: 420, easing: "cubic-bezier(.22,1,.36,1)"});
-    });
-  }
-  $("#tour-image").src = "screenshots/" + slide.image + ".png";
-  $("#tour-image").alt = slide.alt;
-  $("#tour-number").textContent = String(tourIndex + 1).padStart(2, "0") + " / 04";
-  $("#tour-title").textContent = slide.title;
-  $("#tour-text").textContent = slide.text;
-  document.querySelectorAll("#tour-dots button").forEach((b, i) => { b.classList.toggle("on", i === tourIndex); b.setAttribute("aria-current", i === tourIndex ? "true" : "false"); });
-}
-$("#tour-dots").innerHTML = tourSlides.map((s, i) => `<button type="button" data-slide="${i}" aria-label="${esc(s.title)}"></button>`).join("");
-$("#tour-dots").addEventListener("click", e => { const b = e.target.closest("[data-slide]"); if (b) { tourPaused = true; drawTourPause(); tourIndex = +b.dataset.slide; drawTour(); } });
-$("#tour-next").addEventListener("click", () => { tourPaused = true; drawTourPause(); tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); });
-$("#tour-prev").addEventListener("click", () => { tourPaused = true; drawTourPause(); tourIndex = (tourIndex + tourSlides.length - 1) % tourSlides.length; drawTour(); });
-function drawTourPause() {
-  $("#tour-pause").setAttribute("aria-pressed", String(tourPaused));
-  $("#tour-pause").setAttribute("aria-label", tourPaused ? "Продолжить показ" : "Приостановить показ");
-  $("#tour-pause").innerHTML = tourPaused ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg>' : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg>';
-}
-$("#tour-pause").addEventListener("click", () => { tourPaused = !tourPaused; drawTourPause(); });
-setInterval(() => { if (!tourPaused && !document.hidden) { tourIndex = (tourIndex + 1) % tourSlides.length; drawTour(); } }, 8500);
-drawTour(); drawTourPause();
-
 // Same cursor-edge treatment used by the panel, limited to one paint per frame.
 let pointerFrame = 0, lastPointer = null;
 document.addEventListener("pointermove", event => {
@@ -234,13 +201,5 @@ document.addEventListener("pointermove", event => {
     card.style.setProperty("--my", (lastPointer.clientY - box.top) + "px");
   });
 });
-$("#tour-zoom").addEventListener("click", () => {
-  tourPaused = true; drawTourPause();
-  const slide = tourSlides[tourIndex];
-  $("#tour-large").src = $("#tour-image").src;
-  $("#tour-large").alt = slide.alt;
-  $("#large-title").textContent = slide.title;
-  $("#tour-dialog").showModal();
-});
-$("#tour-close").addEventListener("click", () => $("#tour-dialog").close());
-$("#tour-dialog").addEventListener("click", event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+
+mount(Showcase, { target: $(".setup-grid") });

@@ -11,18 +11,25 @@ jobs:
       - uses: actions/checkout@v4
       - name: Require release notes
         run: test -s "docs/releases/${GITHUB_REF_NAME#v}.md"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:panel
       - run: rustup update stable
       - run: rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
       - run: sudo apt-get install -y libclang-dev
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-      - run: cargo test --locked --workspace --all-features
+      - run: cargo test --locked --workspace --all-features --exclude jarvis-setup
         working-directory: jarvis
       - run: sh build.sh
         env:
           VERSION: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
+          JARVIS_UI: ${{ github.workspace }}/build/ui/panel
       - uses: actions/upload-artifact@v4
         with:
           name: station
@@ -50,7 +57,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:installer
       - run: rustup update stable
+      - if: matrix.runner == 'ubuntu-latest'
+        run: cargo test --locked -p jarvis-setup
+        working-directory: jarvis
       - shell: bash
         run: |
           export JARVIS_VERSION="${GITHUB_REF_NAME#v}" JARVIS_REPO="$GITHUB_REPOSITORY"

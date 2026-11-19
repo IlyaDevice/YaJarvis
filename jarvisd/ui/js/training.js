@@ -1,4 +1,5 @@
 // Обучение слова «Джарвис» и запись фона.
+import "../training.css";
 import { $, Motion, act, api, esc, icon, sec } from "./core.js";
 import { S, page } from "./main.js";
 

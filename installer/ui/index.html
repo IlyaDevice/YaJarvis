@@ -7,8 +7,7 @@
 <meta name="theme-color" content="#111116">
 <title>YaJavis — установка Джарвиса</title>
 <link rel="stylesheet" href="setup.css">
-<script src="token.js"></script>
-<script src="setup.js" defer></script>
+<script type="module" src="setup.js"></script>
 </head>
 <body>
 <main class="wrap">
@@ -52,17 +51,8 @@
     </section>
     <p class="foot">Не закрывайте программу до завершения установки.</p>
   </div>
-  <aside class="showcase" aria-label="Знакомство с YaJavis">
-    <div class="showcase-heading"><span class="eyebrow">Больше возможностей вашей Станции</span><h2>Ваша Станция. <span>Новые возможности.</span></h2><p>Выберите голос. Включите музыку. Управляйте домом.</p></div>
-    <button type="button" class="preview-window" id="tour-zoom" aria-label="Рассмотреть скриншот панели"><span class="preview-bar"><span></span><span></span><span></span><small>Панель YaJavis</small><span class="zoom-hint">Развернуть ↗</span></span><img id="tour-image" src="screenshots/dashboard.png" alt="Главная панель YaJavis" width="2000" height="1125"></button>
-    <div class="tour-caption"><div class="tour-copy"><span class="tour-number" id="tour-number">01 / 04</span><h3 id="tour-title">Всё под рукой.</h3><p id="tour-text">Диалог с помощником, музыкальный плеер и состояние колонки — на одной странице.</p></div><div class="tour-controls"><button class="icon-btn" id="tour-prev" type="button" aria-label="Предыдущий скриншот">←</button><button class="icon-btn" id="tour-pause" type="button" aria-label="Приостановить показ" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg></button><button class="icon-btn" id="tour-next" type="button" aria-label="Следующий скриншот">→</button></div></div>
-    <div class="tour-dots" id="tour-dots" aria-label="Скриншоты панели"></div>
-    <div class="feature-strip"><span><i></i>Активация на колонке</span><span><i></i>AI на ваш выбор</span><span><i></i>Без своего сервера</span></div>
-    <p class="demo-note">Пример настроенной панели. Свои аккаунты вы подключите после установки.</p>
-  </aside>
   </div>
   <footer class="bottom-bar"><span>Установка на вашу колонку · Без отдельного сервера</span><a href="https://github.com/newfpv/YaJavis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">Авторы и благодарности</a></footer>
 </main>
-<dialog id="tour-dialog" class="image-dialog" aria-labelledby="large-title"><header><strong id="large-title">Панель YaJavis</strong><button class="icon-btn" id="tour-close" type="button" aria-label="Закрыть скриншот">×</button></header><img id="tour-large" alt=""><p>Esc — закрыть</p></dialog>
 </body>
 </html>

@@ -181,7 +181,6 @@ export function route() {
       v0.insertAdjacentHTML("beforeend", '<div id="wake-training"></div>');
       void drawWakeTraining(v0.querySelector("#wake-training"));
       if (S.settings.training_records) {
-        if (!$("#training-css")) document.head.insertAdjacentHTML("beforeend", '<link id="training-css" rel="stylesheet" href="/training.css">');
         v0.insertAdjacentHTML("beforeend", '<div id="training-records"></div>');
         const records = v0.querySelector("#training-records");
         void import("./training.js").then((m) => m.drawTrainingRecords(records)).catch((error) => {

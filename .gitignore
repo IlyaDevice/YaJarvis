@@ -19,6 +19,7 @@ __pycache__/
 .venv/
 venv/
 build/
+node_modules/
 installer/payload/
 jarvisd/google_app_generated.go
 *.exe
