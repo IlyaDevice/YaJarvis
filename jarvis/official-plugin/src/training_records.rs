@@ -1,13 +1,14 @@
 //! The optional training plugin owns the recording buffer and local dataset.
 use crate::{
     storage::{rand_hex, write_atomic},
-    training_background::Recorder,
+    training_background::{Recorder, ShortUpload},
 };
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::{
@@ -25,6 +26,8 @@ const KINDS: [&str; 4] = ["pos", "false", "near", "bg"];
 const CLIPS: &str = "rust-clips";
 const OLD_CLIPS: &str = "clips";
 const GZIP: &[u8] = b"\x1f\x8b";
+const OFFLOAD_BATCH: usize = 10;
+const UPLOAD_CUSHION: u64 = 1 << 20;
 
 #[derive(Clone, Serialize)]
 pub struct Clip {
@@ -48,8 +51,17 @@ pub struct Records {
     files: Mutex<()>,
     sample: Mutex<Observe>,
     pub background: Arc<Recorder>,
+    offload: Mutex<Offload>,
     write_pending: AtomicBool,
     stopped: AtomicBool,
+}
+
+#[derive(Default)]
+struct Offload {
+    running: bool,
+    sent: usize,
+    retry_at: Option<Instant>,
+    error: String,
 }
 
 impl Records {
@@ -60,6 +72,7 @@ impl Records {
             files: Mutex::new(()),
             sample: Mutex::default(),
             background,
+            offload: Mutex::default(),
             write_pending: false.into(),
             stopped: false.into(),
         }
@@ -105,12 +118,98 @@ impl Records {
             return;
         }
         let records = self.clone();
-        rt.spawn_blocking(move || {
-            if let Err(error) = records.save(kind, &pcm, prob, limit_mb) {
-                log::warn!("запись для обучения: {error}");
+        rt.spawn(async move {
+            let upload = records.background.short_upload();
+            let files = records.clone();
+            let connected = upload.is_some();
+            let saved = tokio::task::spawn_blocking(move || files.save(kind, &pcm, prob, limit_mb, connected)).await;
+            match saved {
+                Ok(Ok(true)) => {
+                    if let Some(upload) = upload {
+                        records.start_offload(upload);
+                    }
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => log::warn!("запись для обучения: {error}"),
+                Err(error) => log::warn!("запись для обучения: {error}"),
             }
             records.write_pending.store(false, Ordering::Release);
         });
+    }
+
+    fn start_offload(self: &Arc<Self>, upload: ShortUpload) {
+        let mut state = self.offload.lock().unwrap();
+        if state.running || state.retry_at.is_some_and(|at| at > Instant::now()) {
+            return;
+        }
+        state.running = true;
+        drop(state);
+        let records = self.clone();
+        tokio::spawn(async move {
+            let result = records.offload_batch(upload).await;
+            let mut state = records.offload.lock().unwrap();
+            state.running = false;
+            match result {
+                Ok(sent) => {
+                    state.sent += sent;
+                    state.error.clear();
+                }
+                Err(error) => {
+                    state.error = error;
+                    state.retry_at = Some(Instant::now() + Duration::from_secs(60));
+                }
+            }
+        });
+    }
+
+    async fn offload_batch(self: &Arc<Self>, upload: ShortUpload) -> Result<usize, String> {
+        let records = self.clone();
+        let batch = tokio::task::spawn_blocking(move || records.pack_oldest())
+            .await.map_err(|error| error.to_string())??;
+        let Some((name, bytes, paths)) = batch else { return Ok(0) };
+        upload.put(&name, bytes).await?;
+        let records = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _lock = records.files.lock().unwrap();
+            for path in paths {
+                // A clip reviewed or removed while the upload ran has a different path.
+                if let Err(error) = fs::remove_file(path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(error.to_string());
+                }
+            }
+            Ok(OFFLOAD_BATCH)
+        }).await.map_err(|error| error.to_string())?
+    }
+
+    fn pack_oldest(&self) -> Result<Option<(String, Vec<u8>, Vec<PathBuf>)>, String> {
+        let _lock = self.files.lock().unwrap();
+        let mut clips = self.list_dir(CLIPS);
+        clips.retain(|clip| !clip.reviewed);
+        if clips.len() < OFFLOAD_BATCH {
+            return Ok(None);
+        }
+        clips.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.name.cmp(&b.name)));
+        let mut paths = Vec::with_capacity(OFFLOAD_BATCH);
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let mut id = DefaultHasher::new();
+        for clip in clips.iter().take(OFFLOAD_BATCH) {
+            let path = self.path(CLIPS, &clip.kind, &clip.name)?;
+            let data = read_clip(&path)?;
+            if data.len() > RATE * 3 * 2 + 44 {
+                return Err("Запись длиннее трёх секунд".into());
+            }
+            let name = format!("{}/{}", clip.kind, clip.name);
+            name.hash(&mut id);
+            data.hash(&mut id);
+            zip.start_file(name, archive_options()).map_err(|error| error.to_string())?;
+            zip.write_all(&data).map_err(|error| error.to_string())?;
+            paths.push(path);
+        }
+        let name = format!("jarvis-clips-{}-{:016x}.zip", clips[0].name.trim_end_matches(".wav"), id.finish());
+        let bytes = zip.finish().map_err(|error| error.to_string())?.into_inner();
+        Ok(Some((name, bytes, paths)))
     }
 
     fn path(&self, storage: &str, kind: &str, name: &str) -> Result<PathBuf, String> {
@@ -183,15 +282,17 @@ impl Records {
                 .sum::<u64>()
                 >> 10
         };
+        let offload = self.offload.lock().unwrap();
         json!({"mode":mode,"limit_mb":limit.clamp(1,MAX_LIMIT_MB),"prev_model":previous,
             "used_kb":used(CLIPS),"legacy_kb":used(OLD_CLIPS),"local":clips.len(),
+            "offload":{"connected":self.background.short_upload().is_some(),"running":offload.running,"sent":offload.sent,"error":offload.error},
             "counts":counts.into_iter().collect::<std::collections::BTreeMap<_,_>>(),"clips":clips.iter().take(400).collect::<Vec<_>>()})
     }
 
-    fn save(&self, kind: &str, pcm: &[i16], prob: f32, limit_mb: i64) -> Result<(), String> {
+    fn save(&self, kind: &str, pcm: &[i16], prob: f32, limit_mb: i64, connected: bool) -> Result<bool, String> {
         let _lock = self.files.lock().unwrap();
         if self.stopped.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(false);
         }
         let wav = pcm_wav(pcm);
         let compressed = compress(&wav).map_err(|e| e.to_string())?;
@@ -210,10 +311,20 @@ impl Records {
         let path = self.path(CLIPS, kind, &name)?;
         fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
         if cfg!(unix) && crate::storage::free_mb(&self.root) < 4 {
+            if connected {
+                return Ok(true);
+            }
             return Err("на колонке осталось меньше 4 МБ".into());
         }
         let mut clips = self.list_dir(CLIPS);
         let mut used = clips.iter().map(|clip| clip.size).sum::<u64>();
+        if connected {
+            let pressure = used + data.len() as u64 > limit;
+            if used + data.len() as u64 <= limit + UPLOAD_CUSHION {
+                write_atomic(&path, &data, 0o600).map_err(|error| error.to_string())?;
+            }
+            return Ok(pressure);
+        }
         clips.sort_by_key(|clip| {
             (
                 clip.reviewed,
@@ -226,16 +337,17 @@ impl Records {
                 break;
             }
             if clip.reviewed {
-                return Ok(());
+                return Ok(false);
             }
             if fs::remove_file(self.path(CLIPS, &clip.kind, &clip.name)?).is_ok() {
                 used -= clip.size;
             }
         }
         if used + data.len() as u64 > limit {
-            return Ok(());
+            return Ok(false);
         }
-        write_atomic(&path, &data, 0o600).map_err(|e| e.to_string())
+        write_atomic(&path, &data, 0o600).map_err(|e| e.to_string())?;
+        Ok(false)
     }
 
     pub fn read(&self, kind: &str, name: &str) -> Result<Vec<u8>, String> {
@@ -417,6 +529,54 @@ fn archive_options() -> zip::write::SimpleFileOptions {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn cloud_offloads_exactly_ten_and_only_deletes_after_confirmation() {
+        use axum::{Router, body::Bytes, http::StatusCode, routing::put};
+        let root = std::env::temp_dir().join(format!("jarvis-offload-{}", rand_hex(5)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("background-cloud.json"), json!({
+            "provider":"nextcloud", "endpoint":format!("http://{}/", listener.local_addr().unwrap()),
+            "user":"test", "password":""
+        }).to_string()).unwrap();
+        let (sent, mut archive) = tokio::sync::mpsc::channel(1);
+        let fail = Arc::new(AtomicBool::new(true));
+        let state = fail.clone();
+        let server = tokio::spawn(async move {
+            let app = Router::new().route("/{archive}", put(move |body: Bytes| {
+                let fail = fail.clone();
+                let sent = sent.clone();
+                async move {
+                    if fail.load(Ordering::Relaxed) {
+                        return StatusCode::SERVICE_UNAVAILABLE;
+                    }
+                    sent.send(body).await.unwrap();
+                    StatusCode::CREATED
+                }
+            }));
+            axum::serve(listener, app).await.unwrap();
+        });
+        let records = Arc::new(Records::new(root.clone()));
+        let wav = pcm_wav(&[241; 16_000]);
+        let kind = root.join(CLIPS).join("near");
+        fs::create_dir_all(&kind).unwrap();
+        for i in 0..11 {
+            fs::write(kind.join(format!("{i:02}.wav")), &wav).unwrap();
+        }
+        fs::write(kind.join("00_r.wav"), &wav).unwrap();
+        assert!(records.offload_batch(records.background.short_upload().unwrap()).await.is_err());
+        assert_eq!(records.list_dir(CLIPS).len(), 12);
+        state.store(false, Ordering::Relaxed);
+        assert_eq!(records.offload_batch(records.background.short_upload().unwrap()).await.unwrap(), 10);
+        let mut zip = zip::ZipArchive::new(Cursor::new(archive.recv().await.unwrap())).unwrap();
+        assert_eq!(zip.len(), 10);
+        assert!(zip.by_name("near/00.wav").is_ok());
+        assert!(kind.join("10.wav").is_file());
+        assert!(kind.join("00_r.wav").is_file());
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn exports_existing_and_new_recordings_with_labels_and_model() {
         let root = std::env::temp_dir().join(format!("jarvis-dataset-{}", rand_hex(5)));
@@ -425,7 +585,7 @@ mod tests {
         fs::create_dir_all(old.parent().unwrap()).unwrap();
         fs::write(&old, vec![0; 1 << 20]).unwrap();
         let pcm: Vec<_> = (0..16000).map(|i| (i % 100) as i16).collect();
-        records.save("near", &pcm, 0.49, 1).unwrap();
+        records.save("near", &pcm, 0.49, 1, false).unwrap();
         assert!(old.is_file());
         let clip = records.list_dir(CLIPS).pop().unwrap();
         assert!(!clip.reviewed);
