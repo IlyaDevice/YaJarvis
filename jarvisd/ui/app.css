@@ -1046,19 +1046,6 @@ h1 { font-size: 34px; line-height: 40px; }
 .swatch.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--acc); }
 #lp-live { color: var(--ok); font-weight: 700; }
 
-/* ---------- логи ---------- */
-.logs-card { padding: 0; overflow: hidden; display: flex; flex-direction: column; height: max(420px, calc(100vh - 230px)); }
-.logs-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 16px 20px; border-bottom: 1px solid var(--soft-line); }
-.search { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-height: 40px; padding: 0 12px; border-radius: 12px; background: rgb(0 0 0 / .25); border: 1px solid rgb(255 255 255 / .07); color: var(--fg2); }
-.search:focus-within { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-soft); }
-.search input { border: 0 !important; background: transparent !important; box-shadow: none !important; padding: 0; height: 38px; flex: 1; min-width: 0; }
-.logbox { flex: 1; min-height: 0; overflow: auto; padding: 12px 0 16px; font: 12px/19px var(--mono); color: var(--ink2); scrollbar-width: thin; }
-.ll { padding: 1px 20px; white-space: pre-wrap; word-break: break-word; }
-.ll:hover { background: rgb(255 255 255 / .03); }
-.ll .lt { color: var(--fg3); margin-right: 8px; }
-.ll.bad { color: var(--bad); } .ll.warn { color: var(--warn); }
-.logbox .empty { padding: 20px; }
-
 /* ---------- характеры: bento-карточки и редактор поверх страницы ---------- */
 .chars { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
 .char { display: flex; flex-direction: column; gap: 14px; min-height: 220px; cursor: pointer; text-align: left; transition: transform .3s var(--spring), border-color .2s; }
@@ -1193,6 +1180,13 @@ h1 { font-size: 34px; line-height: 40px; }
 
 /* ---------- 0.9.18: логи на главной в свободном месте; поиск в очереди — тихой строкой ---------- */
 .home-logs { display: none; }
+.home-logs .logbox { flex: 1; min-height: 0; overflow: auto; padding: 12px 0 16px; font: 12px/19px var(--mono); color: var(--ink2); scrollbar-width: thin; }
+.home-logs .ll { padding: 1px 20px; white-space: pre-wrap; word-break: break-word; }
+.home-logs .ll:hover { background: rgb(255 255 255 / .03); }
+.home-logs .lt { color: var(--fg3); margin-right: 8px; }
+.home-logs .ll.bad { color: var(--bad); }
+.home-logs .ll.warn { color: var(--warn); }
+.home-logs .logbox .empty { padding: 20px; }
 @media (min-width: 1200px) {
   .rail > .home-logs { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; contain: size; padding: 20px 0 0; overflow: hidden; transition: opacity .35s ease; }
   .rail > .home-logs.tight { opacity: 0; visibility: hidden; }

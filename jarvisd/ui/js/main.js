@@ -5,7 +5,7 @@ import { CH, ST, chartsData, navPill, statsData, viewCharts } from "./charts.js"
 import { viewConnections } from "./connections.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
-import { HL, LOGS, homeLogs, logsData, viewLogs } from "./logs.js";
+import { HL, homeLogs } from "./logs.js";
 import { drawVolume, musicData, viewPlayer } from "./player.js";
 import { viewMemory } from "./memory.js";
 import { viewSecurity } from "./security.js";
@@ -17,11 +17,13 @@ export let S = null;          // состояние с колонки
 export let journal = [];
 export let page = "home";
 export let pollTimer = null;
+let logsView;
 
 // ---------------------------------------------------------------- вход
 export let gateSetup = false;
 export function showGate(setup) {
   gateSetup = !!setup;
+  closeLogs();
   $("#app").classList.add("hidden");
   $("#gate").classList.remove("hidden");
   $("#gate-text").textContent = setup ? "Придумайте пароль для настроек колонки. Он понадобится, чтобы зайти сюда снова." : "Пароль от настроек колонки";
@@ -80,6 +82,7 @@ export async function start() {
 }
 
 export async function poll() {
+  const refreshLogs = logsView?.refresh;
   let d;
   try { d = await api("GET", "/api/journal"); } catch { return; }
   if (d.version && S.version && d.version !== S.version) { location.reload(); return; }   // колонку обновили — берём новую панель
@@ -90,7 +93,7 @@ export async function poll() {
   if (page === "home") { homeData(); drawVolume(); if (Date.now() - ST.at > 15000) statsData(); if (Date.now() - HL.at > 5000) homeLogs(); }
   if (page === "player") drawVolume();
   if (page === "charts" && Date.now() - CH.at > 15000) chartsData(false);
-  if (page === "logs" && LOGS.auto) logsData(false);
+  if (refreshLogs && refreshLogs === logsView?.refresh) void refreshLogs();
   musicData();
   clearTimeout(poll.fast);
   if (S.speaker.talking && page === "home") poll.fast = setTimeout(poll, 500);
@@ -159,13 +162,32 @@ $("#add-profile").addEventListener("click", () => go("#p/new"));
 // ---------------------------------------------------------------- маршруты
 export function go(hash) { location.hash = hash; }
 window.addEventListener("hashchange", () => {
-  if (!S) return;   // ещё не вошли — страницы рисовать не из чего
+  if (!S || $("#app").classList.contains("hidden")) return;
   if (dirty && !confirm("Есть несохранённые изменения. Уйти без сохранения?")) { history.back(); return; }
   route();
 });
 window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
 
+async function viewLogs(target) {
+  target.replaceChildren();
+  const view = {};
+  logsView = view;
+  try {
+    const { mountLogs } = await import("../Logs/mountLogs.js");
+    if (logsView === view) Object.assign(view, mountLogs(target));
+  } catch (error) {
+    if (logsView === view) target.textContent = error.message;
+  }
+}
+
+function closeLogs() {
+  const view = logsView;
+  logsView = null;
+  void view?.dispose?.();
+}
+
 export function route() {
+  closeLogs();
   setDirty(false);
   $("#side").classList.remove("open");
   document.body.classList.remove("menu-open");
@@ -174,6 +196,10 @@ export function route() {
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
   else if (h.startsWith("connections/")) { page = "connections"; viewConnections(h.slice(12)); }
   else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
+  else if (h === "logs") {
+    page = "logs";
+    void viewLogs(v0);
+  }
   else if (h === "training") {
     page = "training";
     v0.innerHTML = '<header class="ph"><h1>Обучение</h1></header>';
@@ -192,8 +218,8 @@ export function route() {
     }
   }
   else {
-    page = ["home", "player", "charts", "logs", "characters", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
-    ({ home: viewHome, player: viewPlayer, charts: viewCharts, logs: viewLogs, characters: viewCharacters, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
+    page = ["home", "player", "charts", "characters", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
+    ({ home: viewHome, player: viewPlayer, charts: viewCharts, characters: viewCharacters, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);
