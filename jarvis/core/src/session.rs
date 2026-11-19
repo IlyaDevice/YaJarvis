@@ -40,6 +40,7 @@ struct DState {
     turn_user: String,
     turn_bot: String,
     turn_bot_t0: Option<Instant>,
+    turn_complete: bool,
     user_end: Option<Instant>,
     muted: bool,
     muted_at: Option<Instant>,
@@ -84,6 +85,7 @@ impl Dialog {
         st.turn_user.clear();
         st.turn_bot.clear();
         st.turn_bot_t0 = None;
+        st.turn_complete = false;
     }
 
     fn finish_turn_locked(&self, st: &mut DState) {
@@ -101,7 +103,7 @@ impl Dialog {
         st.last_activity = Some(now);
         st.user_end = Some(now);
         // новая реплика: Джарвис уже успел поговорить (>1.5 с) — значит, это не запоздавший хвост расшифровки
-        if st.turn == 0 || st.turn_bot_t0.is_some_and(|t| now - t > Duration::from_millis(1500)) {
+        if st.turn == 0 || st.turn_complete || st.turn_bot_t0.is_some_and(|t| now - t > Duration::from_millis(1500)) {
             self.next_turn(&mut st);
         }
         if st.turn_user.is_empty() {
@@ -113,6 +115,11 @@ impl Dialog {
         if st.muted && st.muted_at.is_some_and(|m| now - m > Duration::from_millis(600)) {
             st.muted = false; // человек договорил новую просьбу — следующий ответ уже слушаем
         }
+    }
+
+    pub fn provider_turn_complete(&self) {
+        // Keep the text visible to the command handler until the next input arrives.
+        self.st.lock().unwrap().turn_complete = true;
     }
 
     /// Очередной кусочек текста ответа модели.
@@ -299,6 +306,20 @@ mod tests {
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].answer, "Сейчас поищу.");
         assert_eq!(last_sentence("Да. Сейчас включу!"), " Сейчас включу");
+    }
+
+    #[test]
+    fn stop_after_a_short_reply_starts_its_own_turn() {
+        let dialog = Dialog::new(Arc::new(Journal::default()), "gemini", "");
+        dialog.on_user("Привет");
+        dialog.on_bot("Привет!");
+        let first = dialog.utterance().0;
+        dialog.provider_turn_complete();
+        assert_eq!(dialog.utterance().0, first);
+        dialog.on_user("Заткнись");
+        let (second, text, _) = dialog.utterance();
+        assert_ne!(first, second);
+        assert!(crate::fastcmd::is_stop(&text));
     }
 
     #[test]

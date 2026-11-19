@@ -163,7 +163,7 @@ impl Engine {
         })
     }
 
-    pub(super) fn play_wake_reply(&self, sample: &voice_preview::Sample) {
+    pub(super) fn play_wake_reply(&self, sample: &voice_preview::Sample, engine: &str, opening_at: Instant) {
         if self.player.start(sample.rate).is_err() {
             self.st.lock().unwrap().echo.stopped(Instant::now());
             return;
@@ -171,6 +171,7 @@ impl Engine {
         self.player.set_boost(sample.boost);
         self.leds.set(Mode::Listening);
         if self.player.write(&sample.pcm).is_ok() {
+            log::info!("Отклик на активацию из кеша ({engine}) за {:.2} с", opening_at.elapsed().as_secs_f64());
             self.player.finish(MAX_REPLY + Duration::from_millis(200));
         } else {
             self.player.stop(true);

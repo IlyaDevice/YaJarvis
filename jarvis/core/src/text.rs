@@ -7,7 +7,7 @@ impl Engine {
             else { fastcmd::command_for_phrase(text, &phrase) };
         let command = command.as_str();
         if fastcmd::is_stop(command){
-            let e=self.clone();let all=fastcmd::is_stop_all(command);
+            let e=self.clone();let all=!self.talking() && fastcmd::is_stop_all(command);
             let _=tokio::task::spawn_blocking(move||if all{e.stop("написали стоп")}else{e.end_chat("написали стоп")}).await;
             self.journal.note("стоп",text,"");return;
         }

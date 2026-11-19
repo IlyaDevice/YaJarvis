@@ -49,7 +49,6 @@ impl Classic {
             else { crate::fastcmd::command_for_phrase(text, &context.phrase) };
         let command = command.as_str();
         if crate::fastcmd::is_stop(command){
-            if crate::fastcmd::is_stop_all(command){if let Some(control)=&context.tools.music_ctl{control("стоп".into()).await;}}
             self.dialog.annotate("стоп","");self.dialog.finish_turn("");self.close();return Ok(());
         }
         if let Some(control)=&context.tools.music_fast {

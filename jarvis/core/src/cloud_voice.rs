@@ -87,6 +87,7 @@ impl Voice {
                         if let Some(text)=content.pointer("/inputTranscription/text").and_then(Value::as_str){self.dialog.on_user(text);}
                         if let Some(text)=content.pointer("/outputTranscription/text").and_then(Value::as_str){self.dialog.on_bot(text);}
                         for part in content.pointer("/modelTurn/parts").and_then(Value::as_array).into_iter().flatten(){if let Some(data)=part.pointer("/inlineData/data").and_then(Value::as_str){self.audio(data)?;speaking=true;}}
+                        if content["turnComplete"].as_bool()==Some(true){self.dialog.provider_turn_complete();}
                     }
                     if kind=="session.delegation.created"{self.dialog.working(1);}
                     if kind=="response.event"{let inner=event["event"]["type"].as_str().unwrap_or("");if ["response.completed","response.failed","response.cancelled","response.incomplete"].contains(&inner){self.dialog.working(-1);}}
