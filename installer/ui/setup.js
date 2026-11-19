@@ -1,14 +1,15 @@
 import "/token.js";
 import { mount } from "svelte";
 import Showcase from "./Showcase/Showcase.svelte";
+import SpeakerDiscovery from "./SpeakerDiscovery/SpeakerDiscovery.svelte";
 
 const $ = (s) => document.querySelector(s);
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let speaker = null;
 // Keep the wizard inside the viewport; its action stays visible when fields expand.
-document.querySelectorAll(".wizard > .card").forEach(card => {
-  const action = card.querySelector(".actions, .finish-actions, #scan");
+document.querySelectorAll(".wizard > .card:not(#s1)").forEach(card => {
+  const action = card.querySelector(".actions, .finish-actions");
   const body = document.createElement("div"), footer = document.createElement("div");
   body.className = "step-body"; footer.className = "step-footer";
   if (action) footer.append(action);
@@ -43,35 +44,6 @@ const TZ = [["Europe/Moscow", "Москва (UTC+3)"], ["Europe/Minsk", "Мин�
 TZ.sort((a, b) => (a[0] === "UTC" ? -1 : b[0] === "UTC" ? 1 : 0));
 $("#tz").innerHTML = TZ.map(([v, n]) => `<option value="${v}">${n}</option>`).join("");
 
-
-function speakerRow(sp, i) {
-  const ok = !sp.problems?.length;
-  const badge = !ok ? `<span class="badge bad">не подходит</span>` : sp.installed ? `<span class="badge up">Джарвис ${esc(sp.installed)}</span>` : `<span class="badge ok">можно ставить</span>`;
-  const meta = [sp.ip, sp.free_mb ? `свободно ${sp.free_mb} МБ` : "", sp.ram_mb ? `${sp.ram_mb} МБ памяти` : ""].filter(Boolean).map(esc).join(" · ");
-  return `<button type="button" class="sp${ok ? "" : " no"}" data-ip="${esc(sp.ip)}" style="--i:${i}"><span class="sp-ring${sp.installed ? " on" : ""}" aria-hidden="true"></span>
-    <span class="b"><b>${esc(sp.model || "Колонка")}</b><small>${meta}</small></span>${badge}<span class="sp-go" aria-hidden="true">→</span></button>`;
-}
-
-$("#scan").addEventListener("click", async (e) => {
-  $("#scan").disabled = true;
-  $("#scan-st").innerHTML = `<span class="radar" aria-hidden="true"><i></i><i></i></span> Ищу колонки в домашней сети…`;
-  $("#found").innerHTML = "";
-  try {
-    const d = await api("GET", "/api/scan");
-    const list = d.speakers || [];
-    $("#scan-st").textContent = list.length ? `Найдено: ${list.length}` : "Введите IP колонки, если она ещё не подключена по ADB.";
-    $("#found").innerHTML = list.map(speakerRow).join("");
-    list.forEach((s, i) => { const el = $("#found").children[i]; if (el) el.style.setProperty("--i", i); });
-    window._list = list;
-  } catch (err) { $("#scan-st").textContent = err.message; }
-  $("#scan").disabled = false;
-});
-$("#found").addEventListener("click", (e) => { const row = e.target.closest(".sp"); if (row) show(window._list.find((s) => s.ip === row.dataset.ip)); });
-$("#ip-go").addEventListener("click", async (e) => {
-  $("#ip-go").disabled = true;
-  try { show(await api("POST", "/api/check", { ip: $("#ip").value.trim() })); } catch (err) { alert(err.message); }
-  $("#ip-go").disabled = false;
-});
 
 function tile(k, v, sub, pct, tone) {
   return `<div class="tile${tone ? " " + tone : ""}"><span class="k">${k}</span><span class="n">${v}</span>${pct != null ? `<span class="meter"><i style="--p:${Math.max(3, Math.min(100, pct))}%"></i></span>` : ""}<small>${sub}</small></div>`;
@@ -184,6 +156,7 @@ function run(title) {
   }, 700);
 }
 $("#again").addEventListener("click", () => { $("#log").textContent = ""; step(1); });
+mount(SpeakerDiscovery, { target: $("#s1"), props: { api, onSelect: show } });
 step(1);
 
 // Same cursor-edge treatment used by the panel, limited to one paint per frame.
