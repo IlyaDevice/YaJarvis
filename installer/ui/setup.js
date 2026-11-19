@@ -1,14 +1,15 @@
 import "/token.js";
 import { mount } from "svelte";
+import { get, writable } from "svelte/store";
+import DeviceCheck from "./DeviceCheck/DeviceCheck.svelte";
 import Showcase from "./Showcase/Showcase.svelte";
 import SpeakerDiscovery from "./SpeakerDiscovery/SpeakerDiscovery.svelte";
 
 const $ = (s) => document.querySelector(s);
+const selectedSpeaker = writable(null);
 
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-let speaker = null;
 // Keep the wizard inside the viewport; its action stays visible when fields expand.
-document.querySelectorAll(".wizard > .card:not(#s1)").forEach(card => {
+document.querySelectorAll("#s3, #s4").forEach(card => {
   const action = card.querySelector(".actions, .finish-actions");
   const body = document.createElement("div"), footer = document.createElement("div");
   body.className = "step-body"; footer.className = "step-footer";
@@ -45,42 +46,13 @@ TZ.sort((a, b) => (a[0] === "UTC" ? -1 : b[0] === "UTC" ? 1 : 0));
 $("#tz").innerHTML = TZ.map(([v, n]) => `<option value="${v}">${n}</option>`).join("");
 
 
-function tile(k, v, sub, pct, tone) {
-  return `<div class="tile${tone ? " " + tone : ""}"><span class="k">${k}</span><span class="n">${v}</span>${pct != null ? `<span class="meter"><i style="--p:${Math.max(3, Math.min(100, pct))}%"></i></span>` : ""}<small>${sub}</small></div>`;
-}
-function drawSpace(sp) {
-  const after = sp.staging_mb ?? sp.free_mb;
-  const short = sp.space_ok === false;
-  const need = sp.need_mb == null ? "Уточним после загрузки пакета" : `Нужно до ${sp.need_mb} МиБ`;
-  $("#tile-space").outerHTML = tile("Место для установки", `${after}<small>МиБ</small>`, need,
-    sp.need_mb == null ? null : after / Math.max(sp.need_mb * 2, after) * 100, short ? "bad" : "").replace('class="tile', 'id="tile-space" class="tile');
-  $("#to3").disabled = !!sp.problems?.length || short;
-}
-function show(sp) {
-  speaker = sp;
-  $("#sp-title").textContent = sp.model || "Колонка";
-  $("#sp-ip").textContent = `${sp.ip} · ${sp.installed ? "Джарвис " + sp.installed + " — обновим, настройки сохранятся" : "проверка устройства"}`;
-  $("#sp-tiles").innerHTML = `<div id="tile-space"></div>` +
-    tile("Память", `${sp.ram_mb || "?"}<small>МБ</small>`, sp.ram_mb && sp.ram_mb < 200 ? "впритык, но работать будет" : "хватает", null) +
-    tile("Джарвис", sp.installed ? esc(sp.installed) : "—", sp.installed ? "будет обновлён" : "ещё не установлен", null);
-  const checks = [
-    [sp.root, "Root-доступ по ADB", sp.root ? "есть" : "нужна разлоченная колонка"],
-    [!sp.android, "Прошивка на Linux", sp.android ? "Android-Станции пока не поддерживаются" : "подходит"],
-    [!!sp.userland, "Микрофон Алисы", sp.userland ? `библиотека ${esc(sp.userland)}` : "не удалось определить"],
-    [!(sp.problems || []).some((p) => /профил|init\.d|maind/.test(p)), "Автозапуск и Алиса", "найдены"],
-  ];
-  $("#sp-checks").innerHTML = checks.map(([ok, k, v], i) => `<li class="${ok ? "ok" : "bad"}" style="--i:${i}" title="${esc(v)}"><i aria-hidden="true"></i><span>${k}${ok ? "" : `<small>${v}</small>`}</span></li>`).join("");
-  $("#sp-info").innerHTML = [["IP", sp.ip], ["Модель", sp.model || "?"], ["Процессор", sp.arch || "?"], ["Алиса / микрофон", sp.userland || "?"], ["Root", sp.root ? "есть" : "нет"], ["Память", sp.ram_mb ? sp.ram_mb + " МБ" : "?"], ["Свободно места", sp.free_mb ? sp.free_mb + " МБ" : "?"], ["Джарвис", sp.installed || "не установлен"]]
-    .map(([k, v]) => `<span>${k}</span><span>${esc(v)}</span>`).join("");
-  $("#sp-problems").innerHTML = (sp.problems || []).map((p) => `<div class="problem">${esc(p)}</div>`).join("") + (sp.notes || []).map((n) => `<div class="note">${esc(n)}</div>`).join("");
-  drawSpace(sp);
-  $("#to3").textContent = sp.installed ? "Обновить" : "Дальше";
-  $("#uninstall").classList.toggle("hidden", !sp.installed);
+function selectSpeaker(speaker) {
+  selectedSpeaker.set(speaker);
   step(2);
 }
 
 document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => step(+b.dataset.back)));
-$("#to3").addEventListener("click", () => {
+function showSettings(speaker) {
   // при обновлении пароль и ключи уже на колонке — поля можно оставить пустыми
   $("#pw").placeholder = speaker.installed ? "Не менять" : "Пароль";
   $("#tz-keep")?.remove();
@@ -90,9 +62,10 @@ $("#to3").addEventListener("click", () => {
     $("#tz").prepend(option);
   }
   step(3);
-});
+}
 
 $("#install").addEventListener("click", async () => {
+  const speaker = get(selectedSpeaker);
   const pw = $("#pw").value;
   $("#s3-err").textContent = "";
   if (!speaker.installed && pw.length < 6) { $("#s3-err").textContent = "Придумайте пароль — минимум 6 символов"; return; }
@@ -102,11 +75,6 @@ $("#install").addEventListener("click", async () => {
     $("#pw").value = $("#pw2").value = "";
     run("Устанавливаю…");
   } catch (err) { $("#s3-err").textContent = err.message; }
-});
-
-$("#uninstall").addEventListener("click", async () => {
-  if (!confirm("Удалить Джарвиса с колонки? Она перезагрузится, Алиса останется как была.")) return;
-  try { await api("POST", "/api/uninstall", { ip: speaker.ip }); run("Удаляю…"); } catch (err) { alert(err.message); }
 });
 
 const STAGES = [["Подключение", /Подключаюсь|Определена|Найден Джарвис/], ["Место", /Стираю|Удаляю|Свободно на колонке/], ["Файлы", /Копирую|%$/],
@@ -156,7 +124,17 @@ function run(title) {
   }, 700);
 }
 $("#again").addEventListener("click", () => { $("#log").textContent = ""; step(1); });
-mount(SpeakerDiscovery, { target: $("#s1"), props: { api, onSelect: show } });
+mount(SpeakerDiscovery, { target: $("#s1"), props: { api, onSelect: selectSpeaker } });
+mount(DeviceCheck, {
+  target: $("#s2"),
+  props: {
+    api,
+    selectedSpeaker,
+    onBack: () => step(1),
+    onContinue: showSettings,
+    onUninstalled: () => run("Удаляю…"),
+  },
+});
 step(1);
 
 // Same cursor-edge treatment used by the panel, limited to one paint per frame.

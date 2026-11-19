@@ -55,7 +55,7 @@ h1 { font-size: clamp(34px, 3vw, 44px); font-weight: 750; line-height: 1.12; let
 .btn.danger { padding: 0; margin-top: 16px; min-height: 36px; color: var(--bad); font-size: 14px; background: transparent; border-color: transparent; }
 .wide { width: 100%; }
 .actions { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin-top: 20px; }
-.optional, .device-details { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
+.optional { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
 summary { font-size: 14px; color: var(--dim); cursor: pointer; list-style: none; }
 summary::before { content: "+"; margin-right: 8px; color: var(--dim2); }
 details[open] > summary::before { content: "−"; }
@@ -73,11 +73,6 @@ textarea { resize: vertical; min-height: 80px; }
 .password-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .err { margin-top: 10px; font-size: 14px; color: var(--bad); }
 .err:empty { display: none; }
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; margin-top: 16px; font-size: 14px; }
-.kv span:nth-child(odd) { color: var(--dim); }
-.kv span:nth-child(even) { text-align: right; overflow-wrap: anywhere; }
-.note, .problem { color: #d5c39f; background: #e6b56308; border: 1px solid #e6b56318; padding: 14px; margin-top: 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; }
-.problem { color: var(--bad); background: #fa8e8e08; border-color: #fa8e8e18; }
 .foot { display: none; }
 .bottom-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; color: var(--dim2); font-size: 13px; }
 .bottom-bar a:hover { color: var(--fg); }
@@ -160,27 +155,7 @@ progress:not([value]) { background: linear-gradient(90deg,var(--raise),#f77b2c88
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
-/* ---------- проверка, чистая установка, этапы ---------- */
-#s2 h1 { margin-bottom: 20px; }
-.tiles { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 10px; margin-bottom: 18px; }
-.tile { background: var(--raise); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: grid; gap: 4px; align-content: start; min-width: 0; }
-.tile .k { color: var(--dim); font-size: 13px; }
-.tile .n { font-size: 26px; line-height: 1.15; font-weight: 750; letter-spacing: -.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.tile .n small { font-size: 13px; font-weight: 500; color: var(--dim2); margin-left: 4px; letter-spacing: 0; }
-.tile > small { color: var(--dim2); font-size: 12px; line-height: 1.4; }
-.tile.bad > small { color: var(--bad); }
-.meter { display: block; height: 5px; border-radius: 4px; background: #111116; overflow: hidden; margin: 4px 0 2px; }
-.meter i { display: block; height: 100%; width: var(--p); background: var(--acc); border-radius: 4px; transition: width .6s var(--spring); }
-.tile.bad .meter i { background: var(--bad); }
-.checks { list-style: none; margin: 0 0 4px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
-.checks li { display: flex; align-items: center; gap: 10px; font-size: 14px; padding: 8px 0; min-width: 0; animation: rise .4s var(--ease) both; animation-delay: calc(120ms + var(--i) * 90ms); }
-.checks li > span { min-width: 0; }
-.checks li small { display: block; color: var(--bad); font-size: 12.5px; line-height: 1.4; }
-.checks li i { width: 18px; height: 18px; flex: none; border-radius: 50%; display: grid; place-items: center; background: #48cb8b1c; position: relative; }
-.checks li i::after { content: ""; width: 7px; height: 4px; border-left: 2px solid var(--ok); border-bottom: 2px solid var(--ok); transform: translateY(-1px) rotate(-45deg); }
-.checks li.bad i { background: #fa8e8e1c; }
-.checks li.bad i::after { width: 8px; height: 0; border: 0; border-top: 2px solid var(--bad); transform: none; }
-
+/* ---------- чистая установка, этапы ---------- */
 .addons { margin-top: 16px; border: 1px solid var(--line); border-radius: 18px; padding: 14px 14px 12px; background: #ffffff03; }
 .addons-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .addons-h b { font-size: 15px; }
@@ -219,8 +194,3 @@ progress:not([value]) { background: linear-gradient(90deg,var(--raise),#f77b2c88
 .stages li.bad i { border-color: var(--bad); }
 .stages li small { color: var(--acc); font-variant-numeric: tabular-nums; font-weight: 600; }
 .install-card progress { margin-top: 10px; }
-@media (max-width: 800px) {
-  .tiles { grid-template-columns: 1fr 1fr; }
-  .tiles .tile:first-child { grid-column: 1 / -1; }
-  .checks { grid-template-columns: 1fr; }
-}
