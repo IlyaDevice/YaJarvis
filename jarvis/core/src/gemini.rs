@@ -16,7 +16,7 @@ pub(crate) fn declarations(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, language: &str, tools: &[Value]) -> Value {
+pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, language: &str, tools: &[Value], web_search: bool) -> Value {
     let mut setup = json!({
         "model": format!("models/{model}"),
         "generationConfig": {
@@ -43,8 +43,15 @@ pub(crate) fn live_setup(model: &str, voice: &str, instructions: &str, language:
         setup["inputAudioTranscription"]["languageCodes"] = json!([code]);
     }
     let functions = declarations(tools);
+    let mut enabled = Vec::new();
     if !functions.is_empty() {
-        setup["tools"] = json!([{"functionDeclarations": functions}]);
+        enabled.push(json!({"functionDeclarations": functions}));
+    }
+    if web_search {
+        enabled.push(json!({"googleSearch": {}}));
+    }
+    if !enabled.is_empty() {
+        setup["tools"] = json!(enabled);
     }
     json!({"setup": setup})
 }
@@ -72,6 +79,7 @@ mod tests {
                 json!({"type": "function", "name": "edit_memory", "description": "Edit", "parameters": schema}),
                 json!({"type": "web_search"}),
             ],
+            true,
         );
         let functions = setup["setup"]["tools"][0]["functionDeclarations"]
             .as_array()
@@ -79,15 +87,16 @@ mod tests {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0]["parametersJsonSchema"], schema);
         assert!(functions[0].get("parameters").is_none());
+        assert_eq!(setup["setup"]["tools"][1], json!({"googleSearch": {}}));
         assert_eq!(setup["setup"]["inputAudioTranscription"], json!({"languageCodes": ["ru-RU"]}));
         assert_eq!(setup["setup"]["realtimeInputConfig"]["automaticActivityDetection"]["silenceDurationMs"], 750);
         assert!(
-            live_setup("model", "voice", "instructions", "", &[])["setup"]
+            live_setup("model", "voice", "instructions", "", &[], false)["setup"]
                 .get("tools")
                 .is_none()
         );
         assert_eq!(
-            live_setup("model", "voice", "instructions", "", &[])["setup"]["inputAudioTranscription"],
+            live_setup("model", "voice", "instructions", "", &[], false)["setup"]["inputAudioTranscription"],
             json!({}),
         );
     }

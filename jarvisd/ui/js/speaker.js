@@ -39,6 +39,7 @@ export function viewSpeaker() {
   ${sec("Слово активации", "Колонка распознаёт его без интернета",
     `${s.wake_training ? `<div class="f"><label for="s-wake-profile">Выбранная фраза</label><select id="s-wake-profile" disabled><option>${esc(word)}</option></select><a href="#training">Обучение слова</a></div>` : ""}
     <label class="sw"><input type="checkbox" id="s-wake"${s.wake_enabled ? " checked" : ""}><span class="tr"></span>Откликаться на «${esc(word)}» ${tip("Выключите, если Джарвис нужен только по кнопке «Поговорить». Алиса работает в любом случае.")}</label>
+    <label class="sw"><input type="checkbox" id="s-wake-reply"${s.wake_reply_enabled !== false ? " checked" : ""}><span class="tr"></span>Быстрый голосовой отклик ${tip("После слова активации Джарвис сразу говорит «слушаю», «угу» или другую короткую фразу голосом активного ассистента. Вопрос можно начать сразу.")}</label>
     ${s.wake_word ? "" : `<label class="sw"><input type="checkbox" id="s-check"${s.wake_check ? " checked" : ""}><span class="tr"></span>Проверять имя перед ответом ${tip("Выключено — как у Алисы: услышал слово, сразу загорается кольцо и Джарвис слушает. Включено — сначала облако проверяет, что прозвучало именно «Джарвис»: ложных разговоров меньше, но отклик на полсекунды-секунду позже.")}</label>`}
     <div class="f"><label>Чувствительность ${tip("Выше — слышит издалека и тихо, но чаще срабатывает зря (например, на разговор в Discord). Ниже — реже ошибается, но звать нужно чётче.")}<b id="s-sens-v" class="val">${s.wake_sensitivity}</b></label>
       <input type="range" id="s-sens" min="1" max="10" value="${s.wake_sensitivity}"><div class="scale"><span>осторожно</span><span>слышит всё</span></div></div>
@@ -67,6 +68,20 @@ export function viewSpeaker() {
   }));
   void bindWakeProfiles($("#s-wake-profile"));
   $("#s-wake").addEventListener("change", (e) => put({ wake_enabled: e.target.checked }).then(() => toast(e.target.checked ? "Джарвис снова слушает" : "Джарвис больше не откликается на слово")));
+  $("#s-wake-reply").addEventListener("change", async (e) => {
+    const input = e.target;
+    input.disabled = true;
+    try {
+      await api("PUT", "/api/settings", { wake_reply_enabled: input.checked });
+      S.settings.wake_reply_enabled = input.checked;
+      toast(input.checked ? "Быстрый отклик включён" : "Быстрый отклик выключен");
+    } catch (error) {
+      input.checked = !input.checked;
+      toast(error.message, true);
+    } finally {
+      input.disabled = false;
+    }
+  });
   $("#s-check")?.addEventListener("change", (e) => put({ wake_check: e.target.checked }).then(() => toast(e.target.checked ? "Сначала проверяю имя, потом отвечаю" : "Отклик сразу, как у Алисы")));
   $("#s-city").addEventListener("change", (e) => put({ city: e.target.value.trim() }).then(() => toast("Город сохранён")));
   $("#s-room").addEventListener("change", (e) => put({ speaker_room: e.target.value.trim() }).then(() => toast(e.target.value.trim() ? `Колонка стоит: ${e.target.value.trim()}` : "Комната колонки не задана")));
