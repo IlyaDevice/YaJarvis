@@ -12,6 +12,10 @@ pub const TOPIC: &str = "yajarvis-plugin";
 
 pub fn official_url(path: &str) -> String {
     let reference = option_env!("JARVIS_CATALOG_REF").unwrap_or("rust");
+    official_url_at(reference, path)
+}
+
+fn official_url_at(reference: &str, path: &str) -> String {
     format!(
         "https://raw.githubusercontent.com/{}/{reference}/plugins/{path}",
         crate::DEFAULT_REPO
@@ -116,16 +120,44 @@ fn official_items(index: &Value) -> Result<Vec<Value>, String> {
     Ok(items)
 }
 
-async fn fetch_official() -> Result<Vec<Value>, String> {
-    let url = official_url("index.json");
+async fn fetch_index(url: &str) -> Result<Vec<Value>, String> {
     let raw = tokio::time::timeout(
         Duration::from_secs(12),
-        crate::net::download(&url, 128 << 10),
+        crate::net::download(url, 128 << 10),
     )
     .await
     .map_err(|_| "GitHub не ответил вовремя")??;
     let index = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
     official_items(&index)
+}
+
+async fn fetch_official() -> Result<Vec<Value>, String> {
+    let branch = official_url("index.json");
+    if option_env!("JARVIS_PLUGIN_ASSETS").is_some() || crate::version() == "dev" {
+        return fetch_index(&branch).await;
+    }
+    let tag = official_url_at(&format!("v{}", crate::version()), "index.json");
+    let (branch, release) = tokio::join!(fetch_index(&branch), fetch_index(&tag));
+    match (branch, release) {
+        (Ok(mut items), Ok(released)) => {
+            set_native_versions(&mut items, &released);
+            Ok(items)
+        }
+        (Ok(mut items), Err(_)) => {
+            set_native_versions(&mut items, &[]);
+            Ok(items)
+        }
+        (Err(_), Ok(released)) => Ok(released),
+        (Err(error), Err(_)) => Err(error),
+    }
+}
+
+fn set_native_versions(items: &mut [Value], released: &[Value]) {
+    for item in items.iter_mut().filter(|item| item["kind"] == "rust") {
+        let published = released.iter().find(|row| row["id"] == item["id"] && row["kind"] == "rust");
+        item["version"] = published.map_or(Value::Null, |row| row["version"].clone());
+        item["reboot_on_update"] = published.map_or(Value::Null, |row| row["reboot_on_update"].clone());
+    }
 }
 
 fn topic_category(topics: &[Value]) -> &str {
@@ -183,6 +215,17 @@ impl Host {
 mod tests {
     use super::*;
     use std::future::ready;
+
+    #[test]
+    fn official_native_versions_follow_the_firmware_release() {
+        let mut items = vec![json!({"id":"chatgpt","kind":"rust","version":"0.2.5","name":"latest description"}),
+            json!({"id":"future","kind":"rust","version":"1.0.0"}), json!({"id":"weather","kind":"lua","version":"1.2.0"})];
+        set_native_versions(&mut items, &[json!({"id":"chatgpt","kind":"rust","version":"0.2.3"})]);
+        assert_eq!(items[0]["version"], "0.2.3");
+        assert_eq!(items[0]["name"], "latest description");
+        assert!(items[1]["version"].is_null());
+        assert_eq!(items[2]["version"], "1.2.0");
+    }
 
     #[test]
     fn available_catalog_keeps_the_voice_packages() {

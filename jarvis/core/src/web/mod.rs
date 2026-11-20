@@ -147,6 +147,7 @@ pub fn router(app: App) -> Router {
         .route("/api/plugins", get(plugins::list))
         .route("/api/plugins/catalog", get(plugins::catalog))
         .route("/api/plugins/install", post(plugins::install))
+        .route("/api/plugins/update-all", post(plugins::update_all))
         .route("/api/plugins/upload", post(plugins::upload).layer(DefaultBodyLimit::max(crate::plugins::install::ZIP_MAX + 1)))
         .route("/api/plugins/warned", post(plugins::warned))
         .route("/api/plugins/{id}/enable", post(plugins::enable))
@@ -172,7 +173,7 @@ pub fn router(app: App) -> Router {
         .route("/api/chatgpt/newchat", post(memory::new_chat))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
     Router::new()
-        .route("/healthz", get(|| async {Json(json!({"ready":true,"version":crate::version(),"modules":crate::plugins::compiled_modules()}))}))
+        .route("/healthz", get(|| async {Json(json!({"ready":true,"version":crate::version(),"modules":crate::plugins::compiled_modules(),"boot_id":crate::plugins::install::boot_id()}))}))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/setup", post(auth::setup))

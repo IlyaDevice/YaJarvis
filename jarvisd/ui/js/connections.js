@@ -5,7 +5,7 @@
 import { $, $$, act, api, esc, icon, plural, tip, toast } from "./core.js";
 import { S, page, reload } from "./main.js";
 import { PL, PL_KIND, plBadge, plCatItem, plCatalog, plEnable, plField, plIcon, plInstall, plInstalled, plItems, plLoad, plMarkWarned, plOfficialItems,
-  plOfficial, plRemove, plRepo, plSave, plSize, plState, plUpdate, plUpload, plValues, plWarnHtml, plWarned } from "./plugins.js";
+  plHasUpdate, plOfficial, plRemove, plRepo, plSave, plSize, plState, plUpdate, plUpdateAll, plUpdateCandidates, plUpload, plValues, plWarnHtml, plWarned } from "./plugins.js";
 
 // ---------------------------------------------------------------- характеры
 // ---------------------------------------------------------------- подключения
@@ -270,7 +270,8 @@ function plHtml(items) {
   const comm = items.filter((it) => !it.x.inst && !it.x.official);
   const offerMessage = plOfficialItems().length ? "Все официальные плагины уже стоят."
     : PL.official.error && !PL.official.request ? "Официальный каталог пока недоступен." : "Загружаю каталог…";
-  return `<section class="cn-group"><div class="cn-gh"><h2>Установлены</h2></div>
+  return `<section class="cn-group"><div class="cn-gh"><h2>Установлены</h2><span class="spacer"></span>
+      <button class="btn sm" id="pl-update-all" type="button"${plUpdateCandidates().length ? "" : " disabled"}>Обновить всё</button></div>
       ${inst.length ? `<div class="card cx-rows">${inst.map(plRow).join("")}</div>`
         : `<div class="card plg-empty">${icon("puzzle")}<p class="muted">Пока ни одного плагина. Ядро Джарвиса лёгкое: нужные умения ставятся отдельно — выберите ниже.</p></div>`}</section>
     <section class="cn-group"><div class="cn-gh"><h2>Можно поставить</h2><span class="meta">официальные, от автора YaJarvis</span></div>
@@ -312,7 +313,7 @@ export function drawConns() {
 
 // pluginBlock — плагин внутри окна сервиса или плагина: версия, вкл/выкл, обновить, удалить.
 function pluginBlock(p, c, own) {
-  const upd = c?.version && p.version && c.version !== p.version;
+  const upd = plHasUpdate(p, c);
   const meta = [p.version && `v${p.version}`, PL_KIND[p.kind] || p.kind, p.size && plSize(p.size), p.author].filter(Boolean);
   return `<div class="cx-plug"><div class="cx-plug-h"><span class="cx-plug-n">${icon("puzzle")}<b>${own ? "О плагине" : `Плагин «${esc(p.name)}»`}</b></span>
       <label class="sw" data-tip="${p.enabled ? "Выключить" : "Включить"}"><input type="checkbox" data-pl-on="${esc(p.id)}"${p.enabled ? " checked" : ""}><span class="tr"></span></label></div>
@@ -498,6 +499,8 @@ export async function connClick(e) {
     plCatalog(true, "community").then(drawConns),
   ]));
   const after = async () => { await reload(); drawConns(); };
+  const updateAll = t.closest("#pl-update-all");
+  if (updateAll) return plUpdateAll(updateAll, after);
   const inst = t.closest("[data-pl-install]");
   if (inst) {
     e.stopPropagation();

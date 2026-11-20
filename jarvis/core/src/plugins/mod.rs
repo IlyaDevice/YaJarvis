@@ -124,6 +124,8 @@ pub struct Manifest {
     pub settings: Vec<Setting>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub min_core: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reboot_on_update: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
     /// Права Lua-плагина (что ему можно): network, say, tools, commands…
@@ -419,7 +421,7 @@ impl Inner {
 impl Host {
     pub async fn install_module(self:&Arc<Self>,id:&str)->Result<Manifest,String> {
         let raw=modules::archive(id)?;
-        self.install(&raw,"core",true).await
+        self.install(&raw,"core",true).await.map(|result| result.manifest)
     }
     pub fn new(data_dir: PathBuf, hooks: Hooks) -> Arc<Host> {
         Arc::new(Host {
