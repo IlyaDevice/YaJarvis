@@ -1,5 +1,5 @@
 // Плеер: карточка на главной и отдельная страница.
-import { $, $$, Motion, act, api, copyText, esc, icon, jelly, toast } from "./core.js";
+import { $, $$, Motion, act, api, copyText, icon, jelly, toast } from "./core.js";
 import { S } from "./main.js";
 
 // ---------------------------------------------------------------- плеер на главной (Glass player, Kokonut UI «Now Playing», MIT)
@@ -7,6 +7,10 @@ import { S } from "./main.js";
 // её можно крутить пальцем — это перемотка. Тонарм опускается за 500 мс, эквалайзер дышит в такт,
 // цифры времени перекатываются (220 мс). Карточка всегда одной высоты.
 export let M = null, mAt = 0;
+const musicListeners = new Set();
+let musicReadPending = false;
+let musicWrites = 0;
+let musicRevision = 0;
 export const NP = { angle: 0, omega: 0, env: 0, held: false, scrub: null, lastA: 0, lastT: 0, samples: [], seekHeld: null };
 export const CRUISE = 200, SPIN_UP = 0.22, SPIN_DOWN = 0.2, COAST = 0.45;
 export const clockStr = (s) => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
@@ -51,19 +55,49 @@ export function volCardHtml() {
   </section>`;
 }
 
-export async function musicData() {
-  try { M = await api("GET", "/api/music"); mAt = Date.now(); } catch { return; }
-  drawPlayer(); drawPlayerPage();
+function renderMusic() {
+  drawPlayer();
   $("#nav-eq")?.classList.toggle("hidden", !mPlaying());
+  for (const listener of musicListeners) listener(M);
+}
+
+function acceptMusic(state) {
+  M = state;
+  mAt = Date.now();
+  renderMusic();
+}
+
+export function subscribeMusic(listener) {
+  listener(M);
+  musicListeners.add(listener);
+  return () => musicListeners.delete(listener);
+}
+
+export async function musicData() {
+  if (musicReadPending || musicWrites) return;
+  musicReadPending = true;
+  const revision = musicRevision;
+  try {
+    const state = await api("GET", "/api/music");
+    if (revision === musicRevision) acceptMusic(state);
+  } catch {
+    // Следующий опрос повторит запрос.
+  } finally {
+    musicReadPending = false;
+  }
 }
 
 // обложка: YouTube — крупная (если есть), иначе средняя; Яндекс Музыка — как пришла
-export function setArt(img, art, t) {
+export function setArt(img, art, fallback) {
   if (img.dataset.src === art) return;
   img.dataset.src = art; img.classList.remove("ok");
   if (!art) { img.removeAttribute("src"); return; }
-  img.onload = () => { if (img.naturalWidth <= 120 && img.src.includes("maxres")) { img.src = artOf(t, false); return; } img.classList.add("ok"); };
-  img.onerror = () => { if (img.src.includes("maxres")) img.src = artOf(t, false); };
+  const canFallback = () => fallback && fallback !== art && img.getAttribute("src") === art;
+  img.onload = () => {
+    if (img.naturalWidth <= 120 && canFallback()) { img.src = fallback; return; }
+    img.classList.add("ok");
+  };
+  img.onerror = () => { if (canFallback()) img.src = fallback; };
   img.src = art;
 }
 
@@ -72,7 +106,7 @@ export function drawPlayer() {
   if (!np || !M) return;
   const t = M.track || {}, on = M.playing || M.paused, ya = M.source === "yandex";
   np.dataset.state = M.loading && !on ? "loading" : !on ? "idle" : M.paused ? "paused" : "playing";
-  setArt($("#np-art"), on ? artOf(t, true) : "", t);
+  setArt($("#np-art"), on ? artOf(t, true) : "", artOf(t, false));
   $("#np-kicker").innerHTML = on ? `<span class="np-eq" aria-hidden="true"><i></i><i></i><i></i></span>${ya ? "Яндекс Музыка" : "YouTube"}${M.paused ? " · пауза" : ""}` : M.loading ? "ищу…" : "Плеер";
   swapText($("#np-title"), on ? t.Title || "…" : M.loading ? "Ищу и включаю…" : "Тишина");
   swapText($("#np-artist"), on ? t.Author || (ya ? "Яндекс Музыка" : "YouTube") : "Включите что-нибудь с YouTube или попросите Алису");
@@ -85,13 +119,25 @@ export function drawPlayer() {
 }
 
 // управление музыкой — общее для главной и страницы «Плеер»
-export function musicAct(a, b) {
+export function musicAct(a, b, { disableControl = true } = {}) {
   if (!M) return;
   if (b) { b.classList.remove("k-prev", "k-next", "k-pop"); void b.offsetWidth; b.classList.add(a === "prev" ? "k-prev" : a === "next" ? "k-next" : "k-pop"); }
-  if (a === "copy") { const l = musicLink(); if (l) copyText(l).then(() => toast("Ссылка скопирована"), () => toast("Не получилось скопировать", true)); return; }
-  if (a === "radio") { music({ action: "radio", on: !M.radio }, b).then((ok) => ok && toast(M.radio ? "Радио: после очереди — похожее" : "Радио выключено: после очереди тишина")); return; }
-  if (a === "prev" && M.source !== "yandex") { const h = (M.history || [])[1]; if (h) music({ action: "id", query: h.ID }, b); return; }
-  music({ action: a === "toggle" ? (M.paused ? "resume" : "pause") : a }, b);
+  const control = disableControl ? b : undefined;
+  if (a === "copy") {
+    const link = musicLink();
+    if (link) return copyText(link).then(() => toast("Ссылка скопирована"), () => toast("Не получилось скопировать", true));
+    return;
+  }
+  if (a === "radio") {
+    return music({ action: "radio", on: !M.radio }, control)
+      .then((ok) => ok && toast(M.radio ? "Радио: после очереди — похожее" : "Радио выключено: после очереди тишина"));
+  }
+  if (a === "prev" && M.source !== "yandex") {
+    const previous = M.history?.[1];
+    if (previous) return music({ action: "id", query: previous.ID }, control);
+    return;
+  }
+  return music({ action: a === "toggle" ? (M.paused ? "resume" : "pause") : a }, control);
 }
 
 // перекатывающиеся цифры: сменившаяся уезжает вверх, новая въезжает снизу (назад — наоборот)
@@ -136,21 +182,26 @@ export function playerSetup() {
     const q = $("#np-q").value.trim();
     if (!q) return;
     $("#np-q").value = "";
-    M = { ...(M || {}), loading: true }; drawPlayer();
-    music({ action: "play", query: q });
+    void playMusicQuery(q);
   });
   makeSliders($("#np-seek"), $("#vol"));
 }
 
 // перемотка и громкость — «желейные» ползунки (на главной и в плеере)
 export function makeSliders(seekEl, volEl) {
-  seekJ = jelly(seekEl, { label: "Перемотка", min: 0, max: Math.max(1, M?.dur || 1), value: 0, format: clockStr, keyStep: 5,
+  seekJ?.destroy();
+  volJ?.destroy();
+  NP.seekHeld = null;
+  if (volWant == null) volDrag = false;
+  const seek = jelly(seekEl, { label: "Перемотка", min: 0, max: Math.max(1, M?.dur || 1), value: 0, format: clockStr, keyStep: 5,
     disabled: () => !M?.dur,
     onInput: (v) => { NP.seekHeld = v; Motion.add(npAnim); },
     onChange: (v) => { NP.seekHeld = null; if (!M?.dur) return; M.pos = v; mAt = Date.now(); Motion.add(npAnim); music({ action: "seek", sec: Math.round(v) }); } });
-  volJ = jelly(volEl, { label: "Громкость колонки", min: 0, max: 10, step: 1, value: S.speaker.volume > 0 ? S.speaker.volume : 5, format: (v) => String(v),
+  const volume = jelly(volEl, { label: "Громкость колонки", min: 0, max: 10, step: 1, value: S.speaker.volume >= 0 ? S.speaker.volume : 5, format: (v) => String(v),
     onInput: (v) => { volDrag = true; volShow(v); },
     onChange: (v) => setVolume(v) });
+  seekJ = seek;
+  volJ = volume;
   const card = volEl.closest(".vol-card");
   card?.addEventListener("click", (e) => {
     const b = e.target.closest("[data-vol]");
@@ -162,6 +213,18 @@ export function makeSliders(seekEl, volEl) {
     volJ.set(v, true); volShow(v); setVolume(v);
   });
   if (S.speaker.volume >= 0) volShow(S.speaker.volume);
+  return () => {
+    seek.destroy();
+    volume.destroy();
+    if (seekJ === seek) {
+      seekJ = null;
+      NP.seekHeld = null;
+    }
+    if (volJ === volume) {
+      volJ = null;
+      if (volWant == null) volDrag = false;
+    }
+  };
 }
 
 // число и деления под ползунком; отправка с задержкой — чтобы частые «+» не долбили колонку
@@ -181,10 +244,29 @@ export function setVolume(v) {
 }
 
 export async function music(body, btn) {
-  let ok = false;
-  await act(btn, async () => { M = await api("POST", "/api/music", body); mAt = Date.now(); ok = true; });
-  drawPlayer(); drawPlayerPage();
-  $("#nav-eq")?.classList.toggle("hidden", !mPlaying());
+  musicRevision++;
+  musicWrites++;
+  try {
+    let state;
+    await act(btn, async () => { state = await api("POST", "/api/music", body); });
+    if (!state) return false;
+    acceptMusic(state);
+    return true;
+  } finally {
+    musicWrites--;
+  }
+}
+
+export async function playMusicQuery(query) {
+  const before = M;
+  const loading = { ...before, loading: true };
+  M = loading;
+  renderMusic();
+  const ok = await music({ action: "play", query });
+  if (!ok && M === loading) {
+    M = before || { loading: false };
+    renderMusic();
+  }
   return ok;
 }
 
@@ -198,137 +280,21 @@ export function drawVolume() {
   if (v != null && v >= 0) { volJ.set(v, true); volShow(v); }
 }
 
-// ---------------------------------------------------------------- плеер — отдельная страница
-export const artOf = (t, big) => !t?.ID ? "" : M?.source === "yandex" ? (M.cover || "") : `https://i.ytimg.com/vi/${t.ID}/${big ? "maxresdefault" : "mqdefault"}.jpg`;
-export const musicLink = () => !M?.track?.ID ? "" : M.link || `https://youtu.be/${M.track.ID}`;
-
-export function viewPlayer() {
-  $("#view").innerHTML = `<header class="ph"><h1>Плеер</h1><p class="sub">Всё, что играет на колонке: YouTube Джарвиса и Яндекс Музыка Алисы</p></header>
-  <section class="card pl-hero" id="plh" data-state="idle"><img class="pl-glow" id="pl-glow" alt="">
-    <div class="pl-top">
-      <div class="pl-cover" id="pl-cover">${icon("music")}<img id="pl-img" alt=""></div>
-      <div class="pl-meta">
-        <div class="pl-kick"><span class="np-eq" aria-hidden="true"><i></i><i></i><i></i></span><span id="pl-kick">Тишина</span></div>
-        <h2 class="pl-title mq-line" id="pl-title"></h2>
-        <div class="pl-artist" id="pl-artist"></div>
-        <div class="pl-chips" id="pl-chips"></div>
-      </div>
-    </div>
-    <div class="pl-bottom">
-      <div class="progress pl-seek"><span class="roll" id="pl-cur"></span><div id="pl-seek"></div><span id="pl-dur"></span></div>
-      <div class="pl-bar">
-        <div class="pl-l">
-          <button class="cbtn" type="button" data-p="radio" id="pl-radio" data-tip="Радио: когда очередь кончится, играть похожее" aria-label="Радио">${icon("radio")}</button>
-          <button class="cbtn" type="button" data-p="copy" id="pl-copy" data-tip="Скопировать ссылку" aria-label="Скопировать ссылку">${icon("link")}</button>
-          <a class="cbtn" id="pl-open" target="_blank" rel="noopener" data-tip="Открыть на YouTube" aria-label="Открыть в браузере">${icon("ext")}</a>
-        </div>
-        <div class="pl-controls">
-          <button class="cbtn" type="button" data-p="stop" data-tip="Выключить" aria-label="Выключить">${icon("stop", "solid")}</button>
-          <button class="cbtn" type="button" data-p="prev" id="pl-prev" aria-label="Предыдущий">${icon("prev", "solid")}</button>
-          <button class="cbtn big" type="button" data-p="toggle" id="pl-toggle" aria-label="Пауза">${icon("play", "solid")}</button>
-          <button class="cbtn" type="button" data-p="next" id="pl-next" aria-label="Следующий">${icon("skip", "solid")}</button>
-        </div>
-        <div class="pl-vol" id="np-vol" title="Громкость колонки">${icon("speaker")}<div id="vol"></div><b class="vol-big" id="vol-big">–</b></div>
-      </div>
-    </div>
-  </section>
-  <div class="cols stagger">
-    <section class="card"><div class="card-head"><h2>Очередь</h2><span class="meta" id="pl-qmeta"></span></div>
-      <form class="q-add" id="pl-form"><label class="q-field">${icon("search")}<input type="text" id="pl-q" placeholder="Название или ссылка на YouTube" autocomplete="off" aria-label="Что включить"></label>
-        <button class="cbtn" type="submit" data-a="play" data-tip="Включить сейчас" aria-label="Включить сейчас">${icon("play", "solid")}</button>
-        <button class="cbtn" type="submit" data-a="queue" data-tip="В очередь" aria-label="В очередь">${icon("plus")}</button></form>
-      <div class="qlist" id="pl-queue"></div></section>
-    <section class="card"><div class="card-head"><h2>Недавно играло</h2><span class="meta">YouTube · нажмите, чтобы включить</span></div><div class="qlist" id="pl-hist"></div></section>
-  </div>`;
-  $("#plh").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-p]");
-    if (!b || b.disabled) return;
-    musicAct(b.dataset.p, b);
-  });
-  $("#pl-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const q = $("#pl-q").value.trim(), a = e.submitter?.dataset.a || "play";
-    if (!q) return;
-    $("#pl-q").value = "";
-    if (a === "play") { M = { ...(M || {}), loading: true }; drawPlayerPage(); }
-    music({ action: a, query: q }).then((ok) => ok && a === "queue" && toast("Добавлено в очередь"));
-  });
-  const onRow = (e) => {
-    const rm = e.target.closest("[data-un]");
-    if (rm) { e.stopPropagation(); music({ action: "unqueue", index: +rm.dataset.un }); return; }
-    const r = e.target.closest(".qrow[data-id]");
-    if (!r || r.classList.contains("cur")) return;
-    if (r.dataset.qi != null) music({ action: "unqueue", index: +r.dataset.qi }).then(() => music({ action: "id", query: r.dataset.id }));
-    else music({ action: "id", query: r.dataset.id });
-  };
-  $("#pl-queue").addEventListener("click", onRow);
-  $("#pl-hist").addEventListener("click", onRow);
-  makeSliders($("#pl-seek"), $("#vol"));
-  drawVolume();
-  if (M) drawPlayerPage();
-  musicData();
+export function artOf(track, big, state = M) {
+  if (!track?.ID) return "";
+  if (state?.source === "yandex") return state.cover || "";
+  return `https://i.ytimg.com/vi/${encodeURIComponent(track.ID)}/${big ? "maxresdefault" : "mqdefault"}.jpg`;
 }
 
-export function swapText(el, text) {
+export function musicLink(state = M) {
+  return state?.track?.ID ? state.link || `https://youtu.be/${encodeURIComponent(state.track.ID)}` : "";
+}
+
+function swapText(el, text) {
   if (el.title === text && el.firstChild) return;
   el.title = text;
-  if (el.classList.contains("mq-line")) {   // не влезает — бежит туда и обратно (как в yapanel)
-    el.innerHTML = `<span class="mq">${esc(text)}</span>`;
-    el.classList.remove("run");
-    requestAnimationFrame(() => {
-      const over = el.scrollWidth - el.clientWidth;
-      if (over > 4) { el.style.setProperty("--mq", `${-over - 24}px`); el.style.setProperty("--mqt", `${Math.max(6, over / 28)}s`); el.classList.add("run"); }
-    });
-  } else el.textContent = text;
-  el.classList.remove("swap"); void el.offsetWidth; el.classList.add("swap");
-}
-
-export function qrowHtml(t, { badge = "", cur = false, qi = null, art = "" } = {}) {
-  const img = art || (t.ID && !/^\d+$/.test(t.ID) ? `https://i.ytimg.com/vi/${esc(t.ID)}/mqdefault.jpg` : "");
-  return `<div class="qrow${cur ? " cur" : ""}" data-id="${esc(t.ID)}"${qi != null ? ` data-qi="${qi}"` : ""}${cur ? "" : ` role="button" tabindex="0"`}>
-    ${img ? `<img src="${esc(img)}" alt="" loading="lazy">` : `<span class="qph"></span>`}<span class="tt"><b>${esc(t.Title || "…")}</b><span>${esc(t.Author || "")}</span></span>${badge}
-    ${qi != null ? `<button class="ib" type="button" data-un="${qi}" aria-label="Убрать из очереди" data-tip="Убрать">${icon("x")}</button>` : ""}</div>`;
-}
-
-export function drawPlayerPage() {
-  const h = $("#plh");
-  if (!h || !M) return;
-  const t = M.track || {}, on = M.playing || M.paused, ya = M.source === "yandex";
-  h.dataset.state = M.loading && !on ? "loading" : !on ? "idle" : M.paused ? "paused" : "playing";
-  const art = on ? artOf(t, true) : "", glow = $("#pl-glow");
-  setArt($("#pl-img"), art, t);
-  const g = art.replace("maxresdefault", "mqdefault");
-  if (glow.dataset.src !== g) { glow.dataset.src = g; if (g) glow.src = g; else glow.removeAttribute("src"); }
-  swapText($("#pl-title"), on ? t.Title || "…" : M.loading ? "Ищу и включаю…" : "Ничего не играет");
-  swapText($("#pl-artist"), on ? t.Author || (ya ? "Яндекс Музыка" : "YouTube") : "Скажите «Джарвис, включи с ютуба …» или попросите Алису");
-  $("#pl-kick").textContent = on ? `${ya ? "Яндекс Музыка" : "YouTube"}${M.paused ? " · пауза" : ""}` : M.loading ? "YouTube · загрузка" : "Тишина";
-  const chips = on ? [ya ? "через Алису" : "через Джарвиса", M.album && `Альбом «${M.album}»`, !ya && M.radio && "радио"].filter(Boolean) : [];
-  const link = on ? musicLink() : "", open = $("#pl-open");
-  if (link) open.href = link; else open.removeAttribute("href");
-  open.classList.toggle("hidden", !link);
-  open.dataset.tip = ya ? "Открыть в Яндекс Музыке" : "Открыть на YouTube";
-  const ch = chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("");
-  if ($("#pl-chips").dataset.h !== ch) { $("#pl-chips").dataset.h = ch; $("#pl-chips").innerHTML = ch; }
-  $("#pl-dur").textContent = M.dur ? clockStr(M.dur) : "";
-  $("#pl-toggle").innerHTML = icon(M.paused || !on ? "play" : "pause", "solid");
-  $("#pl-toggle").disabled = !on;
-  $("#pl-prev").disabled = !on || (!ya && (M.history || []).length < 2);
-  $("#pl-next").disabled = !on || (!ya && !(M.next || []).length);
-  $("#pl-radio").classList.toggle("on", !!M.radio);
-  $("#pl-radio").classList.toggle("hidden", ya);
-  $("#pl-copy").classList.toggle("hidden", !link);
-  let qh;
-  if (ya) qh = on ? qrowHtml(t, { cur: true, badge: `<span class="np-eq q-eq" aria-hidden="true"><i></i><i></i><i></i></span>`, art: M.cover }) + `<p class="empty">Очередью Яндекс Музыки управляет Алиса: «Алиса, следующий трек», «Алиса, включи похожее».</p>` : "";
-  else {
-    const next = M.next || [], nq = M.queue || 0;
-    qh = (on ? qrowHtml(t, { cur: true, badge: `<span class="np-eq q-eq" aria-hidden="true"><i></i><i></i><i></i></span>` }) : "") +
-      next.map((x, i) => qrowHtml(x, { qi: i < nq ? i : null, badge: i < nq ? `<span class="badge">${i + 1}</span>` : `<span class="badge">${M.radio ? "похожее" : "дальше"}</span>` })).join("");
-  }
-  if (!qh) qh = `<p class="empty">Очередь пуста. Найдите трек выше и нажмите «+» или скажите «Джарвис, добавь в очередь …»</p>`;
-  if ($("#pl-queue").dataset.h !== qh) { $("#pl-queue").dataset.h = qh; $("#pl-queue").innerHTML = qh; }
-  $("#pl-qmeta").textContent = ya ? "Яндекс Музыка" : `${M.queue || 0} в очереди${M.radio ? " · дальше похожее" : ""}`;
-  const hist = (M.history || []).filter((x) => !(on && !ya && x.ID === t.ID)).slice(0, 12);
-  const hh = hist.length ? hist.map((x) => qrowHtml(x)).join("") : `<p class="empty">Здесь появится то, что включали с YouTube</p>`;
-  if ($("#pl-hist").dataset.h !== hh) { $("#pl-hist").dataset.h = hh; $("#pl-hist").innerHTML = hh; }
-  Motion.add(npAnim);
+  el.textContent = text;
+  el.classList.remove("swap");
+  void el.offsetWidth;
+  el.classList.add("swap");
 }
