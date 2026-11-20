@@ -6,7 +6,7 @@
   let scanStatus = $state("");
   let scanning = $state(false);
   let checking = $state(false);
-  let ip = $state("");
+  let address = $state("");
 
   async function scan() {
     scanning = true;
@@ -31,7 +31,7 @@
 
     checking = true;
     try {
-      const speaker = await api("POST", "/api/check", { ip: ip.trim() });
+      const speaker = await api("POST", "/api/check", { ip: address.trim() });
       onSelect(speaker);
     } catch (error) {
       alert(error.message);
@@ -41,7 +41,7 @@
   }
 
   function speakerDetails(speaker) {
-    const details = [speaker.ip];
+    const details = [speaker.adb_address ?? speaker.ip];
     if (speaker.free_mb) details.push(`свободно ${speaker.free_mb} МБ`);
     if (speaker.ram_mb) details.push(`${speaker.ram_mb} МБ памяти`);
     return details.join(" · ");
@@ -95,12 +95,15 @@
   </div>
 
   <details class={styles.manual}>
-    <summary>Указать IP вручную</summary>
+    <summary>Указать адрес ADB вручную</summary>
     <form class={styles.addressForm} onsubmit={checkAddress}>
-      <input type="text" placeholder="192.168.1.50" aria-label="IP-адрес колонки" bind:value={ip}>
+      <input type="text" placeholder="192.168.1.50:5556" aria-label="Адрес ADB колонки" bind:value={address}>
       <button class="btn" type="submit" disabled={checking}>Проверить</button>
     </form>
-    <p class="hint">IP есть в приложении «Дом с Алисой» → колонка → «Информация об устройстве».</p>
+    <p class="hint">
+      IP есть в приложении «Дом с Алисой» → колонка → «Информация об устройстве».
+      Порт указывайте через двоеточие. По умолчанию используется 5555.
+    </p>
   </details>
   <a class={styles.helpLink} href="https://hackalice.me/" target="_blank" rel="noopener noreferrer">
     Как подготовить колонку <span aria-hidden="true">↗</span>

@@ -1,6 +1,5 @@
 // Каркас: вход, состояние с колонки, опрос, сайдбар, маршруты, запуск.
 import { viewProfile } from "./assistant.js";
-import { viewCharacters } from "./characters.js";
 import { CH, ST, chartsData, navPill, statsData, viewCharts } from "./charts.js";
 import { viewConnections } from "./connections.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
@@ -17,13 +16,19 @@ export let S = null;          // состояние с колонки
 export let journal = [];
 export let page = "home";
 export let pollTimer = null;
-let logsView;
+let svelteView;
+let routedHash;
+
+const svelteViews = new Map([
+  ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
+  ["characters", async () => (await import("../Characters/mountCharacters.js")).mountCharacters],
+]);
 
 // ---------------------------------------------------------------- вход
 export let gateSetup = false;
 export function showGate(setup) {
   gateSetup = !!setup;
-  closeLogs();
+  closeSvelteView();
   $("#app").classList.add("hidden");
   $("#gate").classList.remove("hidden");
   $("#gate-text").textContent = setup ? "Придумайте пароль для настроек колонки. Он понадобится, чтобы зайти сюда снова." : "Пароль от настроек колонки";
@@ -82,7 +87,7 @@ export async function start() {
 }
 
 export async function poll() {
-  const refreshLogs = logsView?.refresh;
+  const refreshLogs = svelteView?.refresh;
   let d;
   try { d = await api("GET", "/api/journal"); } catch { return; }
   if (d.version && S.version && d.version !== S.version) { location.reload(); return; }   // колонку обновили — берём новую панель
@@ -93,7 +98,7 @@ export async function poll() {
   if (page === "home") { homeData(); drawVolume(); if (Date.now() - ST.at > 15000) statsData(); if (Date.now() - HL.at > 5000) homeLogs(); }
   if (page === "player") drawVolume();
   if (page === "charts" && Date.now() - CH.at > 15000) chartsData(false);
-  if (refreshLogs && refreshLogs === logsView?.refresh) void refreshLogs();
+  if (refreshLogs && refreshLogs === svelteView?.refresh) void refreshLogs();
   musicData();
   clearTimeout(poll.fast);
   if (S.speaker.talking && page === "home") poll.fast = setTimeout(poll, 500);
@@ -163,42 +168,47 @@ $("#add-profile").addEventListener("click", () => go("#p/new"));
 export function go(hash) { location.hash = hash; }
 window.addEventListener("hashchange", () => {
   if (!S || $("#app").classList.contains("hidden")) return;
-  if (dirty && !confirm("Есть несохранённые изменения. Уйти без сохранения?")) { history.back(); return; }
+  if (dirty && !confirm("Есть несохранённые изменения. Уйти без сохранения?")) {
+    history.replaceState(history.state, "", routedHash || location.pathname + location.search);
+    return;
+  }
   route();
 });
 window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
 
-async function viewLogs(target) {
+async function viewSvelte(target, load) {
   target.replaceChildren();
   const view = {};
-  logsView = view;
+  svelteView = view;
   try {
-    const { mountLogs } = await import("../Logs/mountLogs.js");
-    if (logsView === view) Object.assign(view, mountLogs(target));
+    const mount = await load();
+    if (svelteView === view) Object.assign(view, mount(target));
   } catch (error) {
-    if (logsView === view) target.textContent = error.message;
+    if (svelteView === view) target.textContent = error.message;
   }
 }
 
-function closeLogs() {
-  const view = logsView;
-  logsView = null;
+function closeSvelteView() {
+  const view = svelteView;
+  svelteView = null;
   void view?.dispose?.();
 }
 
 export function route() {
-  closeLogs();
+  closeSvelteView();
   setDirty(false);
   $("#side").classList.remove("open");
   document.body.classList.remove("menu-open");
-  const h = location.hash.slice(1) || "home";
+  routedHash = location.hash;
+  const h = routedHash.slice(1) || "home";
+  const loadSvelteView = svelteViews.get(h);
   const v0 = $("#view"); v0.oninput = v0.onchange = v0.onclick = null;   // обработчики прошлой страницы
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
   else if (h.startsWith("connections/")) { page = "connections"; viewConnections(h.slice(12)); }
   else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
-  else if (h === "logs") {
-    page = "logs";
-    void viewLogs(v0);
+  else if (loadSvelteView) {
+    page = h;
+    void viewSvelte(v0, loadSvelteView);
   }
   else if (h === "training") {
     page = "training";
@@ -218,8 +228,8 @@ export function route() {
     }
   }
   else {
-    page = ["home", "player", "charts", "characters", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
-    ({ home: viewHome, player: viewPlayer, charts: viewCharts, characters: viewCharacters, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
+    page = ["home", "player", "charts", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
+    ({ home: viewHome, player: viewPlayer, charts: viewCharts, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);
