@@ -49,20 +49,18 @@ impl PeerConnectionEventHandler for Handler {
         tokio::spawn(async move {
             let mut decoder=match opus::Decoder::new(){Ok(d)=>d,Err(e)=>{emit(&services,&id,"error",e.into()).await;return;}};
             let mut packets=BTreeMap::<u16,Vec<u8>>::new();let mut expected=None;let mut due=None;let mut last=Instant::now();let mut frame=960;
-            let mut tick=tokio::time::interval(Duration::from_millis(10));tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_heard = None::<Instant>;
             loop {tokio::select!{
                 biased;
                 _=stop.changed()=>break,
-                event=track.poll()=>match event{
-                    Some(TrackRemoteEvent::OnRtpPacket(packet))=>{
-                        let sequence=packet.header.sequence_number;if packet.payload.len()>65535{break;}
-                        let next=*expected.get_or_insert(sequence);if sequence.wrapping_sub(next)>=32768{continue;}
-                        packets.insert(sequence,packet.payload.to_vec());last=Instant::now();if due.is_none(){due=Some(last+Duration::from_millis(60));}
-                        if packets.len()>64{if let Some(farthest)=packets.keys().max_by_key(|k|k.wrapping_sub(next)).copied(){packets.remove(&farthest);}}
-                    },Some(TrackRemoteEvent::OnEnded)|None=>break,_=>{},
-                },
-                _=tick.tick(),if due.is_some()=>{
-                    let now=Instant::now();if now<due.unwrap(){continue;}
+                _=async {
+                    if let Some(deadline) = due {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                }=>{
+                    let now=Instant::now();
                     if packets.is_empty() && now.duration_since(last)>Duration::from_millis(120){due=None;expected=None;continue;}
                     let next=expected.unwrap();let packet=packets.remove(&next);let fec=packet.is_none() && packets.contains_key(&next.wrapping_add(1));
                     let input=packet.as_deref().or_else(||if fec{packets.get(&next.wrapping_add(1)).map(Vec::as_slice)}else{None});
@@ -71,10 +69,27 @@ impl PeerConnectionEventHandler for Handler {
                     // Keep the RTP playout clock anchored. Scheduling from `now` adds
                     // every timer's lateness to all subsequent packets and builds seconds of lag.
                     let next_due=due.unwrap()+Duration::from_secs_f64(frame as f64/48000.0);
-                    due=Some(if now.saturating_duration_since(next_due)>Duration::from_millis(120){now}else{next_due});
-                    if pcm.iter().any(|v|v.unsigned_abs()>400){emit(&services,&id,"heard",Value::Null).await;}
+                    due=Some(if now.saturating_duration_since(next_due)>Duration::from_millis(120){
+                        now+Duration::from_secs_f64(frame as f64/48000.0)
+                    }else{next_due});
+                    // The first voiced frame still updates latency immediately. During
+                    // speech a periodic heartbeat is enough to keep the dialog active.
+                    if last_heard.is_none_or(|time| now.duration_since(time)>=Duration::from_millis(200))
+                        && pcm.iter().any(|v|v.unsigned_abs()>400)
+                    {
+                        emit(&services,&id,"heard",Value::Null).await;
+                        last_heard=Some(now);
+                    }
                     let data:Vec<u8>=pcm.iter().flat_map(|v|v.to_le_bytes()).collect();emit(&services,&id,"audio",B64.encode(data).into()).await;
-                }
+                },
+                event=track.poll()=>match event{
+                    Some(TrackRemoteEvent::OnRtpPacket(packet))=>{
+                        let sequence=packet.header.sequence_number;if packet.payload.len()>65535{break;}
+                        let next=*expected.get_or_insert(sequence);if sequence.wrapping_sub(next)>=32768{continue;}
+                        packets.insert(sequence,packet.payload.to_vec());last=Instant::now();if due.is_none(){due=Some(last+Duration::from_millis(60));}
+                        if packets.len()>64{if let Some(farthest)=packets.keys().max_by_key(|k|k.wrapping_sub(next)).copied(){packets.remove(&farthest);}}
+                    },Some(TrackRemoteEvent::OnEnded)|None=>break,_=>{},
+                },
             }}
         });
     }
