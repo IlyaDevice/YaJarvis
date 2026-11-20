@@ -201,7 +201,6 @@ textarea.code { font: 12px/20px var(--mono); word-break: break-all; }
 :is(input, select, textarea):hover { border-color: var(--line3); }
 :is(input[type=text], input[type=password], input[type=number], select, textarea):focus { border-color: var(--fg2); box-shadow: 0 0 0 3px rgb(237 237 237 / .08); }
 input[type=range] { width: 100%; height: 20px; margin: 0; accent-color: var(--fg); display: block; }
-.scale { display: flex; justify-content: space-between; font-size: 12px; line-height: 16px; color: var(--fg3); }
 .val { color: var(--fg); font-family: var(--mono); font-size: 12px; margin-left: auto; }
 .row > input[type=text], .row > input[type=password] { flex: 1; min-width: 180px; width: auto; }
 .row.nw { flex-wrap: nowrap; }
@@ -805,13 +804,6 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 .qrow:hover .ib, .qrow .ib:focus-visible { opacity: 1; }
 .empty { color: var(--fg2); font-size: 13.5px; padding: 12px 8px; }
 
-/* ---------- ночной режим ---------- */
-.night-t { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
-.night-t .f { width: 128px; }
-.night-sl { display: grid; gap: 16px; }
-.night-sl .f > label { font-weight: 600; color: var(--ink2); }
-.moon { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--acc-soft); color: var(--acc-ink); }
-.moon .ic { width: 16px; height: 16px; }
 
 @media (max-width: 860px) {
   .view { padding: 20px 16px 64px; }
@@ -831,7 +823,6 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 }
 .pl-hero { margin-bottom: 14px; }
 .pl-hero[data-state="idle"] .pl-seek, .pl-hero[data-state="loading"] .pl-seek { visibility: hidden; }
-.night-sl .val { color: var(--acc-ink); font-family: var(--sans); font-size: 13px; font-weight: 700; }
 
 /* ---------- меню без границы и мягкие bento-карточки ---------- */
 :root { --soft: color-mix(in srgb, #1d1d25 82%, transparent); --soft-line: rgb(255 255 255 / .045); --soft-hi: rgb(255 255 255 / .05); }
@@ -1203,7 +1194,6 @@ h1 { font-size: 34px; line-height: 40px; }
 .xm-dev b, .xm-dev small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xm-dev small { color: var(--fg2); font-size: 12px; }
 .xm-dev.off { opacity: .55; }
-.home-use { display: flex; flex-direction: column; gap: 14px; }
 .sw.hu { align-items: flex-start; }
 .sw.hu .tr { margin-top: 2px; }
 .hu-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
