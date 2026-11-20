@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 
 
@@ -93,6 +94,19 @@ def lifecycle(data, ids):
         assert len(plugins["installed"]) == 1 and plugins["installed"][0]["running"], plugins
         root = data / "plugins" / plugin_id
         assert (root / row["main"]).is_file()
+        if plugin_id == "chatgpt":
+            try:
+                request("/api/plugins/install", "POST", {"id": plugin_id, "update": True, "expected_version": "100.0.0"})
+            except urllib.error.HTTPError as error:
+                assert error.code == 400 and "100.0.0" in error.read().decode(), error
+            else:
+                raise AssertionError("A stale package was accepted as the requested update")
+            same = {"id": plugin_id, "expected_version": row["version"]}
+            batch = request("/api/plugins/update-all", "POST", [same, {**same, "expected_version": "100.0.0"}])
+            assert not batch["updated"] and not batch["reboot_from"], batch
+            assert len(batch["errors"]) == 1 and batch["errors"][0]["id"] == plugin_id, batch
+            current, = request("/api/plugins")["installed"]
+            assert current["running"] and current["version"] == row["version"], current
         if plugin_id == "training":
             assert request("/api/train/records")["local"] == 0
             assert request("/api/train/model", "PUT", raw=(data / "wake.bin").read_bytes())["ok"]

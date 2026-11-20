@@ -12,6 +12,43 @@ use std::{
 pub const ZIP_MAX: usize = 24 << 20;
 pub const UNPACK_MAX: usize = 48 << 20;
 
+#[derive(serde::Deserialize)]
+pub struct InstallRequest {
+    pub id: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub expected_version: String,
+    #[serde(default)]
+    pub update: bool,
+}
+
+pub struct Installation {
+    pub manifest: Manifest,
+    pub changed: bool,
+    pub reboot_from: Option<String>,
+}
+
+pub fn boot_id() -> Option<String> {
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    Some(id.trim().to_owned()).filter(|id| !id.is_empty())
+}
+
+fn reboot_origin(data_dir: &Path) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    if data_dir == Path::new("/data/opt/jarvisd")
+        && unsafe { libc::geteuid() } == 0
+        && Path::new("/etc/init.d/S98jarvisd").is_file()
+        && Path::new("/sbin/reboot").is_file()
+        && Path::new("/system/vendor/quasar/launch.json").is_file()
+        && let Some(id) = boot_id()
+    {
+        return Ok(id);
+    }
+    let _ = data_dir;
+    Err("Для обновления плагина нужна перезагрузка колонки, здесь она недоступна".into())
+}
+
 /// Разобрать и проверить архив. Архив может лежать как есть или в одной папке верхнего уровня (как его делает GitHub).
 pub fn unpack(raw: &[u8]) -> Result<(BTreeMap<String, Vec<u8>>, Manifest), String> {
     if raw.len() > ZIP_MAX {
@@ -81,9 +118,21 @@ pub fn free_mb(dir: &Path) -> u64 {
 
 impl Host {
     /// Поставить (или обновить) плагин из zip. source — owner/repo или file.
-    pub async fn install(self: &Arc<Self>, raw: &[u8], source: &str, official: bool) -> Result<Manifest, String> {
+    pub async fn install(self: &Arc<Self>, raw: &[u8], source: &str, official: bool) -> Result<Installation, String> {
+        self.install_archive(raw, source, official, None).await
+    }
+
+    async fn install_archive(self: &Arc<Self>, raw: &[u8], source: &str, official: bool, request: Option<&InstallRequest>) -> Result<Installation, String> {
         let _g = self.install_lock.lock().await; // две установки сразу делили бы одну временную папку
         let (files, m) = unpack(raw)?;
+        if let Some(request) = request {
+            if (official || request.update) && m.id != request.id {
+                return Err("В архиве другой плагин".into());
+            }
+            if !request.expected_version.is_empty() && m.version != request.expected_version {
+                return Err(format!("В доступном архиве версия {}, запрошена {}. Обновите каталог и попробуйте снова.", m.version, request.expected_version));
+            }
+        }
         if m.kind == "module" && !(official && source == "core") {
             return Err("Rust-модуль выбирается из официального каталога".into());
         }
@@ -96,6 +145,29 @@ impl Host {
         if later {
             return Err(format!("плагину нужен Джарвис {} или новее — сначала обновите Джарвиса", m.min_core));
         }
+        let (previous, previous_state) = {
+            let state = self.inner.lock().unwrap();
+            (state.plugins.get(&m.id).map(|p| (p.manifest.clone(), p.err.clone())), state.state.get(&m.id).cloned())
+        };
+        let had = previous.is_some();
+        let updating = request.is_some_and(|r| r.update);
+        if updating && (!had || !previous_state.as_ref().is_some_and(|s| s.source.eq_ignore_ascii_case(source))) {
+            return Err("Исходный плагин для обновления не найден".into());
+        }
+        if let Some((prior, _)) = &previous {
+            if (updating || official) && super::newer(&prior.version, &m.version) {
+                return Err(format!("На колонке уже стоит более новая версия {}", prior.version));
+            }
+            if updating && m.version == prior.version {
+                return Ok(Installation { manifest: prior.clone(), changed: false, reboot_from: None });
+            }
+        }
+        let reboot_from = if m.reboot_on_update && previous.as_ref().is_some_and(|(prior, _)| prior.version != m.version)
+            && previous_state.as_ref().is_some_and(|state| state.enabled) {
+            Some(reboot_origin(&self.data_dir)?)
+        } else {
+            None
+        };
         let total: usize = files.values().map(Vec::len).sum();
         let free = free_mb(&self.data_dir);
         if free > 0 && free < (total >> 20) as u64 + 3 {
@@ -113,11 +185,6 @@ impl Host {
                 return Err(e.to_string());
             }
         }
-        let (previous, previous_state) = {
-            let state = self.inner.lock().unwrap();
-            (state.plugins.get(&m.id).map(|p| (p.manifest.clone(), p.err.clone())), state.state.get(&m.id).cloned())
-        };
-        let had = previous.is_some();
         let bak = self.dir().join(format!("{}.old", m.id));
         if bak.exists() {
             std::fs::remove_dir_all(&bak).map_err(|e| e.to_string())?;
@@ -154,10 +221,10 @@ impl Host {
             self.save(&g);
             en
         };
-        if enabled && !later {
+        if enabled && reboot_from.is_none() {
             self.start(&m.id).await;
         }
-        if m.kind == "rust" && enabled {
+        if m.kind == "rust" && enabled && reboot_from.is_none() {
             let error = self.inner.lock().unwrap().plugins.get(&m.id)
                 .filter(|p| !p.rt.as_ref().is_some_and(super::Runtime::running))
                 .map(|p| p.err.clone());
@@ -191,13 +258,15 @@ impl Host {
         }
         let _ = std::fs::remove_dir_all(&bak);
         log::info!("плагины: установлен {} {} ({source})", m.id, m.version);
-        Ok(m)
+        Ok(Installation { manifest: m, changed: true, reboot_from })
     }
 
     /// Скачать релиз репозитория GitHub и поставить. tag "" — последний релиз.
     /// Ищется jarvis-plugin-<arch>.zip, иначе jarvis-plugin.zip; для официальных — plugin-<id>[-arch].zip
     /// в релизе самого Джарвиса.
-    pub async fn install_repo(self: &Arc<Self>, repo: &str, id: &str, tag: &str) -> Result<Manifest, String> {
+    pub async fn install_repo(self: &Arc<Self>, request: &InstallRequest) -> Result<Installation, String> {
+        let repo = if request.repo.is_empty() { crate::DEFAULT_REPO } else { &request.repo };
+        let id = request.id.as_str();
         if !super::catalog::valid_repo(repo) {
             return Err("репозиторий — вида owner/name".into());
         }
@@ -211,14 +280,14 @@ impl Host {
                 items.iter().any(|item| item["id"] == id && item["kind"] == "rust")
             };
             if native {
-                let raw = download_official_rust(id, tag).await?;
-                return self.install(&raw, crate::DEFAULT_REPO, true).await;
+                let raw = download_official_rust(id).await?;
+                return self.install_archive(&raw, crate::DEFAULT_REPO, true, Some(request)).await;
             }
         }
         #[cfg(feature = "lua")]
-        if official && tag.is_empty() {
+        if official {
             let raw = download_official_lua(id).await?;
-            return self.install(&raw, crate::DEFAULT_REPO, true).await;
+            return self.install_archive(&raw, crate::DEFAULT_REPO, true, Some(request)).await;
         }
         let names: Vec<String> = if official {
             if !valid_id(id) {
@@ -229,11 +298,7 @@ impl Host {
             vec![format!("jarvis-plugin-{}.zip", super::arch()), "jarvis-plugin.zip".into()]
         };
         let api = super::catalog::github_api();
-        let rel_url = if tag.is_empty() {
-            format!("{api}/repos/{repo}/releases/latest")
-        } else {
-            format!("{api}/repos/{repo}/releases/tags/{tag}")
-        };
+        let rel_url = format!("{api}/repos/{repo}/releases/latest");
         let rel = crate::net::get_json(&rel_url).await.map_err(|e| format!("релиз {repo}: {e}"))?;
         let assets = rel.get("assets").and_then(|a| a.as_array()).cloned().unwrap_or_default();
         let link = names.iter().find_map(|want| {
@@ -247,19 +312,16 @@ impl Host {
             return Err(format!("в последнем релизе {repo} нет {}", names.join(" или ")));
         };
         let raw = crate::net::download(&link, ZIP_MAX).await?;
-        if official && unpack(&raw)?.1.id != id {
-            return Err("В архиве другой плагин".into());
-        }
-        self.install(&raw, repo, official).await
+        self.install_archive(&raw, repo, official, Some(request)).await
     }
 }
 
-async fn download_official_rust(id: &str, tag: &str) -> Result<Vec<u8>, String> {
+async fn download_official_rust(id: &str) -> Result<Vec<u8>, String> {
     let asset = format!("plugin-{id}-{}.zip", super::arch());
     let base = if let Some(base) = option_env!("JARVIS_PLUGIN_ASSETS") {
         base.to_owned()
     } else {
-        let tag = if tag.is_empty() { format!("v{}", crate::version()) } else { tag.to_owned() };
+        let tag = format!("v{}", crate::version());
         format!("https://github.com/{}/releases/download/{tag}", crate::DEFAULT_REPO)
     };
     let sums = crate::net::download(&format!("{base}/SHA256SUMS"), 64 << 10).await

@@ -1,5 +1,5 @@
 use crate::{plugins::{Host,Runtime},session::{Dialog,Session,queue_mic,take_mic},journal::Journal,settings::{Settings,Profile},tools::Tools};
-use std::{sync::{Arc,Mutex,atomic::{AtomicBool,Ordering},mpsc::{Receiver,SyncSender,sync_channel}},time::Duration};
+use std::{sync::{Arc,Mutex,atomic::{AtomicBool,Ordering},mpsc::{Receiver,SyncSender,TrySendError,sync_channel}},time::Duration};
 use serde_json::{Value,json};
 use base64::{Engine as _,engine::general_purpose::STANDARD as B64};
 
@@ -39,9 +39,11 @@ impl Voice {
         let gemini = self.id == "gemini";
         // Send the real-time stream every 40 ms. Drain up to 160 ms per tick
         // while catching up with speech captured during setup.
-        let (tick_ms, silence, limit) = if gemini { (40, 640, 2_560) } else { (100, 1_600, 4_800) };
-        let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(tick_ms));
-        if gemini { interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
+        const TICK_MS: u64 = 40;
+        const SAMPLES_PER_TICK: usize = crate::audio::MIC_RATE as usize * TICK_MS as usize / 1000;
+        const MAX_SAMPLES_PER_TICK: usize = SAMPLES_PER_TICK * 4;
+        let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(TICK_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut handles=std::collections::HashMap::<String,tokio::task::AbortHandle>::new();let mut seen=std::collections::HashSet::new();
         let mut pending_calls=Vec::<Value>::new();
         let mut up=jarvis_dsp::audio::Upsampler::new(3);let mut phase=0;let mut speaking=false;
@@ -59,7 +61,7 @@ impl Voice {
                     if matches!(self.id.as_str(),"grok"|"elevenlabs"){send(&mut socket,json!({"type":"response.create"})).await?;}
                 },
                 _=interval.tick(),if started && (!gemini || tools.is_some())=>{
-                    let mut pcm=take_mic(&mut self.pending.lock().unwrap(),limit);if pcm.is_empty(){pcm.resize(silence,0);}
+                    let mut pcm=take_mic(&mut self.pending.lock().unwrap(),MAX_SAMPLES_PER_TICK);if pcm.is_empty(){pcm.resize(SAMPLES_PER_TICK,0);}
                     if matches!(self.id.as_str(),"grok"|"elevenlabs"){let input=up.run(&pcm);pcm=input.iter().skip(phase).step_by(2).copied().collect();phase=(phase+input.len())%2;}
                     let data=B64.encode(pcm.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>());
                     let value=match self.id.as_str(){"gemini"=>json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":data}}}),"grok"|"elevenlabs"=>json!({"type":"input_audio_buffer.append","audio":data}),_=>json!({"type":"session.input_audio.append","audio":data})};send(&mut socket,value).await?;
@@ -82,12 +84,12 @@ impl Voice {
                     if kind=="input_audio_buffer.speech_started" || event.pointer("/serverContent/interrupted").and_then(Value::as_bool)==Some(true){self.dialog.mute();self.interrupted.store(true,Ordering::SeqCst);speaking=false;}
                     if kind=="session.input_transcript.delta" || kind=="conversation.item.input_audio_transcription.completed"{self.dialog.on_user(event[if kind.ends_with("completed"){"transcript"}else{"delta"}].as_str().unwrap_or(""));if kind.ends_with("completed"){self.dialog.unmute();}}
                     if ["session.output_transcript.delta","response.audio_transcript.delta","response.output_audio_transcript.delta"].contains(&kind){self.dialog.on_bot(event["delta"].as_str().unwrap_or(""));}
-                    if ["session.output_audio.delta","response.audio.delta","response.output_audio.delta"].contains(&kind){self.audio(event["delta"].as_str().unwrap_or(""))?;speaking=true;}
+                    if ["session.output_audio.delta","response.audio.delta","response.output_audio.delta"].contains(&kind){self.audio(event["delta"].as_str().unwrap_or("")).await?;speaking=true;}
                     if let Some(content)=event.get("serverContent"){
                         if content.get("groundingMetadata").is_some(){log::debug!("Gemini Live: получены результаты поиска");}
                         if let Some(text)=content.pointer("/inputTranscription/text").and_then(Value::as_str){self.dialog.on_user(text);}
                         if let Some(text)=content.pointer("/outputTranscription/text").and_then(Value::as_str){self.dialog.on_bot(text);}
-                        for part in content.pointer("/modelTurn/parts").and_then(Value::as_array).into_iter().flatten(){if let Some(data)=part.pointer("/inlineData/data").and_then(Value::as_str){self.audio(data)?;speaking=true;}}
+                        for part in content.pointer("/modelTurn/parts").and_then(Value::as_array).into_iter().flatten(){if let Some(data)=part.pointer("/inlineData/data").and_then(Value::as_str){self.audio(data).await?;speaking=true;}}
                         if content["turnComplete"].as_bool()==Some(true){self.dialog.provider_turn_complete();}
                     }
                     if kind=="session.delegation.created"{self.dialog.working(1);}
@@ -119,11 +121,28 @@ impl Voice {
             }
         }
     }
-    fn audio(&self,data:&str)->Result<(),String>{
+    async fn audio(&self,data:&str)->Result<(),String>{
         if self.cancelled.load(Ordering::SeqCst){return Ok(());}
         if data.len()>128000{return Err("Слишком большой кусок PCM".into());}
         let bytes=B64.decode(data).map_err(|_|"Неверный голосовой PCM")?;if bytes.len()%2!=0{return Err("Неверный голосовой PCM".into());}if bytes.is_empty(){return Ok(());}self.dialog.heard_voice();
-        if let Some(tx)=self.output.lock().unwrap().as_ref(){for bytes in bytes.chunks(2400){let pcm=bytes.chunks_exact(2).map(|b|i16::from_le_bytes([b[0],b[1]])).collect();tx.try_send(pcm).map_err(|_|"Переполнен буфер голоса")?;}}Ok(())
+        let output = self.output.lock().unwrap().clone();
+        if let Some(output) = output {
+            for bytes in bytes.chunks(2400) {
+                let mut pcm = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                loop {
+                    if self.cancelled.load(Ordering::SeqCst) { return Ok(()); }
+                    match output.try_send(pcm) {
+                        Ok(()) => break,
+                        Err(TrySendError::Full(pending)) if tokio::time::Instant::now() < deadline => pcm = pending,
+                        Err(TrySendError::Full(_)) => return Err("Динамик не успевает принять голос".into()),
+                        Err(TrySendError::Disconnected(_)) => return Ok(()),
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+        Ok(())
     }
 }
 fn eleven_session(profile:&Profile,instructions:&str,tools:&[Value])->Value{
