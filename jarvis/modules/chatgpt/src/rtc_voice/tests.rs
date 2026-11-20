@@ -1,5 +1,12 @@
 use super::*;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
+
+#[test]
+fn uses_the_high_quality_bitrate_but_respects_the_remote_limit() {
+    assert_eq!(audio_bitrate("m=audio 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 useinbandfec=1"), 64_000);
+    assert_eq!(audio_bitrate("m=audio 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 minptime=10; maxaveragebitrate = 32000\r\n"), 32_000);
+    assert_eq!(audio_bitrate("m=video 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 maxaveragebitrate=8000"), 64_000);
+}
 struct PeerHandler{gathered:Arc<tokio::sync::Notify>,channel:tokio::sync::mpsc::Sender<Arc<dyn DataChannel>>,audio:tokio::sync::mpsc::Sender<Vec<u8>>}
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for PeerHandler{
@@ -105,7 +112,7 @@ async fn call(network:Value, fallback: bool){
                 tick.tick().await;
                 if index % 12 == 4 {
                     // Late pairs arrive together on the following ticks.
-                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    tokio::time::sleep(Duration::from_millis(85)).await;
                 }
                 let pcm: Vec<i16> = (0..320).map(|sample| {
                     let phase = (index * 320 + sample) as f64 * std::f64::consts::TAU * 220.0 / 16000.0;
