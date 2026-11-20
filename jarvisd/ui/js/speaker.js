@@ -1,6 +1,5 @@
 // Колонка.
 import { $, $$, api, esc, icon, jelly, sec, tip, toast } from "./core.js";
-import { ledLabBind, ledLabHtml } from "./leds.js";
 import { S, reload } from "./main.js";
 import { bindWakeProfiles } from "./wake-training.js";
 
@@ -57,9 +56,7 @@ export function viewSpeaker() {
       ${S.speaker.leds ? `<div class="f"><label>Кольцо не ярче <b class="val" id="n-bright-v"></b></label><div id="n-bright"></div></div>` : ""}
       <div class="f"><label>Колонка не громче ${tip("Громкость самой колонки по её шкале 0–10. Если ночью сделать громче, через полминуты станет обратно.")}<b class="val" id="n-speaker-v"></b></label><div id="n-speaker"></div></div></div>`)}
   ${sec("Подсветка", "Кольцо Джарвиса. Цвета у каждого ассистента свои — в его настройках. У Алисы подсветка своя и не меняется",
-    S.speaker.leds ? `<label class="sw"><input type="checkbox" id="l-on"${s.led.enabled ? " checked" : ""}><span class="tr"></span>Подсвечивать кольцо, когда говорит Джарвис</label>
-    ${ledLabHtml()}`
-    : `<p class="note">У этой колонки нет подсветки, которой может управлять Джарвис.</p>`)}`;
+    '<div id="speaker-lighting"></div>')}`;
   $("#view").oninput = $("#view").onchange = $("#view").onclick = null;
   const put = (body) => api("PUT", "/api/settings", body).then(reload).catch((e) => toast(e.message, true));
   $$("input[data-home]").forEach((b) => b.addEventListener("change", () => {
@@ -110,8 +107,5 @@ export function viewSpeaker() {
     $$("#s-lang button").forEach((x) => x.classList.toggle("on", x === b));
     put({ language: b.dataset.lang }).then(() => toast(b.dataset.lang ? `Язык: ${b.textContent}` : "Язык определяется сам"));
   }));
-  if (S.speaker.leds) {
-    ledLabBind();
-    $("#l-on").addEventListener("change", (e) => put({ led: { enabled: e.target.checked } }).then(() => toast(e.target.checked ? "Подсветка включена" : "Подсветка выключена")));
-  }
+  return $("#speaker-lighting");
 }

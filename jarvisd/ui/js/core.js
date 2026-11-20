@@ -193,7 +193,8 @@ export function jelly(root, o) {
     o.onInput?.(v); clearTimeout(root.kt); root.kt = setTimeout(() => o.onChange?.(v), 350);
   });
   root.addEventListener("blur", () => { lifted = false; sync(); });
-  new ResizeObserver(() => { const w = root.clientWidth; if (!w || w === W) return; const v = toV(X.t); W = w; X.x = X.t = DX.x = DX.t = toX(v); X.v = DX.v = 0; Motion.add(anim); }).observe(root);
+  const resize = new ResizeObserver(() => { const w = root.clientWidth; if (!w || w === W) return; const v = toV(X.t); W = w; X.x = X.t = DX.x = DX.t = toX(v); X.v = DX.v = 0; Motion.add(anim); });
+  resize.observe(root);
 
   const anim = {
     frame(dt) { DX.t = X.x; Motion.step(X, dt); Motion.step(DX, dt); Motion.step(DY, dt); Motion.step(DS, dt); Motion.step(PS, dt); },
@@ -213,6 +214,10 @@ export function jelly(root, o) {
   };
   Motion.add(anim);
   return {
+    destroy() {
+      resize.disconnect();
+      clearTimeout(root.kt);
+    },
     // значение снаружи (например, ход трека): пока человек тянет — не мешаем
     set(v, glide = false) {
       if (dragging) return;
