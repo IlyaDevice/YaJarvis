@@ -5,7 +5,7 @@ import { viewConnections } from "./connections.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
 import { HL, homeLogs } from "./logs.js";
-import { drawVolume, musicData, viewPlayer } from "./player.js";
+import { drawVolume, musicData } from "./player.js";
 import { wizOpen } from "./wizard.js";
 import { drawWakeTraining } from "./wake-training.js";
 
@@ -21,6 +21,7 @@ const svelteViews = new Map([
   ["charts", async () => (await import("../Charts/mountCharts.js")).mountCharts],
   ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
   ["memory", async () => (await import("../Memory/mountMemory.js")).mountMemory],
+  ["player", async () => (await import("../Player/mountPlayer.js")).mountPlayer],
   ["security", async () => (await import("../Security/mountSecurity.js")).mountSecurity],
   ["speaker", async () => (await import("../Speaker/mountSpeaker.js")).mountSpeaker],
 ]);
@@ -228,8 +229,8 @@ export function route() {
     }
   }
   else {
-    page = ["home", "player", "connections"].includes(h) ? h : "home";
-    ({ home: viewHome, player: viewPlayer, connections: viewConnections })[page]();
+    page = ["home", "connections"].includes(h) ? h : "home";
+    ({ home: viewHome, connections: viewConnections })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);

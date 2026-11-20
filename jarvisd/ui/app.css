@@ -747,30 +747,8 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 .np-src { display: inline-flex; align-items: center; gap: 6px; }
 .src-ya { color: #ffcc00; } .src-yt { color: #ff4e45; }
 
-/* ---------- плеер (страница) ---------- */
-.pl-hero { display: grid; grid-template-columns: minmax(220px, 340px) minmax(0, 1fr); gap: 32px; align-items: center; padding: 24px; overflow: hidden; isolation: isolate; }
-@media (max-width: 860px) { .pl-hero { grid-template-columns: minmax(0, 1fr); } }
-.pl-glow { position: absolute; z-index: -1; left: -10%; top: -30%; width: 70%; height: 160%; object-fit: cover; filter: blur(80px) saturate(1.6); opacity: .28; pointer-events: none; transition: opacity 1.2s ease; }
-.pl-glow:not([src]) { opacity: 0; }
-.pl-cover { position: relative; aspect-ratio: 1; border-radius: 22px; overflow: hidden; background: linear-gradient(135deg, var(--raise2), var(--bg0)); box-shadow: 0 24px 50px -22px rgb(0 0 0 / .8);
-  display: grid; place-items: center; transition: transform .5s var(--spring); }
-.pl-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .6s ease, transform 8s linear; }
-.pl-cover img.ok { opacity: 1; }
-.pl-hero[data-state="playing"] .pl-cover img.ok { transform: scale(1.06); }
-.pl-hero[data-state="paused"] .pl-cover { transform: scale(.96); }
-.pl-cover .ic { width: 56px; height: 56px; color: var(--fg3); stroke-width: 1.2; }
-.pl-main { display: grid; gap: 10px; min-width: 0; }
-.pl-kick { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--fg2); }
-.pl-kick .np-eq { height: 12px; }
-.pl-title { margin: 0; font-size: clamp(30px, 3.6vw, 52px); line-height: 1.12; font-weight: 800; letter-spacing: -.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pl-artist { font-size: 19px; color: var(--ink2); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pl-title.swap, .pl-artist.swap { animation: swap .45s var(--ease); }
+/* ---------- элементы управления воспроизведением ---------- */
 @keyframes swap { from { opacity: 0; transform: translateY(8px); filter: blur(4px); } }
-.pl-chips { display: flex; gap: 6px; flex-wrap: wrap; min-height: 28px; }
-.pl-chips .chip { font-size: 12.5px; padding: 4px 10px; }
-.pl-seek { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; gap: 10px; align-items: center; margin-top: 6px; }
-.pl-seek .np-time:last-child { text-align: right; }
-.pl-controls { display: flex; align-items: center; gap: 6px; margin-left: -6px; }
 .cbtn { position: relative; width: 46px; height: 46px; border-radius: 50%; border: 0; background: transparent; color: var(--ink2); display: grid; place-items: center; cursor: pointer;
   transition: background-color .15s, color .15s, transform .2s var(--spring); }
 .cbtn:hover { background: var(--raise); color: var(--fg); }
@@ -784,24 +762,8 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 .cbtn.big .ic { width: 24px; height: 24px; }
 .cbtn.k-prev { animation: k-prev .26s ease; } .cbtn.k-next { animation: k-next .26s ease; } .cbtn.k-pop { animation: k-pop .3s var(--spring); }
 @keyframes k-prev { 45% { transform: translateX(-5px); } } @keyframes k-next { 45% { transform: translateX(5px); } } @keyframes k-pop { 40% { transform: scale(.82); } }
-.pl-vol { display: grid; grid-template-columns: 20px minmax(0, 240px); gap: 12px; align-items: center; color: var(--fg2); }
-.pl-vol .ic { width: 20px; height: 20px; }
-.pl-form { display: flex; gap: 8px; margin-top: 6px; }
-.pl-form input { flex: 1; min-width: 0; height: 44px; }
-.pl-form .btn { min-height: 44px; }
-.qlist { display: grid; gap: 2px; }
-.qrow { display: flex; align-items: center; gap: 12px; padding: 6px 8px; border-radius: 12px; border: 0; background: transparent; text-align: left; width: 100%; color: inherit; cursor: pointer;
-  transition: background-color .15s; animation: rise .35s var(--ease) both; }
-.qrow:hover { background: var(--raise); }
-.qrow.cur { background: var(--acc-soft); cursor: default; }
-.qrow img, .qrow .qph { flex: none; width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--raise2); }
-.qrow .tt { flex: 1; min-width: 0; display: grid; }
-.qrow .tt b, .qrow .tt span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qrow .tt span { font-size: 12.5px; color: var(--fg2); font-weight: 600; }
 .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--raise2); color: var(--fg2); white-space: nowrap; }
 .badge.acc { background: var(--acc); color: #fff; } .badge.ok { background: var(--ok-soft); color: var(--ok); }
-.qrow .ib { width: 30px; height: 30px; border: 0; opacity: 0; }
-.qrow:hover .ib, .qrow .ib:focus-visible { opacity: 1; }
 .empty { color: var(--fg2); font-size: 13.5px; padding: 12px 8px; }
 
 
@@ -812,17 +774,13 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
   .kpi .value b { font-size: 24px; }
   .sec { padding: 18px; grid-template-columns: minmax(0, 1fr); }
   .tg { height: calc(100dvh - 56px - 32px); }
-  .pl-hero { padding: 18px; gap: 20px; }
-  .pl-cover { max-width: 320px; width: 100%; justify-self: center; }
   .side { background: var(--bg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .view.enter > *, .view.enter .stagger > *, .qrow { animation: none; }
+  .view.enter > *, .view.enter .stagger > * { animation: none; }
   .spark.draw path { animation: none; stroke-dasharray: none; opacity: 1; }
   .nav-eq i, .dot.on, .dot.live, .prof .act { animation: none; }
 }
-.pl-hero { margin-bottom: 14px; }
-.pl-hero[data-state="idle"] .pl-seek, .pl-hero[data-state="loading"] .pl-seek { visibility: hidden; }
 
 /* ---------- меню без границы и мягкие bento-карточки ---------- */
 :root { --soft: color-mix(in srgb, #1d1d25 82%, transparent); --soft-line: rgb(255 255 255 / .045); --soft-hi: rgb(255 255 255 / .05); }
@@ -841,7 +799,6 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 .kpis, .home, .rail, .cols { gap: 16px; }
 .kpis { margin-bottom: 16px; }
 .sec { margin-bottom: 16px; }
-.pl-hero { margin-bottom: 16px; }
 .conn { background: var(--soft); border-color: var(--soft-line); border-radius: 18px; }
 .opt, .voice, .vpn, .nr, .upd, .bg-run, .play-led, .rvp { background: rgb(0 0 0 / .2); border-color: var(--soft-line); }
 input[type=text], input[type=password], input[type=number], input[type=time], select, textarea { background: rgb(0 0 0 / .25); border-color: rgb(255 255 255 / .07); }
@@ -871,7 +828,6 @@ h1 { font-size: 34px; line-height: 40px; }
 .card { padding: 24px; }
 .card > h2 { margin-bottom: 18px; }
 .sec { padding: 28px; margin-bottom: 20px; gap: 20px 48px; }
-.pl-hero { padding: 28px; margin-bottom: 20px; gap: 40px; }
 .tg { height: max(480px, calc(100vh - 340px)); }
 .tg-h { height: 76px; padding: 0 20px 0 16px; }
 .tg-body { padding: 20px 24px; }
@@ -955,7 +911,6 @@ h1 { font-size: 34px; line-height: 40px; }
 .vol-main { display: flex; align-items: center; gap: 20px; }
 .vol-big { font-size: 52px; line-height: 1; font-weight: 800; letter-spacing: -.04em; min-width: 1.4ch; font-variant-numeric: tabular-nums; }
 .vol-sl { flex: 1; min-width: 0; display: grid; gap: 4px; }
-.pl-seek { margin-top: 6px; }
 
 /* ---------- чат: сообщения выпрыгивают на пружине, живые пузыри «слушаю» и «отвечает» ---------- */
 .b.new { animation: pop-me .5s cubic-bezier(.34, 1.5, .64, 1) both; }
@@ -1014,12 +969,6 @@ h1 { font-size: 34px; line-height: 40px; }
 .np .vol-k .ic { width: 18px; height: 18px; }
 .np .vol-big { font-size: 22px; letter-spacing: -.02em; color: var(--fg); text-align: right; min-width: 0; }
 @media (min-width: 1200px) { .rail { max-height: max(480px, calc(100vh - 340px)); overflow: auto; scrollbar-width: none; } }
-.mq-line { white-space: nowrap; overflow: hidden; text-overflow: clip; padding-bottom: .1em; }
-.mq-line .mq { display: inline-block; }
-.mq-line.run { -webkit-mask-image: linear-gradient(90deg, transparent, #000 14px, #000 calc(100% - 14px), transparent); mask-image: linear-gradient(90deg, transparent, #000 14px, #000 calc(100% - 14px), transparent); }
-.mq-line.run .mq { padding: 0 14px; margin-left: -14px; animation: pl-mq var(--mqt, 8s) ease-in-out infinite alternate; }
-@keyframes pl-mq { 0%, 18% { transform: translateX(0); } 82%, 100% { transform: translateX(var(--mq, 0)); } }
-@media (prefers-reduced-motion: reduce) { .mq-line.run .mq { animation: none; } }
 
 .np { gap: 12px; padding: 20px 22px; }
 .np .np-vol { padding-top: 12px; }
@@ -1052,53 +1001,11 @@ h1 { font-size: 34px; line-height: 40px; }
   .tg { height: auto; min-height: max(480px, calc(100vh - 340px)); contain: size; }
 }
 
-/* ---------- 0.9.17: страница «Плеер» — одна карточка; громкость справа в строке кнопок ---------- */
-.pl-hero { display: flex; flex-direction: column; align-items: stretch; gap: 24px; padding: 28px; margin-bottom: 20px; }
-.pl-top { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: center; min-width: 0; }
-@media (max-width: 700px) { .pl-top { grid-template-columns: 110px minmax(0, 1fr); gap: 16px; } .pl-hero { padding: 18px; } }
-.pl-hero .pl-cover { width: 100%; max-width: none; transform: none !important; }
-.pl-cover img, .pl-hero[data-state="playing"] .pl-cover img.ok { transform: none; transition: opacity .6s ease, filter .5s ease; }
-.pl-hero[data-state="paused"] .pl-cover img.ok { filter: saturate(.5) brightness(.75); }
-.pl-meta { display: grid; gap: 8px; min-width: 0; }
-.pl-hero .pl-title { font-size: clamp(26px, 3vw, 46px); }
-.pl-hero .pl-artist { font-size: 18px; }
-.pl-chips { min-height: 0; }
-.pl-chips:empty { display: none; }
-.pl-bottom { display: grid; gap: 12px; }
-.pl-hero .pl-seek { margin: 0; }
-.pl-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); grid-template-areas: "l c r"; align-items: center; gap: 16px; }
-.pl-l { grid-area: l; display: flex; gap: 2px; margin-left: -8px; }
-.pl-l .cbtn { width: 42px; height: 42px; color: var(--fg2); }
-.pl-l .cbtn .ic { width: 19px; height: 19px; }
-.pl-hero .pl-controls { grid-area: c; justify-content: center; gap: 14px; margin: 0; }
-.pl-hero .pl-controls .cbtn { width: 54px; height: 54px; }
-.pl-hero .pl-controls .cbtn .ic { width: 22px; height: 22px; }
-.pl-hero .pl-controls .cbtn.big { width: 76px; height: 76px; }
-.pl-hero .pl-controls .cbtn.big .ic { width: 30px; height: 30px; }
-.pl-hero .pl-vol { grid-area: r; justify-self: end; display: grid; grid-template-columns: 20px minmax(0, 150px) 2ch; gap: 12px; align-items: center; width: min(100%, 230px); color: var(--fg2); }
-.pl-hero .pl-vol .ic { width: 20px; height: 20px; }
-.pl-hero .pl-vol .vol-big { font-size: 17px; font-weight: 800; color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
-.pl-hero { container-type: inline-size; }
-@container (max-width: 720px) {
-  .pl-bar { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "c c" "l r"; row-gap: 12px; }
-  .pl-hero .pl-vol { width: min(100%, 240px); grid-template-columns: 20px minmax(0, 1fr) 2ch; }
-}
-.pl-hero[data-state="idle"] .pl-controls .cbtn:not(.big), .pl-hero[data-state="loading"] .pl-controls .cbtn:not(.big),
-.pl-hero[data-state="idle"] .pl-l, .pl-hero[data-state="loading"] .pl-l { visibility: hidden; }
-.q-add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; margin: 0 0 10px; }
-.q-field { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px; border-radius: 14px; background: var(--bg0); border: 1px solid var(--line2); color: var(--fg3); cursor: text; transition: border-color .2s, box-shadow .2s; }
-.q-field:focus-within { border-color: var(--acc); box-shadow: 0 0 0 4px color-mix(in srgb, var(--acc) 18%, transparent); }
-.q-field .ic { width: 17px; height: 17px; flex: none; }
-.q-field input, .q-field input:focus { flex: 1; min-width: 0; height: 100%; border: 0; padding: 0; background: transparent; box-shadow: none; outline: none; color: var(--fg); font-size: 14.5px; }
-.q-add .cbtn { width: 44px; height: 44px; background: var(--raise); color: var(--fg); }
-.q-add .cbtn:first-of-type { background: var(--acc); color: #fff; }
-.q-add .cbtn .ic { width: 18px; height: 18px; }
-.q-eq { height: 14px; margin: 0 6px; }
 /* главная: без заголовка — источник маленькой строкой над названием */
 .np .np-info .np-src { min-height: 16px; margin-bottom: 4px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); }
 .np { padding-top: 22px; }
 
-/* ---------- 0.9.18: логи на главной в свободном месте; поиск в очереди — тихой строкой ---------- */
+/* ---------- логи на главной ---------- */
 .home-logs { display: none; }
 .home-logs .logbox { flex: 1; min-height: 0; overflow: auto; padding: 12px 0 16px; font: 12px/19px var(--mono); color: var(--ink2); scrollbar-width: thin; }
 .home-logs .ll { padding: 1px 20px; white-space: pre-wrap; word-break: break-word; }
@@ -1117,17 +1024,6 @@ h1 { font-size: 34px; line-height: 40px; }
   .hl-all:hover { color: var(--acc-ink); }
   .hl-all .ic { width: 14px; height: 14px; }
 }
-.q-add { gap: 2px; margin: -2px 0 8px; padding: 0 0 6px; border-bottom: 1px solid var(--soft-line); }
-.q-field { height: 38px; padding: 0 6px; border: 0; border-radius: 10px; background: transparent; color: var(--fg3); }
-.q-field:focus-within { border: 0; box-shadow: none; background: rgb(255 255 255 / .03); }
-.q-field .ic { width: 15px; height: 15px; }
-.q-field input, .q-field input:focus { font-size: 13.5px; }
-.q-field input::placeholder { color: var(--fg3); }
-.q-add .cbtn, .q-add .cbtn:first-of-type { width: 34px; height: 34px; background: transparent; color: var(--fg2); transition: opacity .2s, transform .25s var(--spring), color .2s, background .2s; }
-.q-add .cbtn:hover { background: var(--raise); color: var(--fg); }
-.q-add .cbtn:first-of-type:hover { color: var(--acc-ink); }
-.q-add .cbtn .ic { width: 15px; height: 15px; }
-.q-add:has(input:placeholder-shown) .cbtn { opacity: 0; transform: scale(.7); pointer-events: none; }
 
 /* ---------- 0.9.24: подключения плитками, как характеры ---------- */
 .st.bad { color: var(--bad); } .st.bad::before { background: var(--bad); }
