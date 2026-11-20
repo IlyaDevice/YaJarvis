@@ -1,7 +1,7 @@
 {
   "id": "chatgpt",
   "name": "ChatGPT по подписке",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "kind": "rust",
   "main": "plugin",
   "api": 1,
