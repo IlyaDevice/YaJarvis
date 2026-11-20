@@ -1,0 +1,16 @@
+.tabs {
+  overflow: clip;
+}
+
+.service {
+  text-align: left;
+  color: var(--fg);
+}
+
+.serviceName {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 16.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

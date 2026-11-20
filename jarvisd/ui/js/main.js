@@ -1,8 +1,7 @@
 // Каркас: вход, состояние с колонки, опрос, сайдбар, маршруты, запуск.
 import { viewProfile } from "./assistant.js";
 import { ST, navPill, statsData } from "./charts.js";
-import { viewConnections } from "./connections.js";
-import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
+import { $, $$, act, api, dirty, esc, icon, ICONS, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
 import { HL, homeLogs } from "./logs.js";
 import { drawVolume, musicData } from "./player.js";
@@ -113,13 +112,6 @@ export function speakerState() {
   return { ring: "mute", title: "Жду кнопку «Поговорить»", text: S.settings.wake_enabled ? `Модель для «${word}» ещё не установлена` : `Отклик на «${word}» выключен` };
 }
 
-// Кольцо перерисовываем, только когда состояние сменилось, — иначе анимация дёргается на каждом опросе.
-export function setRing(box, state, cls) {
-  if (!box || box.dataset.state === state) return;
-  box.dataset.state = state;
-  box.innerHTML = ring(state, cls);
-}
-
 export const ORB_TEXT = { idle: "Колонка ждёт фразу активации", listening: "Слушает", thinking: "Думает", speaking: "Говорит", off: "Нет звука с колонки", mute: "На связи, голосовая активация недоступна" };
 export function renderStatus() {
   const st = speakerState(), ph = S.speaker.phase;
@@ -204,7 +196,13 @@ export function route() {
   const loadSvelteView = svelteViews.get(h);
   const v0 = $("#view"); v0.oninput = v0.onchange = v0.onclick = null;   // обработчики прошлой страницы
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
-  else if (h.startsWith("connections/")) { page = "connections"; viewConnections(h.slice(12)); }
+  else if (h === "connections" || h.startsWith("connections/")) {
+    page = "connections";
+    void viewSvelte(v0, async () => {
+      const { mountConnections } = await import("../Connections/mountConnections.js");
+      return (target) => mountConnections(target, h.slice(12));
+    });
+  }
   else if (h === "plugins") { location.replace("#connections/plugins"); return; } // страницы «Плагины» больше нет: плагины — в «Подключениях»
   else if (loadSvelteView) {
     page = h;
@@ -225,8 +223,9 @@ export function route() {
     }
   }
   else {
-    page = ["home", "connections"].includes(h) ? h : "home";
-    ({ home: viewHome, connections: viewConnections })[page]();
+    page = "home";
+    const chat = viewHome();
+    void viewSvelte(chat, async () => (await import("../HomeChat/mountHomeChat.js")).mountHomeChat);
   }
   renderSide();
   window.scrollTo(0, 0);
