@@ -105,21 +105,20 @@ pub fn automatic(app: App) {
     tokio::spawn(async move {
         use std::time::Duration;
         tokio::time::sleep(Duration::from_secs(120)).await;
+        let mut plugins_checked = None;
         loop {
-            let (enabled, auto, hour) = app
+            let (enabled, auto, now) = app
                 .store
-                .with(|s| (s.update_check, s.update_auto, s.now().hour()));
+                .with(|s| (s.update_check, s.update_auto, s.now()));
             if enabled {
                 if app.updater.check_due() {
                     let _ = app.updater.check().await;
                 }
-                if auto
-                    && (3..6).contains(&hour)
-                    && app.updater.available()
-                    && !app.engine.talking()
-                    && !app.engine.music.playing()
-                {
-                    let _ = app.updater.install_build(None).await;
+                if auto && (3..6).contains(&now.hour()) && super::plugins::idle(&app) {
+                    let installing_core = app.updater.available() && app.updater.install_build(None).await.is_ok();
+                    if !installing_core && plugins_checked != Some(now.date()) && super::plugins::automatic(&app).await {
+                        plugins_checked = Some(now.date());
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_secs(20 * 60)).await;

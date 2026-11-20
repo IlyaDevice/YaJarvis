@@ -3,19 +3,32 @@ use std::ptr::NonNull;
 use libopus_sys as opus;
 pub struct Encoder(NonNull<opus::OpusEncoder>);
 pub struct Decoder(NonNull<opus::OpusDecoder>);
+pub const SPEECH_BITRATE: i32 = 64_000;
 // Opus allows moving an owned state between threads; concurrent access is not permitted.
 unsafe impl Send for Encoder {}
 unsafe impl Send for Decoder {}
 impl Encoder {
+    #[cfg(test)]
     pub fn new()->Result<Self,String>{
+        Self::with_bitrate(SPEECH_BITRATE)
+    }
+
+    pub fn with_bitrate(bitrate: i32)->Result<Self,String>{
         let mut error=0;let pointer=unsafe{opus::opus_encoder_create(16000,1,opus::OPUS_APPLICATION_VOIP as i32,&mut error)};
         let encoder=NonNull::new(pointer).ok_or("Не создать кодек Opus")?;
         let result=Self(encoder);if error!=0{return Err(format!("Ошибка Opus {error}"));}
-        unsafe{
-            opus::opus_encoder_ctl(pointer,opus::OPUS_SET_BITRATE_REQUEST as i32,24000i32);
-            opus::opus_encoder_ctl(pointer,opus::OPUS_SET_INBAND_FEC_REQUEST as i32,1i32);
-            opus::opus_encoder_ctl(pointer,opus::OPUS_SET_PACKET_LOSS_PERC_REQUEST as i32,10i32);
-        }Ok(result)
+        let settings = [
+            (opus::OPUS_SET_BITRATE_REQUEST, bitrate),
+            (opus::OPUS_SET_COMPLEXITY_REQUEST, 10),
+            (opus::OPUS_SET_MAX_BANDWIDTH_REQUEST, opus::OPUS_BANDWIDTH_WIDEBAND as i32),
+            (opus::OPUS_SET_INBAND_FEC_REQUEST, 1),
+            (opus::OPUS_SET_PACKET_LOSS_PERC_REQUEST, 10),
+        ];
+        for (request, value) in settings {
+            let status = unsafe { opus::opus_encoder_ctl(pointer, request as i32, value) };
+            if status != 0 { return Err(format!("Ошибка настройки Opus {request}: {status}")); }
+        }
+        Ok(result)
     }
     pub fn encode(&mut self,pcm:&[i16])->Result<Vec<u8>,String>{
         if pcm.len()!=320{return Err("Opus требует кадр 20 мс / 16 кГц".into());}

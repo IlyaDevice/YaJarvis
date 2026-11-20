@@ -1,5 +1,7 @@
 use std::{collections::BTreeSet, net::Ipv4Addr, time::Duration};
 
+use super::DEFAULT_ADB_PORT;
+
 const PARALLEL: usize = 64;
 
 fn subnet(ip: Ipv4Addr, mask: Ipv4Addr) -> Option<(u32, u32)> {
@@ -46,7 +48,7 @@ pub async fn nearby(already: &BTreeSet<Ipv4Addr>) -> Vec<Ipv4Addr> {
             requests.spawn(async move {
                 let connected = tokio::time::timeout(
                     Duration::from_millis(350),
-                    tokio::net::TcpStream::connect((ip, 5555)),
+                    tokio::net::TcpStream::connect((ip, DEFAULT_ADB_PORT)),
                 )
                 .await
                 .is_ok_and(|result| result.is_ok());

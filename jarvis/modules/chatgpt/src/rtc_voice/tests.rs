@@ -1,5 +1,12 @@
 use super::*;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
+
+#[test]
+fn uses_the_high_quality_bitrate_but_respects_the_remote_limit() {
+    assert_eq!(audio_bitrate("m=audio 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 useinbandfec=1"), 64_000);
+    assert_eq!(audio_bitrate("m=audio 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 minptime=10; maxaveragebitrate = 32000\r\n"), 32_000);
+    assert_eq!(audio_bitrate("m=video 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 maxaveragebitrate=8000"), 64_000);
+}
 struct PeerHandler{gathered:Arc<tokio::sync::Notify>,channel:tokio::sync::mpsc::Sender<Arc<dyn DataChannel>>,audio:tokio::sync::mpsc::Sender<Vec<u8>>}
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for PeerHandler{
@@ -101,9 +108,41 @@ async fn call(network:Value, fallback: bool){
         let started=Instant::now();let frames=90;
         let send=async{
             let mut encoder=opus::Encoder::new().unwrap();let mut tick=tokio::time::interval(Duration::from_millis(20));
-            for index in 0..frames{tick.tick().await;let pcm:Vec<i16>=(0..320).map(|sample|(((index*320+sample) as f64*std::f64::consts::TAU*220.0/16000.0).sin()*5000.0) as i16).collect();let packet=encoder.encode(&pcm).unwrap();remote_track.write_sample(remote_ssrc,111,&rtc::media::Sample{data:packet.into(),duration:Duration::from_millis(20),..rtc::media::Sample::new(Instant::now())},&[]).await.unwrap();}
+            for index in 0..frames {
+                tick.tick().await;
+                if index % 12 == 4 {
+                    // Late pairs arrive together on the following ticks.
+                    tokio::time::sleep(Duration::from_millis(85)).await;
+                }
+                let pcm: Vec<i16> = (0..320).map(|sample| {
+                    let phase = (index * 320 + sample) as f64 * std::f64::consts::TAU * 220.0 / 16000.0;
+                    (phase.sin() * 5000.0) as i16
+                }).collect();
+                let packet = encoder.encode(&pcm).unwrap();
+                remote_track.write_sample(remote_ssrc, 111, &rtc::media::Sample {
+                    data: packet.into(), duration: Duration::from_millis(20),
+                    ..rtc::media::Sample::new(Instant::now())
+                }, &[]).await.unwrap();
+            }
         };
-        let receive=async{let mut received=0;let mut voiced=false;while received<frames{let event=event_rx.recv().await.unwrap();if event["kind"]=="audio"{received+=1;}if event["kind"]=="heard"{voiced=true;}}assert!(voiced);};
+        let receive=async {
+            let mut received = 0;
+            let mut heartbeats = 0;
+            while received < frames {
+                let event = event_rx.recv().await.unwrap();
+                match event["kind"].as_str() {
+                    Some("audio") => received += 1,
+                    Some("heard") => {
+                        if heartbeats == 0 {
+                            assert!(received < 5, "The first voiced frame must report activity immediately");
+                        }
+                        heartbeats += 1;
+                    }
+                    _ => {}
+                }
+            }
+            assert!((2..=12).contains(&heartbeats), "Unexpected voice activity rate: {heartbeats}");
+        };
         tokio::join!(send,receive);
         assert!(started.elapsed()<Duration::from_millis(frames*20+400),"RTP playout drifted: {:?}",started.elapsed());
         provider.request("voice.close",json!({"id":"local-call"})).await.unwrap();assert!(provider.request("voice.feed",json!({"id":"local-call","pcm":""})).await.is_err());remote.close().await.unwrap();

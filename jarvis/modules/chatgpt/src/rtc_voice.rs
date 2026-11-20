@@ -6,6 +6,9 @@ use webrtc::{peer_connection::{PeerConnection,PeerConnectionBuilder,PeerConnecti
 use rtc::{peer_connection::{configuration::{RTCConfigurationBuilder,media_engine::MediaEngine,interceptor_registry::register_default_interceptors,setting_engine::SettingEngineBuilder},sdp::RTCSessionDescription},rtp_transceiver::rtp_sender::{RTCRtpCodec,RTCRtpCodecParameters,RTCRtpEncodingParameters,RTCRtpCodingParameters,RtpCodecKind},media_stream::MediaStreamTrack};
 pub const LIVE_11: &str = "gpt-live-1.1-codex";
 const LIVE_1: &str = "gpt-live-1-codex";
+const PLAYOUT_BUFFER: Duration = Duration::from_millis(100);
+const LATE_PACKET_GRACE: Duration = Duration::from_millis(30);
+const AUDIO_PAYLOAD: u8 = 111;
 static VOICE_CATALOG: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     serde_json::from_str(include_str!("../../../core/src/catalog.json")).expect("voice catalog")
 });
@@ -38,6 +41,54 @@ async fn rejected_model(mut response: reqwest::Response) -> bool {
     matches!(error["code"].as_str(), Some("model_not_found" | "unsupported_model" | "model_not_available" | "invalid_model"))
         || error["param"] == "model"
 }
+
+fn audio_bitrate(sdp: &str) -> i32 {
+    let mut in_audio = false;
+    let mut bitrate = opus::SPEECH_BITRATE;
+    let prefix = format!("a=fmtp:{AUDIO_PAYLOAD} ");
+    for line in sdp.lines() {
+        if let Some(media) = line.strip_prefix("m=") {
+            in_audio = media.starts_with("audio ");
+        } else if in_audio && let Some(params) = line.strip_prefix(&prefix) {
+            for param in params.split(';') {
+                if let Some((key, value)) = param.trim().split_once('=')
+                    && key.trim().eq_ignore_ascii_case("maxaveragebitrate")
+                    && let Ok(limit @ 6000..=510000) = value.trim().parse::<i32>()
+                {
+                    bitrate = bitrate.min(limit);
+                }
+            }
+        }
+    }
+    bitrate
+}
+
+async fn forward_audio(
+    services: Callback,
+    id: String,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    mut audio: tokio::sync::mpsc::Receiver<Vec<i16>>,
+) {
+    let mut last_heard = None::<Instant>;
+    while let Some(pcm) = audio.recv().await {
+        let send = async {
+            let now = Instant::now();
+            if last_heard.is_none_or(|time| now.duration_since(time) >= Duration::from_millis(200))
+                && pcm.iter().any(|v| v.unsigned_abs() > 400)
+            {
+                emit(&services, &id, "heard", Value::Null).await;
+                last_heard = Some(now);
+            }
+            let data: Vec<u8> = pcm.iter().flat_map(|v| v.to_le_bytes()).collect();
+            emit(&services, &id, "audio", B64.encode(data).into()).await;
+        };
+        tokio::select! {
+            biased;
+            _ = stop.changed() => break,
+            _ = send => {}
+        }
+    }
+}
 struct Handler {gathered:Arc<tokio::sync::Notify>,services:Callback,id:String,stop:tokio::sync::watch::Receiver<bool>,track:AtomicBool}
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Handler {
@@ -46,36 +97,69 @@ impl PeerConnectionEventHandler for Handler {
     async fn on_track(&self,track:Arc<dyn TrackRemote>){
         if track.kind().await!=RtpCodecKind::Audio || self.track.swap(true,Ordering::SeqCst){return;}
         let services=self.services.clone();let id=self.id.clone();let mut stop=self.stop.clone();
+        let (audio, receiver) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(forward_audio(services.clone(), id.clone(), stop.clone(), receiver));
         tokio::spawn(async move {
             let mut decoder=match opus::Decoder::new(){Ok(d)=>d,Err(e)=>{emit(&services,&id,"error",e.into()).await;return;}};
             let mut packets=BTreeMap::<u16,Vec<u8>>::new();let mut expected=None;let mut due=None;let mut last=Instant::now();let mut frame=960;
-            let mut tick=tokio::time::interval(Duration::from_millis(10));tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut concealed = 0u32;
+            let mut late = 0u32;
+            let mut dropped = 0u32;
+            let mut decoded = 0u32;
+            let mut peak_gap = Duration::ZERO;
             loop {tokio::select!{
                 biased;
                 _=stop.changed()=>break,
-                event=track.poll()=>match event{
-                    Some(TrackRemoteEvent::OnRtpPacket(packet))=>{
-                        let sequence=packet.header.sequence_number;if packet.payload.len()>65535{break;}
-                        let next=*expected.get_or_insert(sequence);if sequence.wrapping_sub(next)>=32768{continue;}
-                        packets.insert(sequence,packet.payload.to_vec());last=Instant::now();if due.is_none(){due=Some(last+Duration::from_millis(60));}
-                        if packets.len()>64{if let Some(farthest)=packets.keys().max_by_key(|k|k.wrapping_sub(next)).copied(){packets.remove(&farthest);}}
-                    },Some(TrackRemoteEvent::OnEnded)|None=>break,_=>{},
-                },
-                _=tick.tick(),if due.is_some()=>{
-                    let now=Instant::now();if now<due.unwrap(){continue;}
+                _=async {
+                    if let Some(deadline) = due {
+                        let grace = if expected.is_some_and(|next| !packets.contains_key(&next))
+                            && last.elapsed() < PLAYOUT_BUFFER + LATE_PACKET_GRACE
+                        {
+                            LATE_PACKET_GRACE
+                        } else {
+                            Duration::ZERO
+                        };
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline + grace)).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                }=>{
+                    let now=Instant::now();
                     if packets.is_empty() && now.duration_since(last)>Duration::from_millis(120){due=None;expected=None;continue;}
                     let next=expected.unwrap();let packet=packets.remove(&next);let fec=packet.is_none() && packets.contains_key(&next.wrapping_add(1));
+                    if packet.is_some() { decoded += 1; }
+                    else if !packets.is_empty() { concealed += 1; }
                     let input=packet.as_deref().or_else(||if fec{packets.get(&next.wrapping_add(1)).map(Vec::as_slice)}else{None});
                     let pcm=match decoder.decode(input,fec,if packet.is_some(){5760}else{frame}){Ok(p)=>p,Err(_)=>{emit(&services,&id,"error",json!("Повреждённый пакет Opus")).await;break;}};
                     frame=pcm.len().max(120);expected=Some(next.wrapping_add(1));
                     // Keep the RTP playout clock anchored. Scheduling from `now` adds
                     // every timer's lateness to all subsequent packets and builds seconds of lag.
-                    let next_due=due.unwrap()+Duration::from_secs_f64(frame as f64/48000.0);
-                    due=Some(if now.saturating_duration_since(next_due)>Duration::from_millis(120){now}else{next_due});
-                    if pcm.iter().any(|v|v.unsigned_abs()>400){emit(&services,&id,"heard",Value::Null).await;}
-                    let data:Vec<u8>=pcm.iter().flat_map(|v|v.to_le_bytes()).collect();emit(&services,&id,"audio",B64.encode(data).into()).await;
-                }
+                    let elapsed = Duration::from_secs_f64(frame as f64 / 48_000.0);
+                    let next_due=due.unwrap()+elapsed;
+                    due=Some(if now.saturating_duration_since(next_due)>Duration::from_millis(120){
+                        now+elapsed
+                    }else{next_due});
+                    if audio.try_send(pcm).is_err() {
+                        if audio.is_closed() { break; }
+                        dropped += 1;
+                    }
+                },
+                event=track.poll()=>match event{
+                    Some(TrackRemoteEvent::OnRtpPacket(packet))=>{
+                        let sequence=packet.header.sequence_number;if packet.payload.len()>65535{break;}
+                        let next=*expected.get_or_insert(sequence);if sequence.wrapping_sub(next)>=32768{late+=1;continue;}
+                        let now=Instant::now();
+                        if due.is_some() && now.duration_since(last)<Duration::from_millis(500) {
+                            peak_gap=peak_gap.max(now.duration_since(last));
+                        }
+                        packets.insert(sequence,packet.payload.to_vec());last=now;if due.is_none(){due=Some(last+PLAYOUT_BUFFER);}
+                        if packets.len()>64{if let Some(farthest)=packets.keys().max_by_key(|k|k.wrapping_sub(next)).copied(){packets.remove(&farthest);}}
+                    },Some(TrackRemoteEvent::OnEnded)|None=>break,_=>{},
+                },
             }}
+            if decoded > 0 {
+                eprintln!("ChatGPT: звук RTP: {decoded} пакетов, опоздали {late}, замаскировано пропусков {concealed}, очередь PCM пропустила {dropped}, интервал пакетов до {} мс", peak_gap.as_millis());
+            }
         });
     }
 }
@@ -85,7 +169,7 @@ impl RtcVoice {
         let voice = selected_voice(&params["profile"]["voice"])?;
         let network=(provider.services)("network".into(),json!({})).await?;let runtime=Arc::new(RoutedRuntime::new(&network)?);let tcp_only=runtime.proxied() && !runtime.udp();
         let mut media=MediaEngine::default();let codec=RTCRtpCodec{mime_type:"audio/opus".into(),clock_rate:48000,channels:2,sdp_fmtp_line:"minptime=10;useinbandfec=1".into(),rtcp_feedback:vec![]};
-        media.register_codec(RTCRtpCodecParameters{rtp_codec:codec.clone(),payload_type:111,..Default::default()},RtpCodecKind::Audio).map_err(|e|e.to_string())?;
+        media.register_codec(RTCRtpCodecParameters{rtp_codec:codec.clone(),payload_type:AUDIO_PAYLOAD,..Default::default()},RtpCodecKind::Audio).map_err(|e|e.to_string())?;
         let registry=register_default_interceptors(rtc::interceptor::Registry::new(),&mut media).map_err(|e|e.to_string())?;
         let mut setting=SettingEngineBuilder::new().with_network_types(if tcp_only{vec![rtc::ice::network_type::NetworkType::Tcp4]}else{vec![rtc::ice::network_type::NetworkType::Udp4,rtc::ice::network_type::NetworkType::Tcp4]});
         if runtime.proxied() {
@@ -140,18 +224,20 @@ impl RtcVoice {
         }
         let answer=response.text().await.map_err(|_|"Нет ответа SDP")?;if answer.len()>1024*1024{return Err("Слишком большой SDP".into());}
         if tcp_only && !answer.lines().any(|line|line.starts_with("a=candidate:") && line.to_ascii_lowercase().contains(" tcp ")){return Err("VPN не поддерживает UDP, а ChatGPT не предложил TCP ICE".into());}
+        let bitrate = audio_bitrate(&answer);
+        eprintln!("ChatGPT: Opus, микрофон 16 кГц моно, целевой битрейт {} кбит/с, ответ 48 кГц", bitrate / 1000);
         pc.set_remote_description(RTCSessionDescription::answer(answer).map_err(|e|e.to_string())?).await.map_err(|e|e.to_string())?;
         tokio::time::timeout(Duration::from_secs(12),async{loop{match dc.poll().await{Some(DataChannelEvent::OnOpen)=>return Ok(()),Some(DataChannelEvent::OnClose)|None=>return Err("Канал ChatGPT закрылся".to_string()),_=>{}}}}).await
             .map_err(|_|format!("Звонок ChatGPT с голосом {voice} не соединился за 12 секунд"))??;
         let pending=Arc::new(Mutex::new(Vec::<i16>::new()));let mut receiver_feed=receiver.clone();let feed=pending.clone();let services=provider.services.clone();let feed_id=id.clone();
         let feeder=tokio::spawn(async move{
-            let mut encoder=match opus::Encoder::new(){Ok(e)=>e,Err(e)=>{emit(&services,&feed_id,"error",e.into()).await;return;}};
+            let mut encoder=match opus::Encoder::with_bitrate(bitrate){Ok(e)=>e,Err(e)=>{emit(&services,&feed_id,"error",e.into()).await;return;}};
             let mut mic = super::mic::MicClock::new();
             let mut tick=tokio::time::interval(Duration::from_millis(20));tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {tokio::select!{_=receiver_feed.changed()=>break,_=tick.tick()=>{
                 let pcm = mic.take(&mut feed.lock().unwrap());
                 let packet=match encoder.encode(&pcm){Ok(p)=>p,Err(_)=>break};
-                if track.write_sample(ssrc,111,&rtc::media::Sample{data:packet.into(),duration:Duration::from_millis(20),..rtc::media::Sample::new(Instant::now())},&[]).await.is_err(){break;}
+                if track.write_sample(ssrc,AUDIO_PAYLOAD,&rtc::media::Sample{data:packet.into(),duration:Duration::from_millis(20),..rtc::media::Sample::new(Instant::now())},&[]).await.is_err(){break;}
             }}}
         });
         let mut events_stop=receiver.clone();let channel=dc.clone();let services=provider.services.clone();let event_id=id.clone();

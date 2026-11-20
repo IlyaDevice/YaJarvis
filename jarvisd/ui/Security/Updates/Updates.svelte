@@ -116,12 +116,12 @@
         disabled={!!pending} onclick={() => setAutomatic(true)}>Автообновление</button>
     </div>
     <small class="muted">
-      {#if !update.repo}
+      {#if automatic}
+        Прошивка и плагины обновляются сами с 3 до 6 утра, когда колонка молчит{update.checked ? ` · проверено ${update.checked}` : ""}
+      {:else if !update.repo}
         Укажите репозиторий обновлений или выберите файл с компьютера.
-      {:else if automatic}
-        Новая версия ставится сама ночью, с 3 до 6, когда колонка молчит{update.checked ? ` · проверено ${update.checked}` : ""}
       {:else}
-        Только когда нажмёте «Проверить» или выберете файл
+        Прошивка и плагины обновляются вручную
       {/if}
     </small>
 

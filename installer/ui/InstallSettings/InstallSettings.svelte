@@ -20,7 +20,7 @@
   ];
 
   let { api, selectedSpeaker, onBack, onStarted } = $props();
-  let speakerIp = $derived($selectedSpeaker?.ip);
+  let adbAddress = $derived($selectedSpeaker?.adb_address ?? $selectedSpeaker?.ip);
   let updating = $derived(Boolean($selectedSpeaker?.installed));
   let password = $state("");
   let confirmation = $state("");
@@ -29,7 +29,7 @@
   let submitting = $state(false);
 
   $effect(() => {
-    if (!speakerIp) return;
+    if (!adbAddress) return;
 
     password = "";
     confirmation = "";
@@ -39,7 +39,7 @@
 
   async function install(event) {
     event.preventDefault();
-    if (submitting || !speakerIp) return;
+    if (submitting || !adbAddress) return;
 
     error = "";
     if (!updating && password.length < 6) {
@@ -53,7 +53,7 @@
 
     submitting = true;
     try {
-      await api("POST", "/api/install", { ip: speakerIp, password, timezone });
+      await api("POST", "/api/install", { ip: adbAddress, password, timezone });
       password = "";
       confirmation = "";
       onStarted();

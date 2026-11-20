@@ -1,6 +1,5 @@
 // Каркас: вход, состояние с колонки, опрос, сайдбар, маршруты, запуск.
 import { viewProfile } from "./assistant.js";
-import { viewCharacters } from "./characters.js";
 import { ST, navPill, statsData } from "./charts.js";
 import { viewConnections } from "./connections.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
@@ -17,8 +16,10 @@ export let journal = [];
 export let page = "home";
 export let pollTimer = null;
 let svelteView;
+let routedHash;
 
 const svelteViews = new Map([
+  ["characters", async () => (await import("../Characters/mountCharacters.js")).mountCharacters],
   ["charts", async () => (await import("../Charts/mountCharts.js")).mountCharts],
   ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
   ["security", async () => (await import("../Security/mountSecurity.js")).mountSecurity],
@@ -167,7 +168,10 @@ $("#add-profile").addEventListener("click", () => go("#p/new"));
 export function go(hash) { location.hash = hash; }
 window.addEventListener("hashchange", () => {
   if (!S || $("#app").classList.contains("hidden")) return;
-  if (dirty && !confirm("Есть несохранённые изменения. Уйти без сохранения?")) { history.back(); return; }
+  if (dirty && !confirm("Есть несохранённые изменения. Уйти без сохранения?")) {
+    history.replaceState(history.state, "", routedHash || location.pathname + location.search);
+    return;
+  }
   route();
 });
 window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
@@ -195,7 +199,8 @@ export function route() {
   setDirty(false);
   $("#side").classList.remove("open");
   document.body.classList.remove("menu-open");
-  const h = location.hash.slice(1) || "home";
+  routedHash = location.hash;
+  const h = routedHash.slice(1) || "home";
   const loadSvelteView = svelteViews.get(h);
   const v0 = $("#view"); v0.oninput = v0.onchange = v0.onclick = null;   // обработчики прошлой страницы
   if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
@@ -223,8 +228,8 @@ export function route() {
     }
   }
   else {
-    page = ["home", "player", "characters", "memory", "connections", "speaker"].includes(h) ? h : "home";
-    ({ home: viewHome, player: viewPlayer, characters: viewCharacters, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker })[page]();
+    page = ["home", "player", "memory", "connections", "speaker"].includes(h) ? h : "home";
+    ({ home: viewHome, player: viewPlayer, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);
