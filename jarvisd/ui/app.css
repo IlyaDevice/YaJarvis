@@ -359,7 +359,6 @@ details .inner { display: grid; gap: 16px; }
 
 /* ---------- обновления ---------- */
 .upd { display: grid; gap: 8px; padding: 12px; border-radius: 12px; border: 1px solid var(--line2); background: var(--card); }
-.unotes { margin: 0; white-space: pre-wrap; font: 12px/16px var(--mono); color: var(--fg2); max-height: 200px; overflow: auto; }
 .nav .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); margin-left: auto; }
 
 /* ---------- вход: забыли пароль ---------- */
@@ -372,7 +371,6 @@ details.mini > summary { cursor: pointer; color: var(--fg2); font-size: 13px; }
 details.mini[open] > summary { margin-bottom: 8px; }
 details.mini { display: grid; gap: 8px; }
 .ycode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.upd-row { gap: 12px; }
 .ph-tabs { margin-top: 16px; }
 
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -482,8 +480,6 @@ details.mini { display: grid; gap: 8px; }
 .play-led { display: grid; gap: 16px; padding: 16px; border-radius: 12px; background: var(--card); border: 1px solid var(--line2); }
 @media (max-width: 720px) { .ledrow { grid-template-columns: 32px 1fr; } .ledrow .swatches { grid-column: 1 / -1; } }
 
-#upd { display: grid; gap: 12px; justify-items: start; }
-#upd .upd-row { justify-self: stretch; }
 /* ---------- правая колонка главной — ровно по высоте чата, плеер занимает остаток ---------- */
 .np-body { display: flex; flex-direction: column; gap: 12px; height: 100%; }
 @media (min-width: 1200px) {
@@ -809,27 +805,6 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 .qrow:hover .ib, .qrow .ib:focus-visible { opacity: 1; }
 .empty { color: var(--fg2); font-size: 13.5px; padding: 12px 8px; }
 
-/* ---------- графики ---------- */
-.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-@media (max-width: 1000px) { .charts { grid-template-columns: minmax(0, 1fr); } }
-.chart-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-.chart-h .value b { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
-.chart-h .value span { color: var(--fg2); font-size: 13px; font-weight: 600; margin-left: 4px; }
-.chart-h small { display: block; color: var(--fg2); font-size: 12.5px; font-weight: 600; margin-top: 2px; }
-.chart { position: relative; height: 150px; margin-top: 10px; }
-.chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
-.chart .grid line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.chart .ax { font: 10.5px var(--mono); fill: var(--fg3); }
-.chart path.l { fill: none; stroke: var(--acc); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.chart path.a { fill: url(#spark-fill); }
-.chart .cross { stroke: var(--fg3); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0; }
-.chart .pt { fill: var(--acc); stroke: var(--card); stroke-width: 3; opacity: 0; }
-.chart:hover .cross, .chart:hover .pt { opacity: 1; }
-.chart .ctip { position: absolute; top: -6px; transform: translateX(-50%); background: #26262f; border: 1px solid var(--line2); border-radius: 8px; padding: 4px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .15s; }
-.chart:hover .ctip { opacity: 1; }
-.chart.draw path.l { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 1.1s var(--ease) forwards; }
-.chart.draw path.a { opacity: 0; animation: fade-in .7s ease .5s forwards; }
-
 /* ---------- ночной режим ---------- */
 .night-t { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .night-t .f { width: 128px; }
@@ -851,7 +826,7 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 }
 @media (prefers-reduced-motion: reduce) {
   .view.enter > *, .view.enter .stagger > *, .qrow { animation: none; }
-  .spark.draw path, .chart.draw path { animation: none; stroke-dasharray: none; opacity: 1; }
+  .spark.draw path { animation: none; stroke-dasharray: none; opacity: 1; }
   .nav-eq i, .dot.on, .dot.live, .prof .act { animation: none; }
 }
 .pl-hero { margin-bottom: 14px; }
@@ -872,7 +847,7 @@ progress.bar::-moz-progress-bar { background: var(--acc); }
 .tg-h { border-bottom-color: var(--soft-line); }
 .tg-f { border-top-color: var(--soft-line); }
 .tg-body { background-color: rgb(0 0 0 / .18); }
-.kpis, .home, .rail, .cols, .charts { gap: 16px; }
+.kpis, .home, .rail, .cols { gap: 16px; }
 .kpis { margin-bottom: 16px; }
 .sec { margin-bottom: 16px; }
 .pl-hero { margin-bottom: 16px; }
@@ -896,7 +871,7 @@ input[type=text], input[type=password], input[type=number], input[type=time], se
 h1 { font-size: 34px; line-height: 40px; }
 .ph { margin-bottom: 28px; }
 .ph .sub { font-size: 14.5px; margin-top: 6px; }
-.kpis, .home, .rail, .cols, .charts { gap: 20px; }
+.kpis, .home, .rail, .cols { gap: 20px; }
 .kpis { margin-bottom: 20px; }
 .kpi { padding: 20px 22px 22px; min-height: 150px; gap: 10px; }
 .kpi .label { font-size: 14px; }
@@ -1086,7 +1061,7 @@ h1 { font-size: 34px; line-height: 40px; }
 @media (prefers-reduced-motion: reduce) { .modal-card { animation: none !important; opacity: 1; transform: none; } }
 
 /* ---------- графики: линии без масштабирования штриха ---------- */
-.spark path.l, .chart path.l { vector-effect: none; }
+.spark path.l { vector-effect: none; }
 .spark { -webkit-mask-image: linear-gradient(90deg, transparent 0%, transparent 25%, #000 60%); mask-image: linear-gradient(90deg, transparent 0%, transparent 25%, #000 60%); }
 .cover img:not([src]) { display: none; }
 .np .np-vol { display: grid; grid-template-columns: auto minmax(0, 1fr) 2ch; align-items: center; gap: 14px; padding-top: 14px; border-top: 1px solid var(--soft-line); margin-top: 2px; color: var(--fg2); }
