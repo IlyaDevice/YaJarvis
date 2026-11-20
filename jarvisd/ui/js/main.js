@@ -6,7 +6,6 @@ import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core
 import { homeData, viewHome } from "./home.js";
 import { HL, homeLogs } from "./logs.js";
 import { drawVolume, musicData, viewPlayer } from "./player.js";
-import { viewSpeaker } from "./speaker.js";
 import { wizOpen } from "./wizard.js";
 import { drawWakeTraining } from "./wake-training.js";
 
@@ -23,6 +22,7 @@ const svelteViews = new Map([
   ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
   ["memory", async () => (await import("../Memory/mountMemory.js")).mountMemory],
   ["security", async () => (await import("../Security/mountSecurity.js")).mountSecurity],
+  ["speaker", async () => (await import("../Speaker/mountSpeaker.js")).mountSpeaker],
 ]);
 
 // ---------------------------------------------------------------- вход
@@ -209,11 +209,6 @@ export function route() {
   else if (loadSvelteView) {
     page = h;
     void viewSvelte(v0, loadSvelteView);
-  }
-  else if (h === "speaker") {
-    page = h;
-    const lighting = viewSpeaker();
-    void viewSvelte(lighting, async () => (await import("../Lighting/mountLighting.js")).mountLighting);
   }
   else if (h === "training") {
     page = "training";

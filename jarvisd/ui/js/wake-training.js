@@ -6,14 +6,22 @@ const ACTIVE = "/api/train/wake/active";
 const POSITIVES = 10;
 const NEGATIVES = 3;
 
-function modelLabel(profile) {
+export function modelLabel(profile) {
   return profile.id ? profile.phrase : profile.phrase + " (по умолчанию)";
+}
+
+export function loadWakeProfiles(signal) {
+  return api("GET", PROFILES, undefined, { signal });
+}
+
+export function selectWakeProfile(id) {
+  return api("PUT", ACTIVE, { id });
 }
 
 export async function bindWakeProfiles(select) {
   if (!select) return;
   try {
-    const { profiles, selected } = await api("GET", PROFILES);
+    const { profiles, selected } = await loadWakeProfiles();
     if (!select.isConnected) return;
     select.replaceChildren(...profiles.map((profile) =>
       new Option(modelLabel(profile), profile.id, false, profile.id === selected)));
@@ -21,7 +29,7 @@ export async function bindWakeProfiles(select) {
     select.onchange = async () => {
       select.disabled = true;
       try {
-        await api("PUT", ACTIVE, { id: select.value });
+        await selectWakeProfile(select.value);
         await reload();
         if (select.isConnected) route();
       } catch (error) {
@@ -72,7 +80,7 @@ function previewAudio(pcm) {
 
 export async function drawWakeTraining(panel) {
   let state;
-  try { state = await api("GET", PROFILES); } catch (error) {
+  try { state = await loadWakeProfiles(); } catch (error) {
     if (panel.isConnected) panel.textContent = error.message;
     return;
   }
