@@ -1,19 +1,19 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Request, State},
+    extract::{Request, State, rejection::JsonRejection},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Cursor, ErrorKind, Read, Seek},
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -36,6 +36,9 @@ const STAGE: &str = "/tmp/jarvis-setup-stage";
 const AUTOSTART_MANUAL: &str = "jarvis-autostart-manual";
 const MAX_PAYLOAD: usize = 40 << 20;
 const INSTALL_RESERVE_KIB: u64 = 1024;
+const DEFAULT_ADB_PORT: u16 = 5555;
+const INVALID_ADB_ADDRESS: &str =
+    "Укажите IPv4-адрес колонки. Порт от 1 до 65535 можно добавить через двоеточие, например 192.168.1.50:5556";
 const MODELS: [&str; 3] = ["wake.bin", "oww.bin", "wake_oww.bin"];
 const REQUIRED: &[&str] = &[
     "jarvisd",
@@ -53,6 +56,7 @@ type App = Arc<Setup>;
 struct Setup {
     token: String,
     address: SocketAddr,
+    skip_panel_check: bool,
     job: Mutex<Job>,
     adb: tokio::sync::OnceCell<PathBuf>,
     scanning: tokio::sync::Mutex<()>,
@@ -65,6 +69,7 @@ struct Job {
     error: String,
     warning: String,
     url: String,
+    panel_check_skipped: bool,
     #[serde(skip)]
     busy: bool,
 }
@@ -72,6 +77,7 @@ struct Job {
 #[derive(Default, Serialize)]
 struct Speaker {
     ip: String,
+    adb_address: String,
     model: String,
     arch: String,
     userland: String,
@@ -137,16 +143,33 @@ impl Speaker {
 
 #[derive(Deserialize)]
 struct Address {
-    ip: Ipv4Addr,
+    #[serde(rename = "ip", deserialize_with = "deserialize_adb_address")]
+    adb_address: SocketAddrV4,
 }
 
 #[derive(Deserialize)]
 struct Install {
-    ip: Ipv4Addr,
+    #[serde(rename = "ip", deserialize_with = "deserialize_adb_address")]
+    adb_address: SocketAddrV4,
     #[serde(default)]
     password: String,
     #[serde(default)]
     timezone: String,
+}
+
+fn deserialize_adb_address<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SocketAddrV4, D::Error> {
+    let input = String::deserialize(deserializer)?;
+    let input = input.trim();
+    if let Ok(ip) = input.parse::<Ipv4Addr>() {
+        return Ok(SocketAddrV4::new(ip, DEFAULT_ADB_PORT));
+    }
+    input
+        .parse::<SocketAddrV4>()
+        .ok()
+        .filter(|address| address.port() != 0)
+        .ok_or_else(|| de::Error::custom(INVALID_ADB_ADDRESS))
 }
 
 struct Scratch(PathBuf);
@@ -163,7 +186,7 @@ impl Drop for Scratch {
     }
 }
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(skip_panel_check: bool) -> Result<(), Box<dyn std::error::Error>> {
     let port = std::env::var("JARVIS_SETUP_PORT")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
@@ -173,6 +196,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = Arc::new(Setup {
         token: token()?,
         address,
+        skip_panel_check,
         job: Mutex::default(),
         adb: tokio::sync::OnceCell::new(),
         scanning: tokio::sync::Mutex::new(()),
@@ -315,17 +339,17 @@ impl Setup {
         Ok(String::from_utf8_lossy(&result.stdout).trim().to_owned())
     }
 
-    async fn shell(&self, ip: Ipv4Addr, script: &str) -> Result<String, String> {
-        self.adb(&["-s", &format!("{ip}:5555"), "shell", script], 40)
+    async fn shell(&self, target: SocketAddrV4, script: &str) -> Result<String, String> {
+        self.adb(&["-s", &target.to_string(), "shell", script], 40)
             .await
     }
 
-    async fn inspect(&self, ip: Ipv4Addr) -> Result<Speaker, String> {
-        if !ip.is_private() {
+    async fn inspect(&self, target: SocketAddrV4) -> Result<Speaker, String> {
+        if !target.ip().is_private() {
             return Err("Нужен IP вашей колонки в домашней сети".into());
         }
-        self.adb(&["connect", &format!("{ip}:5555")], 10).await?;
-        let info = self.shell(ip, r#"id -u; uname -m; head -c 160 /proc/device-tree/model 2>/dev/null | tr -d '\000\n'; printf '\n'; df -k /data 2>/dev/null | awk 'END{print $4}'; awk '/MemTotal/{print $2}' /proc/meminfo; od -An -tu1 -N20 /system/vendor/quasar/maind 2>/dev/null | tr '\n' ' '; printf '\n'; if test -d /etc/init.d && command -v aplay >/dev/null && command -v start-stop-daemon >/dev/null; then echo ready; else echo missing; fi
+        self.adb(&["connect", &target.to_string()], 10).await?;
+        let info = self.shell(target, r#"id -u; uname -m; head -c 160 /proc/device-tree/model 2>/dev/null | tr -d '\000\n'; printf '\n'; df -k /data 2>/dev/null | awk 'END{print $4}'; awk '/MemTotal/{print $2}' /proc/meminfo; od -An -tu1 -N20 /system/vendor/quasar/maind 2>/dev/null | tr '\n' ' '; printf '\n'; if test -d /etc/init.d && command -v aplay >/dev/null && command -v start-stop-daemon >/dev/null; then echo ready; else echo missing; fi
 d=/data/opt/jarvisd
 if [ -f "$d/jarvisd.prev-rust" ]; then du -k "$d/jarvisd.prev-rust" 2>/dev/null | awk '{print $1}'; else echo 0; fi
 df -k /tmp 2>/dev/null | awk 'END{print $4}'
@@ -353,7 +377,7 @@ for model in wake.bin oww.bin wake_oww.bin; do if [ -e "$d/$model" ]; then echo 
         };
         let installed = self
             .shell(
-                ip,
+                target,
                 "test ! -x /data/opt/jarvisd/jarvisd || /data/opt/jarvisd/jarvisd version",
             )
             .await
@@ -361,7 +385,8 @@ for model in wake.bin oww.bin wake_oww.bin; do if [ -e "$d/$model" ]; then echo 
         let free_kb = field(3).parse::<u64>().unwrap_or(0);
         let rollback_kb = field(7).parse::<u64>().unwrap_or(0);
         let mut sp = Speaker {
-            ip: ip.to_string(),
+            ip: target.ip().to_string(),
+            adb_address: target.to_string(),
             model: field(2).into(),
             arch: arch.into(),
             userland: userland.into(),
@@ -379,7 +404,7 @@ for model in wake.bin oww.bin wake_oww.bin; do if [ -e "$d/$model" ]; then echo 
             ..Default::default()
         };
         let profile = self
-            .shell(ip, "cat /system/vendor/quasar/launch.json 2>/dev/null")
+            .shell(target, "cat /system/vendor/quasar/launch.json 2>/dev/null")
             .await
             .unwrap_or_default();
         if !root {
@@ -435,12 +460,34 @@ for model in wake.bin oww.bin wake_oww.bin; do if [ -e "$d/$model" ]; then echo 
     fn log(&self, text: &str) {
         self.job.lock().unwrap().lines.push(text.into());
     }
-    async fn push(&self, ip: Ipv4Addr, path: &Path, address: &str) -> Result<(), String> {
+    async fn push(&self, target: SocketAddrV4, path: &Path, remote_path: &str) -> Result<(), String> {
         let path = path.to_str().ok_or("Недопустимый путь к файлу")?;
-        self.adb(&["-s", &format!("{ip}:5555"), "push", path, address], 120)
+        self.adb(&["-s", &target.to_string(), "push", path, remote_path], 120)
             .await?;
         Ok(())
     }
+}
+
+fn adb_device_targets(devices: &str) -> (BTreeSet<Ipv4Addr>, Vec<SocketAddrV4>) {
+    let mut known_default_addresses = BTreeSet::new();
+    let mut connected_targets = Vec::new();
+    for line in devices.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let Some(target) = fields
+            .next()
+            .and_then(|serial| serial.parse::<SocketAddrV4>().ok())
+            .filter(|address| address.port() != 0)
+        else {
+            continue;
+        };
+        if target.port() == DEFAULT_ADB_PORT {
+            known_default_addresses.insert(*target.ip());
+        }
+        if fields.next() == Some("device") {
+            connected_targets.push(target);
+        }
+    }
+    (known_default_addresses, connected_targets)
 }
 
 async fn scan(State(app): State<App>) -> Response {
@@ -451,32 +498,22 @@ async fn scan(State(app): State<App>) -> Response {
         Ok(d) => d,
         Err(e) => return bad(e),
     };
-    let mut already = std::collections::BTreeSet::new();
-    let mut candidates = Vec::new();
-    for line in devices.lines().skip(1) {
-        let mut fields = line.split_whitespace();
-        let Some(ip) = fields
-            .next()
-            .and_then(|s| s.strip_suffix(":5555"))
-            .and_then(|s| s.parse::<Ipv4Addr>().ok())
-        else {
-            continue;
-        };
-        already.insert(ip);
-        if fields.next() == Some("device") {
-            candidates.push((ip, false));
-        }
-    }
-    let nearby = discovery::nearby(&already).await;
-    candidates.extend(nearby.into_iter().take(16).map(|ip| (ip, true)));
+    let (known_default_addresses, connected_targets) = adb_device_targets(&devices);
+    let nearby = discovery::nearby(&known_default_addresses).await;
+    let candidates = connected_targets.into_iter().map(|target| (target, false)).chain(
+        nearby
+            .into_iter()
+            .take(16)
+            .map(|ip| (SocketAddrV4::new(ip, DEFAULT_ADB_PORT), true)),
+    );
     let mut probes = tokio::task::JoinSet::new();
-    for (ip, new) in candidates {
+    for (target, new) in candidates {
         let app = app.clone();
         probes.spawn(async move {
-            let found = tokio::time::timeout(Duration::from_secs(9), app.inspect(ip)).await
+            let found = tokio::time::timeout(Duration::from_secs(9), app.inspect(target)).await
                 .ok().and_then(Result::ok).filter(|speaker| !new || !speaker.userland.is_empty());
             if new && found.is_none() {
-                let _ = app.adb(&["disconnect", &format!("{ip}:5555")], 2).await;
+                let _ = app.adb(&["disconnect", &target.to_string()], 2).await;
             }
             found
         });
@@ -485,11 +522,14 @@ async fn scan(State(app): State<App>) -> Response {
     while let Some(probe) = probes.join_next().await {
         if let Ok(Some(speaker)) = probe { speakers.push(speaker); }
     }
-    speakers.sort_by(|a, b| a.ip.cmp(&b.ip));
+    speakers.sort_by(|a, b| a.ip.cmp(&b.ip).then_with(|| a.adb_address.cmp(&b.adb_address)));
     reply(StatusCode::OK, json!({"speakers":speakers}))
 }
-async fn check(State(app): State<App>, Json(new): Json<Address>) -> Response {
-    match app.inspect(new.ip).await {
+async fn check(State(app): State<App>, input: Result<Json<Address>, JsonRejection>) -> Response {
+    let Ok(Json(input)) = input else {
+        return bad(INVALID_ADB_ADDRESS);
+    };
+    match app.inspect(input.adb_address).await {
         Ok(s) => reply(StatusCode::OK, json!(s)),
         Err(e) => bad(e),
     }
@@ -504,12 +544,12 @@ async fn install(State(app): State<App>, Json(input): Json<Install>) -> Response
 async fn uninstall(State(app): State<App>, Json(input): Json<Address>) -> Response {
     let work = app.clone();
     app.start(async move {
-        let speaker = work.inspect(input.ip).await?;
+        let speaker = work.inspect(input.adb_address).await?;
         if !speaker.root || speaker.installed.is_empty() {
             return Err("Джарвис на колонке не найден".into());
         }
         work.shell(
-            input.ip,
+            input.adb_address,
             "start-stop-daemon -S -b -x /bin/sh -- /data/opt/jarvisd/jarvisd.sh uninstall",
         )
         .await?;
@@ -619,6 +659,66 @@ async fn payload(app: &Setup, arch: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+mod address_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_default_and_custom_adb_ports_in_requests() {
+        for (input, expected_port) in [
+            ("192.168.1.50", DEFAULT_ADB_PORT),
+            ("192.168.1.50:5555", DEFAULT_ADB_PORT),
+            (" 192.168.1.50:5556 ", 5556),
+            ("192.168.1.50:65535", 65535),
+        ] {
+            let expected = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), expected_port);
+            let address: Address = serde_json::from_value(json!({"ip": input})).unwrap();
+            let install: Install = serde_json::from_value(json!({"ip": input})).unwrap();
+            assert_eq!(address.adb_address, expected);
+            assert_eq!(install.adb_address, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_adb_addresses() {
+        for input in [
+            "",
+            "192.168.1.50:",
+            "192.168.1.50:0",
+            "192.168.1.50:65536",
+            "192.168.1.50:not-a-port",
+            "speaker.local:5556",
+            "[::1]:5556",
+        ] {
+            assert!(serde_json::from_value::<Address>(json!({"ip": input})).is_err());
+            assert!(serde_json::from_value::<Install>(json!({"ip": input})).is_err());
+        }
+    }
+
+    #[test]
+    fn scan_keeps_connected_custom_ports_and_only_skips_known_default_ports() {
+        let (known_default, connected) = adb_device_targets(concat!(
+            "List of devices attached\n",
+            "192.168.1.50:5556\tdevice\n",
+            "192.168.1.51:5555\tdevice\n",
+            "192.168.1.52:5555\toffline\n",
+            "192.168.1.53:5556\tunauthorized\n",
+            "emulator-5554\tdevice\n",
+        ));
+        assert_eq!(
+            known_default,
+            BTreeSet::from([Ipv4Addr::new(192, 168, 1, 51), Ipv4Addr::new(192, 168, 1, 52)])
+        );
+        assert_eq!(
+            connected,
+            [
+                SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 5556),
+                SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 51), DEFAULT_ADB_PORT),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
 mod payload_tests {
     use super::*;
 
@@ -718,9 +818,9 @@ fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String
 }
 
 async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
-    let ip = input.ip;
+    let target = input.adb_address;
     app.log("Подключаюсь к выбранной колонке…");
-    let mut sp = app.inspect(ip).await?;
+    let mut sp = app.inspect(target).await?;
     if !sp.problems.is_empty() {
         return Err(sp.problems.join(". "));
     }
@@ -739,9 +839,9 @@ async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
     let temp = Scratch::new()?;
     let sums = unpack(bytes, &temp.0)?;
     let stage = format!("{STAGE}-{}", token()?);
-    app.shell(ip, &format!("umask 077; mkdir {stage}")).await?;
+    app.shell(target, &format!("umask 077; mkdir {stage}")).await?;
     let result = stage_install(app, input, &sp, &stage, &temp.0, &sums).await;
-    let _ = app.shell(ip, &format!("rm -rf {stage}")).await;
+    let _ = app.shell(target, &format!("rm -rf {stage}")).await;
     result
 }
 
@@ -753,22 +853,22 @@ async fn stage_install(
     temp: &Path,
     sums: &BTreeMap<String, String>,
 ) -> Result<String, String> {
-    let ip = input.ip;
+    let target = input.adb_address;
     for (name, digest) in sums {
         app.log(&format!("Копирую {name}"));
-        app.push(ip, &temp.join(name), &format!("{stage}/{name}"))
+        app.push(target, &temp.join(name), &format!("{stage}/{name}"))
             .await?;
-        let actual = app.shell(ip, &format!("sha256sum {stage}/{name}")).await?;
+        let actual = app.shell(target, &format!("sha256sum {stage}/{name}")).await?;
         if actual.split_whitespace().next() != Some(digest.as_str()) {
             return Err(format!("Файл {name} повреждён при передаче"));
         }
     }
     app.shell(
-        ip,
+        target,
         &format!("chmod 700 {stage}/jarvisd {stage}/jarvis-supervisor"),
     )
     .await?;
-    let image = app.shell(ip, &format!("{stage}/jarvisd core-info")).await?;
+    let image = app.shell(target, &format!("{stage}/jarvisd core-info")).await?;
     let image: jarvis_station::Image =
         serde_json::from_str(&image).map_err(|_| "Колонка не запускает Rust-сборку")?;
     if image.format != jarvis_station::IDENTITY || image.arch != sp.arch {
@@ -776,7 +876,7 @@ async fn stage_install(
     }
     let mut required = std::collections::BTreeSet::new();
     if !sp.installed.is_empty() {
-        let manifests = app.shell(ip, r#"printf '['; comma=; for f in /data/opt/jarvisd/plugins/*/plugin.json; do if [ -f "$f" ]; then printf '%s' "$comma"; cat "$f"; comma=,; fi; done; printf ']'"#).await?;
+        let manifests = app.shell(target, r#"printf '['; comma=; for f in /data/opt/jarvisd/plugins/*/plugin.json; do if [ -f "$f" ]; then printf '%s' "$comma"; cat "$f"; comma=,; fi; done; printf ']'"#).await?;
         let manifests: Vec<Value> = serde_json::from_str(&manifests)
             .map_err(|_| "Не удалось проверить установленные модули")?;
         required.extend(
@@ -799,14 +899,14 @@ async fn stage_install(
             return Err("Неверный идентификатор модуля в пакете".into());
         }
         let manifest = app
-            .shell(ip, &format!("{stage}/jarvisd module-manifest {id}"))
+            .shell(target, &format!("{stage}/jarvisd module-manifest {id}"))
             .await?;
         let filename = format!("module-{id}.json");
         let path = temp.join(&filename);
         tokio::fs::write(&path, manifest)
             .await
             .map_err(|e| e.to_string())?;
-        app.push(ip, &path, &format!("{stage}/{filename}")).await?;
+        app.push(target, &path, &format!("{stage}/{filename}")).await?;
     }
     let password_hash = if input.password.is_empty() {
         String::new()
@@ -815,18 +915,18 @@ async fn stage_install(
     };
     let seed = temp.join("seed.json");
     jarvis_station::atomic(&seed, json!({"password_hash":password_hash,"timezone":input.timezone}).to_string().as_bytes()).map_err(|e| e.to_string())?;
-    app.push(ip, &seed, &format!("{stage}/seed.json")).await?;
+    app.push(target, &seed, &format!("{stage}/seed.json")).await?;
     app.shell(
-        ip,
+        target,
         &format!(
             "chmod 700 {stage}/jarvisd {stage}/jarvis-supervisor; chmod 600 {stage}/seed.json"
         ),
     )
     .await?;
-    app.log("Добавляю автозапуск и проверяю, что панель поднимается…");
+    app.log("Добавляю автозапуск…");
     let output = app
         .shell(
-            ip,
+            target,
             &install_script(stage, &sp.userland, &sums["jarvisd"], &image.version)?,
         )
         .await?;
@@ -834,21 +934,34 @@ async fn stage_install(
     if manual_autostart {
         app.log("Скрипт для ручной настройки автозапуска сохранён в /data/opt/jarvisd/S98jarvisd");
     }
-    app.log("Проверяю запуск панели…");
-    let url = format!("http://{ip}:8080/");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let url = format!("http://{}:8080/", target.ip());
+    let client = if app.skip_panel_check {
+        app.log("Проверяю завершение установки по ADB…");
+        None
+    } else {
+        app.log("Проверяю запуск панели…");
+        Some(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .no_proxy()
+                .build()
+                .map_err(|e| e.to_string())?,
+        )
+    };
     for _ in 0..35 {
-        if let Ok(response) = client.get(format!("{url}healthz")).send().await
-            && let Ok(status) = response.json::<Value>().await
-            && status["version"] == image.version
-            && status["ready"] == true
+        let panel_ready = match &client {
+            Some(client) => match client.get(format!("{url}healthz")).send().await {
+                Ok(response) => response.json::<Value>().await.is_ok_and(|status| {
+                    status["version"] == image.version && status["ready"] == true
+                }),
+                Err(_) => false,
+            },
+            None => true,
+        };
+        if panel_ready
             && app
                 .shell(
-                    ip,
+                    target,
                     concat!(
                         "test ! -e /data/opt/jarvisd/update-rust.json",
                         " && test ! -e /data/opt/jarvisd/update-rust.error",
@@ -865,10 +978,18 @@ async fn stage_install(
                 )
                 .into();
             }
+            if app.skip_panel_check {
+                app.job.lock().unwrap().panel_check_skipped = true;
+                app.log("Готово. Проверка панели с компьютера пропущена");
+                return Ok(String::new());
+            }
             app.log("Готово. Панель Джарвиса отвечает");
             return Ok(url);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    if app.skip_panel_check {
+        return Err("Колонка не подтвердила завершение установки по ADB".into());
     }
     Err("Панель новой сборки не ответила. Служба вернёт предыдущую версию, если она была установлена".into())
 }

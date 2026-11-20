@@ -3,6 +3,7 @@
 
   let { api, selectedSpeaker, onBack, onContinue, onUninstalled } = $props();
   let speaker = $derived($selectedSpeaker);
+  let adbAddress = $derived(speaker?.adb_address ?? speaker?.ip);
   let problems = $derived(speaker?.problems ?? []);
   let uninstalling = $state(false);
 
@@ -23,9 +24,9 @@
     ];
   }
 
-  function technicalDetails(speaker) {
+  function technicalDetails(speaker, adbAddress) {
     return [
-      ["IP", speaker.ip],
+      ["Адрес ADB", adbAddress],
       ["Модель", speaker.model || "?"],
       ["Процессор", speaker.arch || "?"],
       ["Алиса / микрофон", speaker.userland || "?"],
@@ -46,7 +47,7 @@
 
     uninstalling = true;
     try {
-      await api("POST", "/api/uninstall", { ip: speaker.ip });
+      await api("POST", "/api/uninstall", { ip: adbAddress });
       onUninstalled();
     } catch (error) {
       alert(error.message);
@@ -72,7 +73,7 @@
     {@const available = speaker.staging_mb ?? speaker.free_mb}
     {@const needed = speaker.need_mb}
     <span class="eyebrow">
-      {speaker.ip} · {speaker.installed ? `Джарвис ${speaker.installed} — обновим, настройки сохранятся` : "проверка устройства"}
+      {adbAddress} · {speaker.installed ? `Джарвис ${speaker.installed} — обновим, настройки сохранятся` : "проверка устройства"}
     </span>
     <h1 class={styles.heading}>{speaker.model || "Колонка"}</h1>
     <div class={styles.tiles}>
@@ -118,7 +119,7 @@
     <details class={styles.technicalDetails}>
       <summary>Технические сведения</summary>
       <dl class={styles.technicalValues}>
-        {#each technicalDetails(speaker) as [label, value]}
+        {#each technicalDetails(speaker, adbAddress) as [label, value]}
           <dt>{label}</dt>
           <dd>{value}</dd>
         {/each}
