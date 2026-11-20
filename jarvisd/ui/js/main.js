@@ -1,13 +1,12 @@
 // Каркас: вход, состояние с колонки, опрос, сайдбар, маршруты, запуск.
 import { viewProfile } from "./assistant.js";
-import { CH, ST, chartsData, navPill, statsData, viewCharts } from "./charts.js";
+import { ST, navPill, statsData } from "./charts.js";
 import { viewConnections } from "./connections.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
 import { HL, homeLogs } from "./logs.js";
 import { drawVolume, musicData, viewPlayer } from "./player.js";
 import { viewMemory } from "./memory.js";
-import { viewSecurity } from "./security.js";
 import { viewSpeaker } from "./speaker.js";
 import { wizOpen } from "./wizard.js";
 import { drawWakeTraining } from "./wake-training.js";
@@ -20,8 +19,10 @@ let svelteView;
 let routedHash;
 
 const svelteViews = new Map([
-  ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
   ["characters", async () => (await import("../Characters/mountCharacters.js")).mountCharacters],
+  ["charts", async () => (await import("../Charts/mountCharts.js")).mountCharts],
+  ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
+  ["security", async () => (await import("../Security/mountSecurity.js")).mountSecurity],
 ]);
 
 // ---------------------------------------------------------------- вход
@@ -87,7 +88,7 @@ export async function start() {
 }
 
 export async function poll() {
-  const refreshLogs = svelteView?.refresh;
+  const refreshView = svelteView?.refresh;
   let d;
   try { d = await api("GET", "/api/journal"); } catch { return; }
   if (d.version && S.version && d.version !== S.version) { location.reload(); return; }   // колонку обновили — берём новую панель
@@ -97,8 +98,7 @@ export async function poll() {
   if (d.volume >= 0) S.speaker.volume = d.volume;
   if (page === "home") { homeData(); drawVolume(); if (Date.now() - ST.at > 15000) statsData(); if (Date.now() - HL.at > 5000) homeLogs(); }
   if (page === "player") drawVolume();
-  if (page === "charts" && Date.now() - CH.at > 15000) chartsData(false);
-  if (refreshLogs && refreshLogs === svelteView?.refresh) void refreshLogs();
+  if (refreshView && refreshView === svelteView?.refresh) void refreshView();
   musicData();
   clearTimeout(poll.fast);
   if (S.speaker.talking && page === "home") poll.fast = setTimeout(poll, 500);
@@ -228,8 +228,8 @@ export function route() {
     }
   }
   else {
-    page = ["home", "player", "charts", "memory", "connections", "speaker", "security"].includes(h) ? h : "home";
-    ({ home: viewHome, player: viewPlayer, charts: viewCharts, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker, security: viewSecurity })[page]();
+    page = ["home", "player", "memory", "connections", "speaker"].includes(h) ? h : "home";
+    ({ home: viewHome, player: viewPlayer, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);
