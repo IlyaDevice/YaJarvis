@@ -6,7 +6,6 @@ import { $, $$, act, api, dirty, esc, icon, ICONS, ring, setDirty } from "./core
 import { homeData, viewHome } from "./home.js";
 import { HL, homeLogs } from "./logs.js";
 import { drawVolume, musicData, viewPlayer } from "./player.js";
-import { viewMemory } from "./memory.js";
 import { viewSpeaker } from "./speaker.js";
 import { wizOpen } from "./wizard.js";
 import { drawWakeTraining } from "./wake-training.js";
@@ -22,6 +21,7 @@ const svelteViews = new Map([
   ["characters", async () => (await import("../Characters/mountCharacters.js")).mountCharacters],
   ["charts", async () => (await import("../Charts/mountCharts.js")).mountCharts],
   ["logs", async () => (await import("../Logs/mountLogs.js")).mountLogs],
+  ["memory", async () => (await import("../Memory/mountMemory.js")).mountMemory],
   ["security", async () => (await import("../Security/mountSecurity.js")).mountSecurity],
 ]);
 
@@ -210,6 +210,11 @@ export function route() {
     page = h;
     void viewSvelte(v0, loadSvelteView);
   }
+  else if (h === "speaker") {
+    page = h;
+    const lighting = viewSpeaker();
+    void viewSvelte(lighting, async () => (await import("../Lighting/mountLighting.js")).mountLighting);
+  }
   else if (h === "training") {
     page = "training";
     v0.innerHTML = '<header class="ph"><h1>Обучение</h1></header>';
@@ -228,8 +233,8 @@ export function route() {
     }
   }
   else {
-    page = ["home", "player", "memory", "connections", "speaker"].includes(h) ? h : "home";
-    ({ home: viewHome, player: viewPlayer, memory: viewMemory, connections: viewConnections, speaker: viewSpeaker })[page]();
+    page = ["home", "player", "connections"].includes(h) ? h : "home";
+    ({ home: viewHome, player: viewPlayer, connections: viewConnections })[page]();
   }
   renderSide();
   window.scrollTo(0, 0);
