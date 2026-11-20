@@ -153,6 +153,9 @@ impl Tools {
 
     /// Короткая команда умного дома или фраза сценария — её можно отдать Алисе целиком.
     pub async fn home_command(&self, text: &str) -> Option<String> {
+        if fastcmd::youtube_request(text) || fastcmd::clarification(text).is_some() {
+            return None;
+        }
         if let Some(b) = fastcmd::home_command_local(text) {
             return Some(b);
         }
@@ -198,12 +201,12 @@ impl Tools {
         }
         if self.music.is_some() && self.host.provider("youtube").is_ok() {
             let who = if self.use_ch("yandexmusic") {
-                "Обычную музыку по названию включает Алиса, но если просят включить что-то на колонке тебя («что-нибудь интересное», «чтобы болтало на фоне», «с ютуба») — вызывай сразу, запрос придумай сам."
+                "Обычную музыку по названию включает Алиса. Если явно просят YouTube, используй этот инструмент."
             } else {
                 "Яндекс Музыка выключена в настройках: любую музыку, песню или радио включай только этим инструментом, сразу, запрос придумай сам, если не назвали."
             };
             defs.push(json!({"type": "function", "name": "play_music",
-                "description": format!("Найти по всему YouTube и включить звук видео на колонке: любой ролик, кавер, ремикс, концерт, подкаст или песню. {who} Не обещай «сейчас поищу» без вызова."),
+                "description": format!("Найти по всему YouTube и включить звук видео на колонке: любой ролик, кавер, ремикс, концерт, подкаст или песню. {who} Если сказали только «включи на YouTube трек», сначала спроси название или исполнителя. Подбирай сам, когда об этом попросили. Не обещай «сейчас поищу» без вызова."),
                 "parameters": {"type": "object", "properties": {
                     "query": {"type": "string", "description": "что искать: исполнитель и название"},
                     "queue": {"type": "boolean", "description": "true — не включать сразу, а добавить в очередь после того, что играет («добавь в очередь», «потом включи»)"}},
@@ -289,10 +292,17 @@ impl Tools {
             if cmd.is_empty() {
                 return "Не понял команду для Алисы.".into();
             }
-            let schedule = fastcmd::alice_schedule(&cmd);
-            if schedule == fastcmd::AliceSchedule::Pending {
-                return fastcmd::ALICE_TIME_QUESTION.into();
+            if let Some(question) = fastcmd::clarification(&cmd) {
+                return question.into();
             }
+            if fastcmd::youtube_request(&cmd) {
+                return if self.host.provider("youtube").is_ok() {
+                    "Для просьбы включить с YouTube вызови play_music.".into()
+                } else {
+                    "Для этой команды нужен установленный и включённый плагин YouTube.".into()
+                };
+            }
+            let schedule = fastcmd::alice_schedule(&cmd);
             let c2 = cmd.clone();
             let is_schedule = schedule == fastcmd::AliceSchedule::Ready;
             return match tokio::task::spawn_blocking(move || crate::alice::text(&c2, !is_schedule)).await.unwrap_or_else(|e| Err(e.to_string())) {
