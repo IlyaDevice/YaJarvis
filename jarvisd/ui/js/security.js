@@ -55,7 +55,7 @@ export async function drawUpdate() {
       <span class="hu-t"><b>Счётчик установок</b><small>Раз на версию колонка скачивает пустой файл с GitHub — так в README видно, сколько колонок с Джарвисом. Передаются только модель и версия.</small></span></label>
     ${U.error ? `<p class="err">${esc(U.error)}</p>` : ""}
     ${U.available && U.notes ? `<details class="mini"><summary>Что нового в ${esc(U.latest)}</summary><pre class="unotes">${esc(U.notes)}</pre></details>` : ""}`;
-  const hint = (on) => { $("#u-hint").textContent = !U.repo ? "Укажите репозиторий обновлений или выберите файл с компьютера." : on ? `Новая версия ставится сама ночью, с 3 до 6, когда колонка молчит${U.checked ? ` · проверено ${U.checked}` : ""}` : "Только когда нажмёте «Проверить» или выберете файл"; };
+  const hint = (on) => { $("#u-hint").textContent = on ? `Прошивка и плагины обновляются сами с 3 до 6 утра, когда колонка молчит${U.checked ? ` · проверено ${U.checked}` : ""}` : !U.repo ? "Укажите репозиторий обновлений или выберите файл с компьютера." : "Прошивка и плагины обновляются вручную"; };
   hint(auto);
   $$("#u-mode [data-auto]").forEach((b) => b.addEventListener("click", () => {
     const on = b.dataset.auto === "1";

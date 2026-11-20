@@ -11,6 +11,7 @@ use std::{
 
 pub const ZIP_MAX: usize = 24 << 20;
 pub const UNPACK_MAX: usize = 48 << 20;
+pub const INSTALL_DEFERRED: &str = "Колонка занята. Установка отложена";
 
 #[derive(serde::Deserialize)]
 pub struct InstallRequest {
@@ -119,11 +120,14 @@ pub fn free_mb(dir: &Path) -> u64 {
 impl Host {
     /// Поставить (или обновить) плагин из zip. source — owner/repo или file.
     pub async fn install(self: &Arc<Self>, raw: &[u8], source: &str, official: bool) -> Result<Installation, String> {
-        self.install_archive(raw, source, official, None).await
+        self.install_archive(raw, source, official, None, || true).await
     }
 
-    async fn install_archive(self: &Arc<Self>, raw: &[u8], source: &str, official: bool, request: Option<&InstallRequest>) -> Result<Installation, String> {
+    async fn install_archive(self: &Arc<Self>, raw: &[u8], source: &str, official: bool, request: Option<&InstallRequest>, can_apply: impl Fn() -> bool + Send) -> Result<Installation, String> {
         let _g = self.install_lock.lock().await; // две установки сразу делили бы одну временную папку
+        if !can_apply() {
+            return Err(INSTALL_DEFERRED.into());
+        }
         let (files, m) = unpack(raw)?;
         if let Some(request) = request {
             if (official || request.update) && m.id != request.id {
@@ -156,6 +160,9 @@ impl Host {
         }
         if let Some((prior, _)) = &previous {
             if (updating || official) && super::newer(&prior.version, &m.version) {
+                if updating && !official && request.is_some_and(|r| r.expected_version.is_empty()) {
+                    return Ok(Installation { manifest: prior.clone(), changed: false, reboot_from: None });
+                }
                 return Err(format!("На колонке уже стоит более новая версия {}", prior.version));
             }
             if updating && m.version == prior.version {
@@ -184,6 +191,10 @@ impl Host {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(e.to_string());
             }
+        }
+        if !can_apply() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(INSTALL_DEFERRED.into());
         }
         let bak = self.dir().join(format!("{}.old", m.id));
         if bak.exists() {
@@ -264,7 +275,7 @@ impl Host {
     /// Скачать релиз репозитория GitHub и поставить. tag "" — последний релиз.
     /// Ищется jarvis-plugin-<arch>.zip, иначе jarvis-plugin.zip; для официальных — plugin-<id>[-arch].zip
     /// в релизе самого Джарвиса.
-    pub async fn install_repo(self: &Arc<Self>, request: &InstallRequest) -> Result<Installation, String> {
+    pub async fn install_repo(self: &Arc<Self>, request: &InstallRequest, can_apply: impl Fn() -> bool + Send) -> Result<Installation, String> {
         let repo = if request.repo.is_empty() { crate::DEFAULT_REPO } else { &request.repo };
         let id = request.id.as_str();
         if !super::catalog::valid_repo(repo) {
@@ -281,13 +292,13 @@ impl Host {
             };
             if native {
                 let raw = download_official_rust(id).await?;
-                return self.install_archive(&raw, crate::DEFAULT_REPO, true, Some(request)).await;
+                return self.install_archive(&raw, crate::DEFAULT_REPO, true, Some(request), can_apply).await;
             }
         }
         #[cfg(feature = "lua")]
         if official {
             let raw = download_official_lua(id).await?;
-            return self.install_archive(&raw, crate::DEFAULT_REPO, true, Some(request)).await;
+            return self.install_archive(&raw, crate::DEFAULT_REPO, true, Some(request), can_apply).await;
         }
         let names: Vec<String> = if official {
             if !valid_id(id) {
@@ -312,7 +323,7 @@ impl Host {
             return Err(format!("в последнем релизе {repo} нет {}", names.join(" или ")));
         };
         let raw = crate::net::download(&link, ZIP_MAX).await?;
-        self.install_archive(&raw, repo, official, Some(request)).await
+        self.install_archive(&raw, repo, official, Some(request), can_apply).await
     }
 }
 
