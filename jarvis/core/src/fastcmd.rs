@@ -34,10 +34,39 @@ re!(ALICE_THINGS, r"(таймер|будильник|напомни|напоми
 re!(MUSIC_PLAY, r"^(?:включи|поставь|заведи|запусти)(?:\s|$)");
 re!(MUSIC_WORDS, r"(музык|песн|трек|плейлист|радио|подкаст|альбом)");
 re!(NOT_MUSIC, r"(таймер|будильник|напомни|напоминани|разбуди|засеки|громкост|громче|потише|тише|пауз|блютуз|bluetooth)");
+re!(YOUTUBE, r"(?:^|\s)(?:ютуб(?:е|а)?|ютьюб(?:е|а)?|youtube|youtu be)(?:\s|$)");
 re!(ALICE_SCHEDULE, r"^(?:(?:разбуди|напомни|засеки)(?:\s|$)|(?:(?:поставь|заведи|запусти|включи|установи|создай)\s+)?(?:будильник|таймер|напоминание)(?:\s|$))");
 re!(DURATION_WORD, r"^(?:(?:секунд|минут|час|день|дня|дней|недел|месяц|полминут|полчас)[а-я]*|сутки|суток)$");
 
 pub const ALICE_TIME_QUESTION: &str = "Повтори команду целиком и укажи, когда или через сколько.";
+pub const YOUTUBE_QUESTION: &str = "Что включить на YouTube? Назови трек или исполнителя.";
+
+pub fn youtube_request(text: &str) -> bool {
+    let bare = strip_lead(&norm_text(text));
+    MUSIC_PLAY.is_match(bare.strip_prefix("пожалуйста ").unwrap_or(&bare)) && YOUTUBE.is_match(&bare)
+}
+
+pub fn clarification(text: &str) -> Option<&'static str> {
+    let bare = strip_lead(&norm_text(text));
+    if classify_schedule(&bare) == AliceSchedule::Pending {
+        return Some(ALICE_TIME_QUESTION);
+    }
+    let bare = bare.strip_prefix("пожалуйста ").unwrap_or(&bare);
+    let bare = bare.strip_suffix(" пожалуйста").unwrap_or(bare);
+    if MUSIC_PLAY.is_match(bare) && YOUTUBE.is_match(bare)
+        && bare.split_whitespace().skip(1).all(|word| matches!(word,
+            "на" | "в" | "с" | "из" | "ютуб" | "ютубе" | "ютуба" | "ютьюб" | "ютьюбе" | "ютьюба" | "youtube" |
+            "трек" | "песню" | "музыку" | "ролик" | "видео" | "клип" | "плейлист" | "альбом" | "подкаст"))
+    {
+        return Some(YOUTUBE_QUESTION);
+    }
+    let mut words = bare.split_whitespace();
+    let verb = words.next()?;
+    if ALICE_VERBS.is_match(bare) && matches!(words.next_back(), Some("на" | "в" | "с" | "из" | "для" | "через" | "до")) {
+        return Some("Договори, пожалуйста. Что нужно сделать?");
+    }
+    (verb == bare && MUSIC_PLAY.is_match(bare)).then_some("Что включить?")
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AliceSchedule {
@@ -136,11 +165,17 @@ pub fn alice_skill(text: &str) -> Option<String> {
 
 /// Как alice_skill, но если Яндекс Музыка выключена, музыку Алисе не отдаём: Джарвис включит с YouTube.
 pub fn alice_skill_for(text: &str, yandex_music: bool) -> Option<String> {
+    if youtube_request(text) || clarification(text).is_some() {
+        return None;
+    }
     alice_skill(text).filter(|b| yandex_music || !alice_music_request(b))
 }
 
 /// Короткая команда умного дома без обращения к каталогу устройств — её можно отдать Алисе целиком.
 pub fn home_command_local(text: &str) -> Option<String> {
+    if youtube_request(text) || clarification(text).is_some() {
+        return None;
+    }
     let n = norm_text(text);
     let bare = strip_lead(&n);
     if bare.is_empty() || bare.split_whitespace().count() > 9 {
@@ -284,6 +319,24 @@ mod tests {
         ] {
             assert_eq!(alice_skill(complete).as_deref(), Some(complete));
         }
+    }
+
+    #[test]
+    fn incomplete_commands_and_explicit_youtube_do_not_go_to_alice() {
+        assert!(clarification("Джарвис, включи на").is_some());
+        for text in ["Включи на ютубе трек", "включи трек с YouTube", "поставь на ютубе видео"] {
+            assert_eq!(clarification(text), Some(YOUTUBE_QUESTION), "{text}");
+            assert!(home_command_local(text).is_none(), "{text}");
+            assert!(alice_skill_for(text, true).is_none(), "{text}");
+        }
+        for text in ["включи на ютубе трек Кукушка", "поставь Queen с YouTube", "включи на ютубе что-нибудь"] {
+            assert!(youtube_request(text), "{text}");
+            assert!(clarification(text).is_none(), "{text}");
+            assert!(home_command_local(text).is_none(), "{text}");
+            assert!(alice_skill_for(text, true).is_none(), "{text}");
+        }
+        assert!(home_command_local("включи на кухне свет").is_some());
+        assert!(alice_skill_for("включи музыку", true).is_some());
     }
 
     #[test]

@@ -786,18 +786,18 @@ impl Engine {
             let (id, text, since) = x.dialog().utterance();
             if id != 0 && (id != checked || text != checked_text) && !x.handles_commands() {
                 let command = fastcmd::command_for_phrase(&text, &self.listener.phrase());
-                let schedule = fastcmd::alice_schedule(&command);
+                let question = fastcmd::clarification(&command);
+                let schedule = if question.is_some() { fastcmd::AliceSchedule::Pending } else { fastcmd::alice_schedule(&command) };
                 let quiet_for = self.st.lock().unwrap().last_loud.map(|time| time.elapsed()).unwrap_or(Duration::MAX);
                 if command_settled(schedule, since, quiet_for) {
                     checked = id;
                     checked_text.clone_from(&text);
-                    if schedule == fastcmd::AliceSchedule::Pending {
-                        let question = fastcmd::ALICE_TIME_QUESTION;
+                    if let Some(question) = question {
                         x.dialog().annotate("уточнение", question);
                         x.dialog().finish_turn("");
                         x.dialog().unmute();
                         if let Err(error) = x.say(question) {
-                            log::info!("уточнение времени: {error}");
+                            log::info!("уточнение команды: {error}");
                         }
                     } else if self.handle(&x, &text, "модель") {
                         return close(&sess);
@@ -833,6 +833,9 @@ impl Engine {
             log::info!("Джарвис: «{text}» — разговор закрыт, музыка не тронута ({from})");
             note("стоп", "");
             return true;
+        }
+        if fastcmd::youtube_request(&cmd) {
+            return false;
         }
         let rt = &self.rt;
         if let Some(answer) = rt.block_on(self.music.control(&self.host, &cmd)) {

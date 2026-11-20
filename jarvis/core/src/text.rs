@@ -17,11 +17,11 @@ impl Engine {
         self.journal.update(id,|t|{t.text=text.into();t.live=true;});
         let epoch=self.speech_epoch.load(Ordering::SeqCst);
         let work=async {
+            if let Some(question)=fastcmd::clarification(command){return Ok(question.into());}
             if let Some(answer)=self.host.command(command).await{return Ok(answer);}
             if let Some(answer)=self.music.control(&self.host,command).await{return Ok(answer);}
             if let Some(answer)=self.tools.ha_vacuum(command).await{return Ok(answer);}
             if let Some(answer)=self.tools.smartlife_fast(command).await{return Ok(answer);}
-            if fastcmd::alice_schedule(command)==fastcmd::AliceSchedule::Pending{return Ok(fastcmd::ALICE_TIME_QUESTION.into());}
             if let Some(command)=fastcmd::alice_skill_for(command,s.use_home("yandexmusic")){
                 let answer=format!("Передал Алисе: {command}");tokio::task::spawn_blocking(move||alice::text(&command,false)).await.map_err(|e|e.to_string())??;return Ok(answer);
             }
