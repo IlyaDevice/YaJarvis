@@ -7,7 +7,6 @@ import { homeData, viewHome } from "./home.js";
 import { HL, homeLogs } from "./logs.js";
 import { drawVolume, musicData } from "./player.js";
 import { wizOpen } from "./wizard.js";
-import { drawWakeTraining } from "./wake-training.js";
 
 export let S = null;          // состояние с колонки
 export let journal = [];
@@ -215,15 +214,12 @@ export function route() {
     page = "training";
     v0.innerHTML = '<header class="ph"><h1>Обучение</h1></header>';
     if (S.settings.wake_training) {
-      v0.insertAdjacentHTML("beforeend", '<div id="wake-training"></div>');
-      void drawWakeTraining(v0.querySelector("#wake-training"));
-      if (S.settings.training_records) {
-        v0.insertAdjacentHTML("beforeend", '<div id="training-records"></div>');
-        const records = v0.querySelector("#training-records");
-        void import("./training.js").then((m) => m.drawTrainingRecords(records)).catch((error) => {
-          if (records.isConnected) records.textContent = error.message;
-        });
-      }
+      const training = v0.appendChild(document.createElement("div"));
+      const showRecords = Boolean(S.settings.training_records);
+      void viewSvelte(training, async () => {
+        const { mountTraining } = await import("../Training/mountTraining.js");
+        return (target) => mountTraining(target, showRecords);
+      });
     } else {
       v0.insertAdjacentHTML("beforeend", '<p class="note">Включите плагин «Обучение слова» в <a href="#connections/training">подключениях</a>.</p>');
     }

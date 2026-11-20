@@ -82,10 +82,11 @@ export async function act(btn, fn, okMsg) {
 }
 
 // ---------------------------------------------------------------- загрузка файлов (тело — сам файл)
-export async function upload(method, url, file) {
-  const r = await fetch(url, { method, headers: { "X-Jarvis": "1", "Content-Type": "application/octet-stream" }, body: file, credentials: "same-origin" });
+export async function upload(method, url, file, { signal } = {}) {
+  const r = await fetch(url, { method, headers: { "X-Jarvis": "1", "Content-Type": "application/octet-stream" }, body: file, credentials: "same-origin", signal });
   let d = {};
   try { d = await r.json(); } catch { /* пусто */ }
+  signal?.throwIfAborted();
   if (r.status === 401 || r.status === 428) { showGate(d.setup); throw new Error(d.error || "Нужно войти"); }
   if (!r.ok) throw new Error(d.error || `Ошибка ${r.status}`);
   return d;
