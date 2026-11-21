@@ -1108,7 +1108,10 @@ mod tests {
             ("plugin.json", r#"{"id":"chatgpt","name":"Old","version":"0.2.5","kind":"rust","category":"assistant","main":"plugin","api":1,"provides":["chatgpt"]}"#),
             ("plugin", "stub"),
         ]);
-        assert!(host.install(&fake_zip, crate::DEFAULT_REPO, true).await.unwrap_err().contains("встроен"));
+        match host.install(&fake_zip, crate::DEFAULT_REPO, true).await {
+            Err(err) => assert!(err.contains("встроен"), "{err}"),
+            Ok(_) => panic!("embedded provider zip must be rejected"),
+        }
 
         host.stop_all().await;
         std::fs::remove_dir_all(dir).unwrap();

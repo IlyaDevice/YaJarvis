@@ -102,6 +102,9 @@ fn inspect_archive<R: Read + std::io::Seek>(zr: &mut zip::ZipArchive<R>) -> Resu
     }
     drop(mf);
     let m: Manifest = serde_json::from_slice(&mf_bytes).map_err(|e| format!("plugin.json: {e}"))?;
+    if super::modules::is_embedded(&m.id) {
+        return Err(format!("«{}» уже встроен в ядро Джарвиса", m.id));
+    }
     m.validate()?;
     let mut entries = Vec::new();
     let mut total_hint = 0u64;
@@ -565,7 +568,7 @@ async fn download_official_lua(id: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::io::Write;
 

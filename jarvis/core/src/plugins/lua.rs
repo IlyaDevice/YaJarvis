@@ -1076,12 +1076,9 @@ mod tests {
         let rt = host.provider("yandexhome").unwrap();
         let call = |op: &str, args: Value, alice: bool| {
             let rt = rt.clone();
+            let body = json!({"op": op, "args": args, "token": "test-token", "room": "Зал", "alice": alice});
             async move {
-                rt.request(
-                    "yandexhome",
-                    json!({"op": op, "args": args, "token": "test-token", "room": "Зал", "alice": alice}),
-                    Duration::from_secs(10),
-                ).await
+                rt.request("yandexhome", body, Duration::from_secs(10)).await
             }
         };
 
