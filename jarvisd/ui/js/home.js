@@ -8,7 +8,7 @@ import { M, drawPlayer, drawVolume, musicData, playerHtml, playerSetup } from ".
 // ---------------------------------------------------------------- главная
 export function setupSteps() {
   return [
-    { done: !!S.keys.openai || !!S.keys.gemini || !!S.keys.grok || !!S.chatgpt.signed_in || (S.text_plugins || []).some((plugin) => S.profiles.find((p) => p.id === S.active)?.llm_plugin === plugin.id), title: "Подключить модель", text: "Выберите готовый сервис или установите свой текстовый плагин", href: "#connections" },
+    { done: !!S.keys.openai || !!S.keys.gemini || !!S.keys.grok || !!S.chatgpt.signed_in || (S.text_plugins || []).some((plugin) => { const active = S.profiles.find((p) => p.id === S.active); return active?.llm_engine === plugin.id || active?.llm_plugin === plugin.id; }), title: "Подключить модель", text: "Выберите готовый сервис или установите свой текстовый плагин", href: "#connections" },
     { done: S.vless.set && !S.vless.error, title: "VPN (ссылка VLESS)", text: "OpenAI не работает напрямую из России и Беларуси", href: "#connections" },
     { done: !!S.keys.yandex || S.settings.home_via !== "jarvis", title: "Умный дом", text: "Через Алису работает сразу; для режима «Джарвис» нужен токен Яндекса", href: "#speaker" },
     { done: !!S.settings.city, title: "Ваш город", text: "Для погоды и новостей без уточнений", href: "#speaker" },

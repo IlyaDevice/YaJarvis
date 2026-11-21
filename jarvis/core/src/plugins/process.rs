@@ -57,6 +57,8 @@ pub struct Process {
     running: watch::Receiver<bool>,
     tools: Vec<Value>,
     chat: bool,
+    stt: bool,
+    tts: bool,
 }
 
 impl Process {
@@ -154,6 +156,8 @@ impl Process {
             running,
             tools,
             chat: manifest.provides("llm"),
+            stt: manifest.provides("stt"),
+            tts: manifest.provides("tts"),
         }))
     }
 
@@ -162,6 +166,12 @@ impl Process {
     }
     pub fn supports_chat(&self) -> bool {
         self.chat && self.running()
+    }
+    pub fn supports_stt(&self) -> bool {
+        self.stt && self.running()
+    }
+    pub fn supports_tts(&self) -> bool {
+        self.tts && self.running()
     }
     pub fn tools(&self) -> Vec<Value> {
         if self.running() {

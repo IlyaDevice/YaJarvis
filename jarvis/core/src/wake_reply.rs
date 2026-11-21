@@ -1,4 +1,4 @@
-use super::{Engine, INTERRUPTED, Mode, Profile, RATE, Settings, key_missing, voice_preview};
+use super::{Engine, INTERRUPTED, Mode, Profile, RATE, Settings, voice_preview};
 use std::{
     borrow::Cow,
     fs,
@@ -107,7 +107,12 @@ impl WakeEcho {
 }
 
 fn identity(profile: &Profile) -> (&str, &str, &str, &str) {
-    let voice = if matches!(profile.engine.as_str(), "elevenlabs" | "eleven_realtime")
+    let engine = if profile.is_classic() {
+        profile.effective_tts_engine()
+    } else {
+        profile.engine.as_str()
+    };
+    let voice = if (profile.is_classic() || profile.engine == "eleven_realtime")
         && !profile.tts_voice.is_empty()
     {
         &profile.tts_voice
@@ -115,7 +120,7 @@ fn identity(profile: &Profile) -> (&str, &str, &str, &str) {
         &profile.voice
     };
     (
-        &profile.engine,
+        engine,
         voice,
         &profile.live_model,
         &profile.tts_model,
@@ -150,7 +155,7 @@ impl Engine {
             || !settings.wake_reply_enabled
             || self.talking()
             || self.player.playing()
-            || !key_missing(&self.host, &settings, &profile.engine).is_empty()
+            || !crate::engine::tts_missing(&self.host, &settings, &profile).is_empty()
         {
             return;
         }

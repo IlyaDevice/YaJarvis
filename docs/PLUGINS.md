@@ -6,7 +6,8 @@
 - [SDK для устанавливаемых Rust-пакетов](NATIVE-PLUGINS.md)
 - [Lua API и формат пакета](LUA.md)
 - [API текстовых моделей](LUA.md#своя-текстовая-модель)
-- [Примеры Lua-плагинов](../plugins/examples/lua-coin)
+- [Свои распознавание и озвучка](LUA.md#свои-распознавание-stt-и-озвучка-tts)
+- [Примеры Lua-плагинов](../plugins/examples/lua-coin) · [OpenRouter LLM](../plugins/examples/lua-openrouter)
 
 В ZIP Lua-плагина положите `plugin.json` и входной `main.lua`. Панель принимает ZIP локально или скачивает пакет из релиза автора. Чтобы плагин появился в каталоге, задайте репозиторию тему `yajarvis-plugin`. Для категории добавьте тему вроде `yajarvis-info`. Имя архива для общего пакета `jarvis-plugin.zip`, для платформенного `jarvis-plugin-<arch>.zip`.
 

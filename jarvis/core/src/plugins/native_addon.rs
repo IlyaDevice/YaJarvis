@@ -48,12 +48,15 @@ mod tests {
 pub struct Native {
     plugin: Box<dyn Plugin>,
     chat: bool,
+    stt: bool,
+    tts: bool,
     stopped: watch::Sender<bool>,
 }
 
 impl Native {
     pub fn start(
         entry: &Registration,
+        manifest: &Manifest,
         host: &Arc<Host>,
         id: &str,
         dir: PathBuf,
@@ -90,12 +93,22 @@ impl Native {
         Ok(Self {
             plugin: (entry.start)(context)?,
             chat: entry.chat,
+            stt: manifest.provides("stt"),
+            tts: manifest.provides("tts"),
             stopped: watch::channel(false).0,
         })
     }
 
     pub fn supports_chat(&self) -> bool {
         self.chat && !*self.stopped.borrow()
+    }
+
+    pub fn supports_stt(&self) -> bool {
+        self.stt && !*self.stopped.borrow()
+    }
+
+    pub fn supports_tts(&self) -> bool {
+        self.tts && !*self.stopped.borrow()
     }
 
     pub async fn request(
