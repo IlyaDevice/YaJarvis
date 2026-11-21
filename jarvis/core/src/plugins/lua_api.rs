@@ -120,6 +120,58 @@ fn permitted(url: &reqwest::Url, allowed: &[String]) -> bool {
                 .is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
     })
 }
+fn resolve_http_client(
+    host: &Weak<Host>,
+    runtime: &tokio::runtime::Handle,
+    plugin_id: &str,
+    is_service: bool,
+    cached_client: &Mutex<Option<(Value, reqwest::Client)>>,
+) -> mlua::Result<reqwest::Client> {
+    let host_arc = host.upgrade().ok_or_else(|| fail("хост завершился"))?;
+    let route = if is_service {
+        runtime
+            .block_on((host_arc.hooks.request)(plugin_id.to_owned(), "network".into(), Value::Null))
+            .map_err(fail)?
+    } else {
+        (host_arc.hooks.network)()
+    };
+    if is_service && !route.is_object() {
+        return Err(fail("Хост не предоставил сетевой маршрут"));
+    }
+    if let Some(error) = route["error"].as_str().filter(|s| !s.is_empty()) {
+        return Err(fail(error));
+    }
+    let mut g = cached_client.lock().unwrap();
+    if let Some((prev, client)) = &*g && *prev == route {
+        return Ok(client.clone());
+    }
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(if is_service { 5 } else { 8 }))
+        .timeout(Duration::from_secs(if is_service { 10 } else { 25 }));
+    if let Some(socks) = route["socks"].as_str() {
+        let address: std::net::SocketAddr = socks.parse().map_err(|_| fail("неверный SOCKS VPN"))?;
+        let user = route["user"].as_str().unwrap_or("");
+        let pass = route["pass"].as_str().unwrap_or("");
+        if !address.ip().is_loopback()
+            || address.port() == 0
+            || (is_service && (user.is_empty() || user.len() > 255 || pass.is_empty() || pass.len() > 255))
+        {
+            return Err(fail("неверный SOCKS VPN"));
+        }
+        builder = builder.proxy(
+            reqwest::Proxy::all(format!("socks5h://{socks}"))
+                .map_err(fail)?
+                .basic_auth(user, pass),
+        );
+    } else if is_service && (route.get("socks").is_some() || route.get("user").is_some() || route.get("pass").is_some()) {
+        return Err(fail("неверный SOCKS VPN"));
+    }
+    let client = builder.build().map_err(fail)?;
+    *g = Some((route, client.clone()));
+    Ok(client)
+}
 pub fn install(
     lua: &Lua,
     api: &Table,
@@ -234,6 +286,19 @@ pub fn install(
         let is_service = super::super::modules::official_lua_service(&m.id)
             && host.upgrade().is_some_and(|h| h.official(&m.id));
         let cached_client: Arc<Mutex<Option<(Value, reqwest::Client)>>> = Arc::new(Mutex::new(None));
+        if is_service {
+            let host = host.clone();
+            let runtime = runtime.clone();
+            let plugin_id = plugin_id.clone();
+            let cached_client = cached_client.clone();
+            api.set(
+                "network_check",
+                lua.create_function(move |_, ()| {
+                    resolve_http_client(&host, &runtime, &plugin_id, true, &cached_client)?;
+                    Ok(true)
+                })?,
+            )?;
+        }
         api.set("fetch",lua.create_function(move |lua,(url,options):(String,Option<Table>)|{
             let started=Instant::now();let until=*wall.lock().unwrap();
             let mut url=reqwest::Url::parse(&url).map_err(|_|fail("неверный URL"))?;
@@ -269,47 +334,7 @@ pub fn install(
             let resp_enc=options.get("response_encoding").and_then(Value::as_str).unwrap_or("utf8");
             if !matches!(resp_enc,"utf8"|"base64"){return Err(fail("неверный response_encoding"));}
             let headers: BTreeMap<String,String>=options.get("headers").filter(|v|!v.is_null()).map(|v|serde_json::from_value(v.clone())).transpose().map_err(fail)?.unwrap_or_default();
-            let host_arc = host.upgrade().ok_or_else(|| fail("хост завершился"))?;
-            let route = if is_service {
-                runtime
-                    .block_on((host_arc.hooks.request)(plugin_id.clone(), "network".into(), Value::Null))
-                    .map_err(fail)?
-            } else {
-                (host_arc.hooks.network)()
-            };
-            if is_service && !route.is_object() {
-                return Err(fail("Хост не предоставил сетевой маршрут"));
-            }
-            if let Some(error)=route["error"].as_str().filter(|s|!s.is_empty()){return Err(fail(error));}
-            let client = {
-                let mut g = cached_client.lock().unwrap();
-                if let Some((prev, client)) = &*g && *prev == route {
-                    client.clone()
-                } else {
-                    let mut builder=reqwest::Client::builder()
-                        .no_proxy()
-                        .redirect(reqwest::redirect::Policy::none())
-                        .connect_timeout(Duration::from_secs(if is_service { 5 } else { 8 }))
-                        .timeout(Duration::from_secs(if is_service { 10 } else { 25 }));
-                    if let Some(socks)=route["socks"].as_str() {
-                        let address:std::net::SocketAddr=socks.parse().map_err(|_|fail("неверный SOCKS VPN"))?;
-                        let user=route["user"].as_str().unwrap_or("");
-                        let pass=route["pass"].as_str().unwrap_or("");
-                        if !address.ip().is_loopback()
-                            || address.port()==0
-                            || (is_service && (user.is_empty() || user.len() > 255 || pass.is_empty() || pass.len() > 255))
-                        {
-                            return Err(fail("неверный SOCKS VPN"));
-                        }
-                        builder=builder.proxy(reqwest::Proxy::all(format!("socks5h://{socks}")).map_err(fail)?.basic_auth(user,pass));
-                    } else if is_service && (route.get("socks").is_some() || route.get("user").is_some() || route.get("pass").is_some()) {
-                        return Err(fail("неверный SOCKS VPN"));
-                    }
-                    let client=builder.build().map_err(fail)?;
-                    *g = Some((route.clone(), client.clone()));
-                    client
-                }
-            };
+            let client = resolve_http_client(&host, &runtime, &plugin_id, is_service, &cached_client)?;
             let result=runtime.block_on(async {
                 let operation=async {
                     for redirect in 0..=5 {

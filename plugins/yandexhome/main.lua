@@ -113,7 +113,8 @@ local function describe_device(d)
     local instance = opt_str(p.instance)
     local kind = opt_str(c.type):gsub("^devices%.capabilities%.", "")
     if kind == "on_off" then
-      local state = type(c.state) == "table" and c.state.value or nil
+      local state = nil
+      if type(c.state) == "table" then state = c.state.value end
       local suffix = state == true and " (сейчас вкл)" or state == false and " (сейчас выкл)" or ""
       parts[#parts + 1] = "вкл/выкл" .. suffix
     elseif kind == "range" then
@@ -282,7 +283,8 @@ local function actions_for(d, a)
       end
     end
   end
-  local on = (type(a.on) == "boolean") and a.on or nil
+  local on = nil
+  if type(a.on) == "boolean" then on = a.on end
   if on == nil and (opt_str(a.color) ~= "" or temp_k > 0 or brightness > 0) and #actions > 0 then
     on = true
   end
@@ -957,7 +959,16 @@ return {
     elseif op == "invalidate" then
       invalidate(st)
       return true
-    elseif op == "settings.validate" then
+    end
+    if jarvis.network_check then
+      local ok_net, err_net = pcall(jarvis.network_check)
+      if not ok_net then
+        if op == "context" then return fallback_context(room, alice) end
+        if op == "fast" then return { handled = false, answer = "" } end
+        error(tostring(err_net))
+      end
+    end
+    if op == "settings.validate" then
       get_catalog(st, true)
       return true
     elseif op == "catalog" then
