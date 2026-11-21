@@ -1,5 +1,6 @@
 <script module>
   const pageSize = 40;
+  const storageLimits = [1, 2, 3, 4, 5, 10, 20, 30, 40, 50];
   let archiveView = { filter: "all", limit: pageSize, skipped: new Set() };
 </script>
 
@@ -43,6 +44,9 @@
     ["todo", "Не проверено", clips.filter(needsReview).length],
   ]);
   let busy = $derived(pending || Boolean(error));
+  let limitOptions = $derived(data && !storageLimits.includes(data.limit_mb)
+    ? [...storageLimits, data.limit_mb].sort((a, b) => a - b)
+    : storageLimits);
 
   onMount(() => {
     void run(refresh);
@@ -176,7 +180,7 @@
         <label for="train-limit">Лимит на колонке <b class="val">{(data.used_kb / 1024).toFixed(1)} МБ занято</b></label>
         <select id="train-limit" value={data.limit_mb} disabled={busy}
           onchange={(event) => changeSettings(event, "limit_mb", Number(event.currentTarget.value))}>
-          {#each [1, 2, 3, 4, 5] as megabytes}
+          {#each limitOptions as megabytes (megabytes)}
             <option value={megabytes}>{megabytes} МБ</option>
           {/each}
         </select>
