@@ -228,16 +228,20 @@ mod tests {
     }
 
     #[test]
-    fn available_catalog_keeps_the_voice_packages() {
+    fn available_catalog_excludes_embedded_voice_and_tracks_lua_yandexhome() {
         let index = serde_json::from_str(include_str!("../../../../plugins/index.json")).unwrap();
         let items = official_items(&index).unwrap();
-        for id in ["chatgpt", "openai", "gemini", "grok", "elevenlabs"] {
-            assert!(
-                items
-                    .iter()
-                    .any(|item| item["id"] == id && item["category"] == "assistant")
-            );
+        for id in super::super::modules::EMBEDDED_VOICE_IDS {
+            assert!(!items.iter().any(|item| item["id"] == *id), "{id}");
         }
+        assert!(items.iter().any(|item| item["id"] == "yandexhome" && item["category"] == "home"));
+        for id in ["homeassistant", "smartlife", "xiaomi"] {
+            assert!(items.iter().any(|item| item["id"] == id && item["kind"] == "rust" && item["category"] == "home"));
+        }
+        for id in ["vpn", "training"] {
+            assert!(items.iter().any(|item| item["id"] == id && item["kind"] == "rust" && item["category"] == "system"));
+        }
+        assert!(items.iter().any(|item| item["id"] == "youtube" && item["kind"] == "rust" && item["category"] == "media"));
         assert!(official_items(&json!({"plugins":[]})).is_err());
     }
 

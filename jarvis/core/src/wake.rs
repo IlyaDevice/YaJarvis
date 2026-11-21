@@ -22,6 +22,7 @@ pub struct Loaded {
     pub det: Box<dyn Wake>,
     pub ready: bool,
     pub phrase: String,
+    pub custom: bool,
 }
 
 fn load(data: &Path, store: &Store, training: bool) -> Loaded {
@@ -30,7 +31,7 @@ fn load(data: &Path, store: &Store, training: bool) -> Loaded {
         let selected = store.with(|s| s.wake_profile.clone());
         if !selected.is_empty() {
             let custom = wake_profiles::get(data, &selected).and_then(|(phrase, bytes)| {
-                Ok(Loaded { det: wake_profiles::model(data, &bytes, store)?, ready: true, phrase })
+                Ok(Loaded { det: wake_profiles::model(data, &bytes, store)?, ready: true, phrase, custom: true })
             });
             match custom {
                 Ok(loaded) => return loaded,
@@ -39,7 +40,7 @@ fn load(data: &Path, store: &Store, training: bool) -> Loaded {
         }
         if let Ok(bin) = std::fs::read(data.join(wake_profiles::TUNED_MODEL)) {
             match wake_profiles::model(data, &bin, store) {
-                Ok(det) => return Loaded { det, ready: true, phrase: DEFAULT_PHRASE.into() },
+                Ok(det) => return Loaded { det, ready: true, phrase: DEFAULT_PHRASE.into(), custom: true },
                 Err(error) => log::warn!("Дообученное слово активации: {error}"),
             }
         }
@@ -53,7 +54,7 @@ fn load(data: &Path, store: &Store, training: bool) -> Loaded {
             match Oww::load(&feat, &head, sens(store)) {
                 Ok(m) => {
                     log::info!("слово активации: модель openWakeWord загружена ({} КБ)", (feat.len() + head.len()) / 1024);
-                    return Loaded { det: Box::new(m), ready: true, phrase: DEFAULT_PHRASE.into() };
+                    return Loaded { det: Box::new(m), ready: true, phrase: DEFAULT_PHRASE.into(), custom: false };
                 }
                 Err(e) => log::info!("слово активации: openWakeWord: {e} — беру прежнюю модель"),
             }
@@ -62,16 +63,16 @@ fn load(data: &Path, store: &Store, training: bool) -> Loaded {
     let path = data.join("wake.bin");
     let Ok(bin) = std::fs::read(&path) else {
         log::info!("слово активации: модели {} нет — только кнопка в настройках", path.display());
-        return Loaded { det: Box::new(NoWake), ready: false, phrase: DEFAULT_PHRASE.into() };
+        return Loaded { det: Box::new(NoWake), ready: false, phrase: DEFAULT_PHRASE.into(), custom: false };
     };
     match Kws::load(&bin, sens(store)) {
         Ok(m) => {
             log::info!("слово активации: модель загружена ({} КБ)", bin.len() / 1024);
-            Loaded { det: Box::new(m), ready: true, phrase: DEFAULT_PHRASE.into() }
+            Loaded { det: Box::new(m), ready: true, phrase: DEFAULT_PHRASE.into(), custom: false }
         }
         Err(e) => {
             log::info!("слово активации: {e}");
-            Loaded { det: Box::new(NoWake), ready: false, phrase: DEFAULT_PHRASE.into() }
+            Loaded { det: Box::new(NoWake), ready: false, phrase: DEFAULT_PHRASE.into(), custom: false }
         }
     }
 }
@@ -112,8 +113,9 @@ pub fn check_file(data: &Path, wav: &Path, store: &Store) -> Result<(), String> 
 pub struct Listener {
     pub ready: std::sync::atomic::AtomicBool,
     pub last_prob: std::sync::atomic::AtomicU32,
-    reload:std::sync::atomic::AtomicBool,
+    reload: std::sync::atomic::AtomicBool,
     training: std::sync::atomic::AtomicBool,
+    loaded_custom: std::sync::atomic::AtomicBool,
     default_phrase: std::sync::atomic::AtomicBool,
     phrase: std::sync::RwLock<String>,
 }
@@ -127,6 +129,7 @@ impl Listener {
             last_prob: 0.into(),
             reload: false.into(),
             training: training.into(),
+            loaded_custom: w.custom.into(),
             default_phrase: default_phrase.into(),
             phrase: w.phrase.into(),
         });
@@ -136,14 +139,45 @@ impl Listener {
     pub fn phrase(&self) -> String { self.phrase.read().unwrap().clone() }
     pub fn request_reload(&self){self.reload.store(true,std::sync::atomic::Ordering::Release);}
     pub fn take_reload(&self,data:&Path,store:&Store,training:bool)->Option<Box<dyn Wake>>{
+        let forced = self.reload.swap(false, std::sync::atomic::Ordering::AcqRel);
         let changed = self.training.swap(training, std::sync::atomic::Ordering::Relaxed) != training;
-        if !self.reload.swap(false,std::sync::atomic::Ordering::AcqRel) && !changed {return None;}
-        let loaded=load(data,store,training);
+        if !forced && !changed {
+            return None;
+        }
+        if !forced {
+            let had_custom = self.loaded_custom.load(std::sync::atomic::Ordering::Acquire);
+            let wants_custom = training
+                && (!store.with(|s| s.wake_profile.is_empty())
+                    || data.join(crate::wake_profiles::TUNED_MODEL).is_file());
+            if !had_custom && !wants_custom {
+                return None;
+            }
+        }
+        let loaded = load(data, store, training);
         let default_phrase = loaded.phrase == crate::wake_profiles::DEFAULT_PHRASE;
         *self.phrase.write().unwrap() = loaded.phrase;
+        self.loaded_custom.store(loaded.custom, std::sync::atomic::Ordering::Release);
         self.default_phrase.store(default_phrase, std::sync::atomic::Ordering::Release);
         self.ready.store(loaded.ready,std::sync::atomic::Ordering::Release);
         self.last_prob.store(0,std::sync::atomic::Ordering::Relaxed);
         Some(loaded.det)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn training_toggle_without_custom_model_does_not_reload_default_detector() {
+        let dir = std::env::temp_dir().join(format!("jarvis-wake-noreload-{}", crate::settings::rand_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(dir.join("settings.json")).unwrap();
+        let (listener, _) = Listener::new(&dir, &store, false);
+        assert!(listener.take_reload(&dir, &store, true).is_none());
+        assert!(listener.take_reload(&dir, &store, false).is_none());
+        listener.request_reload();
+        assert!(listener.take_reload(&dir, &store, true).is_some());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

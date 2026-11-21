@@ -127,7 +127,7 @@ pub fn model(
 ) -> Result<Box<dyn jarvis_dsp::Wake>, String> {
     let store = store.clone();
     let sensitivity = Box::new(move || store.wake_sensitivity());
-    if bytes.starts_with(b"OWWH") {
+    if bytes.starts_with(b"OWWH") || bytes.starts_with(b"OWH2") {
         let features = features(data)?;
         return jarvis_dsp::oww::Oww::load(&features, bytes, sensitivity)
             .map(|d| Box::new(d) as Box<dyn jarvis_dsp::Wake>);

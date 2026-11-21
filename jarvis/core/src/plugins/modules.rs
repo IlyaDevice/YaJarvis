@@ -1,6 +1,14 @@
 //! IDs reserved for official packages and manifests of optional developer extensions.
 use super::Manifest;
 
+pub const EMBEDDED_VOICE_IDS: &[&str] = &["chatgpt", "openai", "gemini", "grok", "elevenlabs"];
+
+pub const OFFICIAL_RUST_IDS: &[&str] = &[
+    "homeassistant", "smartlife", "xiaomi", "vpn", "youtube", "training",
+];
+
+pub const OFFICIAL_LUA_SERVICE_IDS: &[&str] = &["yandexhome"];
+
 pub const OFFICIAL_IDS: &[&str] = &[
     "chatgpt", "openai", "gemini", "grok", "elevenlabs", "homeassistant",
     "yandexhome", "smartlife", "xiaomi", "vpn", "youtube", "training",
@@ -8,6 +16,18 @@ pub const OFFICIAL_IDS: &[&str] = &[
 
 pub fn built_in(id: &str) -> bool {
     OFFICIAL_IDS.contains(&id)
+}
+
+pub fn is_embedded(id: &str) -> bool {
+    EMBEDDED_VOICE_IDS.contains(&id)
+}
+
+pub fn official_rust(id: &str) -> bool {
+    OFFICIAL_RUST_IDS.contains(&id)
+}
+
+pub fn official_lua_service(id: &str) -> bool {
+    OFFICIAL_LUA_SERVICE_IDS.contains(&id)
 }
 
 pub fn catalog() -> impl Iterator<Item = (Manifest, bool)> {

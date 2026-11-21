@@ -5,7 +5,7 @@
 //! Сеть отпечатков считается потоково: свёртки по времени без отступов, шаг по времени ровно 8 кадров,
 //! поэтому каждые 80 мс досчитываются только новые строки каждого слоя.
 
-use crate::{Bin, dot, gemv};
+use crate::{Bin, dot, gemm2, gemm4, gemv};
 
 const STEP: usize = 1280; // 80 мс
 const CTX: usize = 480;
@@ -69,19 +69,45 @@ impl Conv {
         for x in 0..self.wout {
             self.out[x * co..(x + 1) * co].copy_from_slice(&self.b);
         }
-        for x in 0..self.wout {
-            let lo = x as isize - pad as isize;
-            let skip = if lo < 0 { (-lo) as usize } else { 0 };
-            let hi = ((lo + kw as isize) as usize).min(self.win);
-            let start = (lo + skip as isize) as usize;
-            let n = (hi - start) * ci;
-            let dst = &mut self.out[x * co..(x + 1) * co];
-            for dh in 0..self.kh {
-                let row_idx = (self.head + dh) % self.kh;
-                let off = row_idx * self.row_len + start * ci;
-                let src = &self.rows[off..off + n];
-                let w = &self.w[(dh * span + skip * ci) * co..];
-                gemv(dst, src, w, co);
+        let mut x = 0usize;
+        while x < self.wout {
+            if x >= pad && x + 3 + kw <= self.win + pad && x + 4 <= self.wout {
+                let start = x - pad;
+                let dst = &mut self.out[x * co..];
+                for dh in 0..self.kh {
+                    let row_idx = (self.head + dh) % self.kh;
+                    let off = row_idx * self.row_len + start * ci;
+                    let src = &self.rows[off..off + 3 * ci + span];
+                    let w = &self.w[dh * span * co..];
+                    gemm4(dst, co, src, ci, w, span, co, co);
+                }
+                x += 4;
+            } else if x >= pad && x + 1 + kw <= self.win + pad && x + 2 <= self.wout {
+                let start = x - pad;
+                let dst = &mut self.out[x * co..];
+                for dh in 0..self.kh {
+                    let row_idx = (self.head + dh) % self.kh;
+                    let off = row_idx * self.row_len + start * ci;
+                    let src = &self.rows[off..off + ci + span];
+                    let w = &self.w[dh * span * co..];
+                    gemm2(dst, co, src, ci, w, span, co, co);
+                }
+                x += 2;
+            } else {
+                let lo = x as isize - pad as isize;
+                let skip = if lo < 0 { (-lo) as usize } else { 0 };
+                let hi = ((lo + kw as isize) as usize).min(self.win);
+                let start = (lo + skip as isize) as usize;
+                let n = (hi - start) * ci;
+                let dst = &mut self.out[x * co..(x + 1) * co];
+                for dh in 0..self.kh {
+                    let row_idx = (self.head + dh) % self.kh;
+                    let off = row_idx * self.row_len + start * ci;
+                    let src = &self.rows[off..off + n];
+                    let w = &self.w[(dh * span + skip * ci) * co..];
+                    gemv(dst, src, w, co);
+                }
+                x += 1;
             }
         }
         if self.act {
@@ -170,7 +196,17 @@ pub struct Oww {
 impl Oww {
     /// feat: oww.bin (мел и сеть отпечатков), head: wake_oww.bin (наша сеть «Джарвис»).
     pub fn load(feat: &[u8], head: &[u8], sensitivity: Box<dyn Fn() -> i64 + Send>) -> Result<Oww, String> {
-        if feat.len() < 8 || &feat[..4] != b"OWW1" || head.len() < 8 || &head[..4] != b"OWWH" {
+        let feat_compact = match feat.get(..4) {
+            Some(b"OWW1") => false,
+            Some(b"OWW2") => true,
+            _ => return Err("не те файлы модели openWakeWord".into()),
+        };
+        let head_compact = match head.get(..4) {
+            Some(b"OWWH") => false,
+            Some(b"OWH2") => true,
+            _ => return Err("не те файлы модели openWakeWord".into()),
+        };
+        if feat.len() < 8 || head.len() < 16 {
             return Err("не те файлы модели openWakeWord".into());
         }
         let mut r = Bin::new(&feat[4..]);
@@ -204,9 +240,25 @@ impl Oww {
                 break;
             }
             let (co, ci, kh, kw) = (r.u32(), r.u32(), r.u32(), r.u32());
-            let raw = r.f32s(co * ci * kh * kw); // [co][ci][kh][kw]
+            let Some(nw) = co
+                .checked_mul(ci)
+                .and_then(|v| v.checked_mul(kh))
+                .and_then(|v| v.checked_mul(kw))
+            else {
+                r.err = true;
+                break;
+            };
+            let raw = if feat_compact {
+                r.i16s_scaled(co, ci * kh * kw)
+            } else {
+                r.f32s(nw) // [co][ci][kh][kw]
+            };
             let b = r.f32s(co);
-            let mut w = vec![0f32; raw.len()];
+            if r.err || raw.len() != nw || b.len() != co {
+                r.err = true;
+                break;
+            }
+            let mut w = vec![0f32; nw];
             for o in 0..co {
                 for c in 0..ci {
                     for dh in 0..kh {
@@ -249,26 +301,32 @@ impl Oww {
                 None => pools.push(None),
             }
         }
-        if r.err || convs.len() != 20 || width != 1 {
+        if r.err || (feat_compact && r.rest() != 0) || convs.len() != 20 || width != 1 {
             return Err("модель признаков повреждена".into());
         }
         convs.last_mut().unwrap().act = false;
 
         let mut hr = Bin::new(&head[4..]);
         let (seq, emb, h) = (hr.u32(), hr.u32(), hr.u32());
+        let expected_head_len = if head_compact {
+            16 + 4 * (10 + 5 * h + 1) + 2 * (h * seq * emb + h * h)
+        } else {
+            16 + 4 * (10 + h * seq * emb + h * h + 3 * h + 1)
+        };
         if !(1..=40).contains(&seq) || emb != 96 || !(1..=256).contains(&h)
-            || head.len() != 16 + 4 * (10 + h * seq * emb + h * h + 3 * h + 1)
+            || head.len() != expected_head_len
         {
             return Err("Неверные размеры классификатора openWakeWord".into());
         }
         let th = hr.f32s(10);
-        let w1 = hr.f32s(h * seq * emb);
+        let w1 = if head_compact { hr.i16s_scaled(h, seq * emb) } else { hr.f32s(h * seq * emb) };
         let b1 = hr.f32s(h);
-        let w2 = hr.f32s(h * h);
+        let w2 = if head_compact { hr.i16s_scaled(h, h) } else { hr.f32s(h * h) };
         let b2 = hr.f32s(h);
         let w3 = hr.f32s(h);
         let b3 = hr.f32s(1)[0];
         if hr.err || !b3.is_finite() || th.iter().any(|p| !(0.0..=1.0).contains(p))
+            || w1.len() != h * seq * emb || w2.len() != h * h
             || w1.iter().chain(&w2).chain(&w3).chain(&b1).chain(&b2).any(|v| !v.is_finite()) {
 
             return Err("модель «Джарвис» повреждена".into());
@@ -522,8 +580,39 @@ mod tests {
         }
         eprintln!("80 шагов (6,4 с звука) за {:?}", t0.elapsed());
         assert_eq!(values.len(), want.len());
+        let compact = &feat[..4] == b"OWW2" || &head[..4] == b"OWH2";
         for (i, (a, b)) in values.iter().zip(&want).enumerate() {
-            assert!(!a.is_nan() && (a - b).abs() <= 0.001, "отпечаток/вероятность {i}: {a} против {b}");
+            let tol = if !compact {
+                0.001
+            } else if (i + 1) % 97 == 0 {
+                0.005
+            } else {
+                0.05
+            };
+            assert!(!a.is_nan() && (a - b).abs() <= tol, "отпечаток/вероятность {i}: {a} против {b}");
         }
+    }
+
+    #[test]
+    fn compact_i16_format_loads_and_rejects_bad_lengths() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let feat = std::fs::read(root.join("models/oww.bin")).unwrap();
+        let head = std::fs::read(root.join("models/wake_oww.bin")).unwrap();
+        assert_eq!(&feat[..4], b"OWW2");
+        assert_eq!(&head[..4], b"OWH2");
+        let mut oww = Oww::load(&feat, &head, Box::new(|| 5)).unwrap();
+        let embs = oww.embeddings(&vec![0i16; STEP * 10]);
+        assert!(!embs.is_empty());
+        assert_eq!(embs[0].1.len(), 96);
+
+        let mut extra_feat = feat.clone();
+        extra_feat.push(0);
+        assert!(Oww::load(&feat[..feat.len() - 1], &head, Box::new(|| 5)).is_err());
+        assert!(Oww::load(&extra_feat, &head, Box::new(|| 5)).is_err());
+
+        let mut extra_head = head.clone();
+        extra_head.push(0);
+        assert!(Oww::load(&feat, &head[..head.len() - 1], Box::new(|| 5)).is_err());
+        assert!(Oww::load(&feat, &extra_head, Box::new(|| 5)).is_err());
     }
 }

@@ -102,6 +102,9 @@ fn inspect_archive<R: Read + std::io::Seek>(zr: &mut zip::ZipArchive<R>) -> Resu
     }
     drop(mf);
     let m: Manifest = serde_json::from_slice(&mf_bytes).map_err(|e| format!("plugin.json: {e}"))?;
+    if super::modules::is_embedded(&m.id) {
+        return Err(format!("«{}» уже встроен в ядро Джарвиса", m.id));
+    }
     m.validate()?;
     let mut entries = Vec::new();
     let mut total_hint = 0u64;
@@ -288,9 +291,15 @@ impl Host {
         if m.kind == "module" && !(official && source == "core") {
             return Err("Rust-модуль выбирается из официального каталога".into());
         }
-        if m.kind != "module" && super::modules::built_in(&m.id)
-            && !(m.kind == "rust" && official && source == crate::DEFAULT_REPO && m.provides == [m.id.clone()])
-        {
+        if super::modules::is_embedded(&m.id) {
+            return Err(format!("«{}» уже встроен в ядро Джарвиса", m.id));
+        }
+        let official_pkg = official
+            && source == crate::DEFAULT_REPO
+            && m.provides == [m.id.clone()]
+            && ((m.kind == "rust" && (super::modules::official_rust(&m.id) || super::modules::official_lua_service(&m.id)))
+                || (m.kind == "lua" && super::modules::official_lua_service(&m.id)));
+        if m.kind != "module" && super::modules::built_in(&m.id) && !official_pkg {
             return Err("Этот идентификатор зарезервирован для официального плагина".into());
         }
         let later = m.needs_newer_core();
@@ -432,7 +441,10 @@ impl Host {
             if !valid_id(id) {
                 return Err("не указан плагин".into());
             }
-            let native = super::modules::built_in(id) || {
+            if super::modules::is_embedded(id) {
+                return Err(format!("«{id}» уже встроен в ядро Джарвиса"));
+            }
+            let native = super::modules::official_rust(id) || {
                 let (items, _) = self.official_catalog(false).await;
                 items.iter().any(|item| item["id"] == id && item["kind"] == "rust")
             };
@@ -556,7 +568,7 @@ async fn download_official_lua(id: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::io::Write;
 

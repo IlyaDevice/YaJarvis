@@ -122,8 +122,14 @@ export function renderStatus() {
 // ---------------------------------------------------------------- сайдбар
 export const avatar = (p, big = false) => `<span class="av c${p.color || 1}${big ? " big" : ""}">${esc((p.name || "?").trim()[0] || "?")}</span>`;
 export const voiceName = (id) => (S.live_voices.find((v) => v.id === id)?.name) || id || "cedar";
+const BUILTIN_VOICE = ["chatgpt", "openai", "gemini", "grok", "elevenlabs"];
 export const voicePlugin = (engine) => ({ live: "openai", eleven_realtime: "elevenlabs" })[engine] || engine;
-export const voiceEnabled = (engine) => !!engine && !!S.plugins?.enabled?.includes(voicePlugin(engine));
+export const voiceEnabled = (engine) => {
+  if (!engine) return false;
+  const id = voicePlugin(engine);
+  const builtin = S.plugins?.builtin || BUILTIN_VOICE;
+  return builtin.includes(id) || !!S.plugins?.enabled?.includes(id);
+};
 export const isClassicProfile = (p) => !!p && p.engine !== "eleven_realtime" && (p.mode === "classic" || p.engine === "elevenlabs" || p.engine === "classic");
 export const sttReady = (id) => ["openai", "elevenlabs"].includes(id) ? voiceEnabled(id) : (S.stt_plugins || []).some((x) => x.id === id);
 export const ttsReady = (id) => ["openai", "elevenlabs"].includes(id) ? voiceEnabled(id) : (S.tts_plugins || []).some((x) => x.id === id);

@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod coresvc;
 pub mod install;
+mod builtin;
 mod process;
 mod official;
 pub(crate) mod modules;
@@ -166,10 +167,17 @@ impl Manifest {
             let ids: Vec<_> = CATEGORIES.iter().map(|c| c.0).collect();
             return Err(format!("category плагина — одна из: {}", ids.join(", ")));
         }
-        if self.kind != "module" && (self.provides("vpn") || integ.iter().any(|c| self.provides(c)))
-            && !(self.kind == "rust" && modules::built_in(&self.id) && self.provides == [self.id.clone()])
+        let official_rust_ok = self.kind == "rust"
+            && (modules::official_rust(&self.id) || modules::official_lua_service(&self.id))
+            && self.provides == [self.id.clone()];
+        let official_lua_ok = self.kind == "lua"
+            && modules::official_lua_service(&self.id)
+            && self.provides == [self.id.clone()];
+        if self.kind != "module"
+            && (self.provides("vpn") || integ.iter().any(|c| self.provides(c)))
+            && !(official_rust_ok || official_lua_ok)
         {
-            return Err("Для этого подключения требуется официальный Rust-плагин".into());
+            return Err("Для этого подключения требуется официальный плагин".into());
         }
         if self.main.is_empty() || self.main.contains("..") || self.main.starts_with('/') || self.main.contains('\\') {
             return Err("main плагина — имя файла внутри архива".into());
@@ -263,6 +271,7 @@ impl Default for Hooks {
 
 #[derive(Clone)]
 pub enum Runtime {
+    Builtin(Arc<builtin::Builtin>),
     Official(Arc<official::Official>),
     Process(Arc<process::Process>),
     #[cfg(feature = "native-plugins")]
@@ -274,7 +283,7 @@ pub enum Runtime {
 impl Runtime {
     pub fn tools(&self) -> Vec<Value> {
         match self {
-            Runtime::Official(_) => vec![],
+            Runtime::Builtin(_) | Runtime::Official(_) => vec![],
             Runtime::Process(n) => n.tools(),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.tools(),
@@ -284,7 +293,7 @@ impl Runtime {
     }
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         match self {
-            Runtime::Official(_) => None,
+            Runtime::Builtin(_) | Runtime::Official(_) => None,
             Runtime::Process(n) => n.call_tool(name, args).await,
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.call_tool(name, args).await,
@@ -294,7 +303,7 @@ impl Runtime {
     }
     pub async fn command(&self, text: &str) -> Option<String> {
         match self {
-            Runtime::Official(_) => None,
+            Runtime::Builtin(_) | Runtime::Official(_) => None,
             Runtime::Process(n) => n.request("command", command_text(text).into(), Duration::from_secs(2))
                 .await.ok().and_then(|value| value.as_str().map(str::to_owned)),
             #[cfg(feature = "native-plugins")]
@@ -306,7 +315,7 @@ impl Runtime {
     }
     pub fn configure(&self, settings: Map<String, Value>) {
         match self {
-            Runtime::Official(_) => {},
+            Runtime::Builtin(_) | Runtime::Official(_) => {},
             Runtime::Process(n) => n.configure(settings),
             #[cfg(feature = "native-plugins")]
             Runtime::Native(n) => n.configure(settings),
@@ -316,6 +325,7 @@ impl Runtime {
     }
     pub fn status(&self) -> String {
         match self {
+            Runtime::Builtin(_) => "Встроен в ядро".into(),
             Runtime::Official(n) => if n.running() { "Официальный Rust-плагин".into() } else { "Процесс Rust-плагина завершился".into() },
             Runtime::Process(n) => if n.running() { "Rust-пакет".into() } else { "Процесс Rust-пакета завершился".into() },
             #[cfg(feature = "native-plugins")]
@@ -326,6 +336,7 @@ impl Runtime {
     }
     pub async fn stop(&self) {
         match self {
+            Runtime::Builtin(b) => b.stop().await,
             Runtime::Official(n) => n.stop().await,
             Runtime::Process(n) => n.stop().await,
             #[cfg(feature = "native-plugins")]
@@ -336,10 +347,13 @@ impl Runtime {
     }
     pub async fn request(&self, method:&str, params:Value, timeout:Duration)->Result<Value,String> {
         match self {
+            Self::Builtin(b)=>b.request(method,params,timeout).await,
             Self::Official(n)=>n.request(method,params,timeout).await,
             Self::Process(n)=>n.request(method,params,timeout).await,
             #[cfg(feature = "native-plugins")]
             Self::Native(n)=>n.request(method,params,timeout).await,
+            #[cfg(feature="lua")]
+            Self::Lua(s) if s.supports_service() => s.service(method, params, timeout).await,
             #[cfg(feature="lua")]
             Self::Lua(_)=>Err("Lua-плагин не является провайдером подключения".into()),
         }
@@ -385,14 +399,24 @@ impl Runtime {
 
     fn running(&self) -> bool {
         match self {
+            Runtime::Builtin(_) => true,
             Runtime::Process(n) => n.running(),
             Runtime::Official(n) => n.running(),
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.running(),
+            #[cfg(feature = "native-plugins")]
             _ => true,
         }
     }
 
     pub fn is_service(&self) -> bool {
-        matches!(self, Self::Official(_)) && self.running()
+        match self {
+            Self::Builtin(_) => true,
+            Self::Official(n) => n.running(),
+            #[cfg(feature = "lua")]
+            Self::Lua(s) => s.supports_service(),
+            _ => false,
+        }
     }
 }
 
@@ -416,6 +440,8 @@ pub struct Host {
     install_lock: tokio::sync::Mutex<()>,
     pub catalog: catalog::Cache,
     wake_training_cached: AtomicBool,
+    self_weak: std::sync::OnceLock<std::sync::Weak<Host>>,
+    builtins: Mutex<BTreeMap<String, Arc<builtin::Builtin>>>,
 }
 
 pub fn arch() -> &'static str {
@@ -450,14 +476,29 @@ impl Host {
         self.install(&raw,"core",true).await.map(|result| result.manifest)
     }
     pub fn new(data_dir: PathBuf, hooks: Hooks) -> Arc<Host> {
-        Arc::new(Host {
+        let host = Arc::new(Host {
             data_dir,
             hooks,
             inner: Mutex::default(),
             install_lock: tokio::sync::Mutex::new(()),
             catalog: catalog::Cache::default(),
             wake_training_cached: AtomicBool::new(false),
-        })
+            self_weak: std::sync::OnceLock::new(),
+            builtins: Mutex::default(),
+        });
+        let _ = host.self_weak.set(Arc::downgrade(&host));
+        host
+    }
+
+    fn builtin_provider(&self, id: &str) -> Result<Runtime, String> {
+        if let Some(existing) = self.builtins.lock().unwrap().get(id).cloned() {
+            return Ok(Runtime::Builtin(existing));
+        }
+        let weak = self.self_weak.get().cloned().ok_or("Ядро не инициализировано")?;
+        let created = builtin::Builtin::start(id, weak)?;
+        let mut builtins = self.builtins.lock().unwrap();
+        let entry = builtins.entry(id.to_owned()).or_insert(created).clone();
+        Ok(Runtime::Builtin(entry))
     }
 
     pub(crate) fn sync_wake_training(&self, g: &Inner) {
@@ -488,7 +529,7 @@ impl Host {
     }
 
     pub fn official(&self, id: &str) -> bool {
-        self.inner.lock().unwrap().state.get(id).is_some_and(|s| s.official)
+        modules::is_embedded(id) || self.inner.lock().unwrap().state.get(id).is_some_and(|s| s.official)
     }
 
     /// Прочитать установленные плагины и запустить включённые.
@@ -512,6 +553,14 @@ impl Host {
                     continue;
                 }
                 let dir = e.path();
+                if modules::is_embedded(&name) {
+                    log::info!("плагины: {name} теперь встроен в ядро — удаляю старый пакет");
+                    for path in [dir, self.dir().join(format!("{name}.tmp")), self.dir().join(format!("{name}.old"))] {
+                        let _ = std::fs::remove_dir_all(path);
+                    }
+                    g.state.remove(&name);
+                    continue;
+                }
                 let (mut m, broken) = match read_manifest(&dir) {
                     Ok(m) if m.id == name => (m, String::new()),
                     res => {
@@ -553,7 +602,7 @@ impl Host {
             let ids: Vec<String> = g.state.keys().cloned().collect();
             for id in ids {
                 // папку плагина удалили — забыть (кроме отметки «удалён руками»)
-                if !g.plugins.contains_key(&id) && !g.state[&id].removed {
+                if modules::is_embedded(&id) || (!g.plugins.contains_key(&id) && !g.state[&id].removed) {
                     g.state.remove(&id);
                 }
             }
@@ -599,6 +648,10 @@ impl Host {
                 Err("?????????? ????? ?? ???????????? ????????".into())
             },
             #[cfg(feature = "lua")]
+            "lua" if modules::official_lua_service(&m.id) && !self.official(id) => {
+                Err("Это имя зарезервировано для официального плагина".into())
+            }
+            #[cfg(feature = "lua")]
             "lua" => lua::Script::start(self.clone(), m.clone(), dir, settings).await.map(Runtime::Lua),
             #[cfg(not(feature = "lua"))]
             "lua" => Err("Эта сборка не включает Lua: включите модуль lua при сборке".into()),
@@ -642,6 +695,10 @@ impl Host {
             rts
         };
         for rt in rts {
+            rt.stop().await;
+        }
+        let builtins: Vec<_> = std::mem::take(&mut *self.builtins.lock().unwrap()).into_values().collect();
+        for rt in builtins {
             rt.stop().await;
         }
     }
@@ -813,6 +870,9 @@ impl Host {
         self.provider_named(cap).map(|(_,runtime)|runtime)
     }
     fn provider_named(&self,cap:&str)->Result<(String,Runtime),String> {
+        if modules::is_embedded(cap) {
+            return Ok((cap.to_owned(), self.builtin_provider(cap)?));
+        }
         let g = self.inner.lock().unwrap();
         // Выбранный отдельный модуль владеет подключением и после выключения:
         // старый объединённый плагин не должен незаметно включать его обратно.
@@ -969,7 +1029,7 @@ impl Host {
         let g = self.inner.lock().unwrap();
         let inst: Vec<&String> = g.plugins.keys().collect();
         let on: Vec<&String> = g.plugins.keys().filter(|id| g.state.get(*id).is_some_and(|s| s.enabled)).collect();
-        json!({"installed": inst, "enabled": on})
+        json!({"installed": inst, "enabled": on, "builtin": modules::EMBEDDED_VOICE_IDS})
     }
 
 
@@ -1011,5 +1071,49 @@ mod tests {
         assert!(valid_id("vpn") && valid_id("my-plugin2") && !valid_id("A") && !valid_id("-x") && !valid_id("x"));
         assert!(newer("0.9.10", "0.9.9") && !newer("0.9.71", "0.9.71-rs") && newer("v1.0.0", "0.9.99"));
         assert!(!valid_tool_name("smart_home") && valid_tool_name("coin_flip"));
+    }
+
+    #[tokio::test]
+    async fn embedded_voice_providers_work_and_clean_legacy_plugins() {
+        let dir = std::env::temp_dir().join(format!("jarvis-builtin-{}", crate::settings::rand_hex(6)));
+        for id in ["chatgpt", "gemini"] {
+            let legacy = dir.join("plugins").join(id);
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(
+                legacy.join("plugin.json"),
+                json!({"id":id,"name":id,"version":"0.1.0","kind":"rust","category":"assistant","main":"plugin","api":1,"provides":[id]}).to_string(),
+            ).unwrap();
+            std::fs::write(legacy.join("plugin"), b"old-binary").unwrap();
+        }
+        let mut st = BTreeMap::new();
+        st.insert("chatgpt", PluginState { official: true, ..Default::default() });
+        std::fs::write(dir.join("plugins.json"), serde_json::to_vec(&st).unwrap()).unwrap();
+
+        let host = Host::new(dir.clone(), Hooks::default());
+        host.load().await;
+        assert!(!dir.join("plugins/chatgpt").exists());
+        assert!(!dir.join("plugins/gemini").exists());
+        assert!(host.list().is_empty());
+
+        for id in modules::EMBEDDED_VOICE_IDS {
+            let rt = host.provider(id).unwrap();
+            assert!(rt.running());
+            assert!(rt.is_service());
+            assert!(host.official(id));
+        }
+        assert_eq!(host.provider("chatgpt").unwrap().request("login.status", Value::Null, Duration::from_secs(2)).await.unwrap(), Value::Null);
+        assert_eq!(host.summary()["builtin"], json!(modules::EMBEDDED_VOICE_IDS));
+
+        let fake_zip = install::tests::make_zip(&[
+            ("plugin.json", r#"{"id":"chatgpt","name":"Old","version":"0.2.5","kind":"rust","category":"assistant","main":"plugin","api":1,"provides":["chatgpt"]}"#),
+            ("plugin", "stub"),
+        ]);
+        match host.install(&fake_zip, crate::DEFAULT_REPO, true).await {
+            Err(err) => assert!(err.contains("встроен"), "{err}"),
+            Ok(_) => panic!("embedded provider zip must be rejected"),
+        }
+
+        host.stop_all().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
