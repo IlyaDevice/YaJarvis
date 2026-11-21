@@ -12,7 +12,7 @@ use std::{
 pub const WEB_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0 Safari/537.36";
 pub const WEB_VERSION: &str = "2.20261112.01.00";
 pub const TV_AGENT: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1";
-const TV_VERSION: &str = "5.20260707";
+const TV_VERSION: &str = "4.20240101";
 const VR_VERSION: &str = "1.65.10";
 const VR_AGENT: &str = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
 
@@ -62,10 +62,16 @@ impl Remote {
             .await
             .map(|_| ())
     }
+    pub async fn warm_background(&self) {
+        if let Ok(client) = self.host.client().await {
+            self.scripts.warm_background(client);
+        }
+    }
     pub async fn evict_idle(&self, idle: Duration) {
         self.scripts.evict_if_idle(idle).await;
     }
-    pub async fn search(&self, query: &str, headers: HeaderMap) -> Result<Vec<Track>, String> {
+    pub async fn search(&self, query: &str, mut headers: HeaderMap) -> Result<Vec<Track>, String> {
+        strip_bearer(&mut headers);
         let mut body = json!({"context":{"client":web()},"query":query});
         let client = self.host.client().await?;
         for filter in [false, true] {
@@ -109,7 +115,8 @@ impl Remote {
         organic(&response["contents"], &mut tracks, &mut HashSet::new(), 0);
         Ok(tracks)
     }
-    pub async fn related(&self, id: &str, headers: HeaderMap) -> Result<Vec<Track>, String> {
+    pub async fn related(&self, id: &str, mut headers: HeaderMap) -> Result<Vec<Track>, String> {
+        strip_bearer(&mut headers);
         let client = self.host.client().await?;
         let data = post(
             &client,
@@ -149,7 +156,7 @@ impl Remote {
             *self.visitor.lock().unwrap() = Some((Instant::now(), visitor.into()));
         }
     }
-    pub async fn resolve(&self, id: &str, auth: HeaderMap) -> Result<(Track, Stream), String> {
+    pub async fn resolve(&self, id: &str, auth: HeaderMap, prefer_tv: bool) -> Result<(Track, Stream), String> {
         if !valid_id(id) {
             return Err("Неверный ID видео YouTube".into());
         }
@@ -160,14 +167,14 @@ impl Remote {
             String::new()
         };
         let mut backup = None;
-        if auth.is_empty() && !self.scripts.cached() {
-            backup = Some(vr(&client, id, &visitor).await);
-            if backup.as_ref().is_some_and(|r| {
-                r.as_ref().is_ok_and(|(_, stream)| {
-                    (0.0..=45.0).contains(&stream.duration) && stream.duration > 0.0
-                })
-            }) {
-                return backup.unwrap();
+        if !prefer_tv && auth.is_empty() && !self.scripts.cached() {
+            self.scripts.warm_background(client.clone());
+            match vr(&client, id, &visitor).await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    log::debug!("YouTube: быстрый плеер ANDROID_VR недоступен: {error}");
+                    backup = Some(Err(error));
+                }
             }
         }
         let tv=async{
@@ -226,6 +233,15 @@ async fn vr(client: &Client, id: &str, visitor: &str) -> Result<(Track, Stream),
 }
 fn web() -> Value {
     json!({"clientName":"WEB","clientVersion":WEB_VERSION,"hl":"ru","gl":"RU"})
+}
+fn strip_bearer(headers: &mut HeaderMap) {
+    if headers
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("Bearer "))
+    {
+        headers.remove(reqwest::header::AUTHORIZATION);
+    }
 }
 async fn post(
     client: &Client,
@@ -475,6 +491,13 @@ async fn formats(
     }
     Err("YouTube не вернул доступную аудиодорожку Opus".into())
 }
+pub(crate) fn valid_media_url(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|h| h.ends_with(".googlevideo.com"))
+}
 async fn link(item: &Value, prepared: Option<&Arc<Prepared>>) -> Result<Url, String> {
     let query: BTreeMap<String, String> = reqwest::Url::parse(&format!(
         "https://www.youtube.com/?{}",
@@ -489,14 +512,7 @@ async fn link(item: &Value, prepared: Option<&Arc<Prepared>>) -> Result<Url, Str
         .or_else(|| query.get("url").map(String::as_str))
         .ok_or("Нет ссылки YouTube")?;
     let mut url = Url::parse(raw).map_err(|_| "Неверная ссылка YouTube")?;
-    if url.scheme() != "https"
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || !url
-            .host_str()
-            .is_some_and(|h| h.ends_with(".googlevideo.com"))
-    {
+    if !valid_media_url(&url) {
         return Err("Неверный адрес аудио YouTube".into());
     }
     let signature = query.get("s").cloned().unwrap_or_default();
@@ -591,4 +607,27 @@ fn ad_wait(data: &Value) -> Duration {
         }
     }
     Duration::from_millis(total.min(60_000))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_bearer;
+    use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, HeaderName, HeaderValue};
+
+    #[test]
+    fn strip_bearer_removes_oauth_and_keeps_cookies() {
+        let mut h = HeaderMap::new();
+        h.insert(AUTHORIZATION, HeaderValue::from_static("Bearer ya29.test-token"));
+        h.insert(HeaderName::from_static("x-test"), HeaderValue::from_static("ok"));
+        strip_bearer(&mut h);
+        assert!(!h.contains_key(AUTHORIZATION));
+        assert_eq!(h.get("x-test").unwrap(), "ok");
+
+        let mut cookies = HeaderMap::new();
+        cookies.insert(AUTHORIZATION, HeaderValue::from_static("SAPISIDHASH 123_abc"));
+        cookies.insert(COOKIE, HeaderValue::from_static("SID=abc; SAPISID=xyz"));
+        strip_bearer(&mut cookies);
+        assert_eq!(cookies.get(AUTHORIZATION).unwrap(), "SAPISIDHASH 123_abc");
+        assert_eq!(cookies.get(COOKIE).unwrap(), "SID=abc; SAPISID=xyz");
+    }
 }

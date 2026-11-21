@@ -39,6 +39,7 @@ enum Phase {
     #[default]
     Idle,
     Loading,
+    Buffering,
     Playing,
     Paused,
 }
@@ -56,11 +57,15 @@ struct State {
     saved: Option<Instant>,
     proposal: Option<(Instant, VecDeque<Track>)>,
     personal: bool,
+    repeat: bool,
     error: String,
     task: Option<JoinHandle<()>>,
 }
 
 impl State {
+    fn playing(&self) -> bool {
+        matches!(self.phase, Phase::Playing | Phase::Buffering)
+    }
     fn dur(&self) -> f64 {
         self.stream.as_ref().map_or(0.0, |v| v.duration)
     }
@@ -76,12 +81,12 @@ impl State {
             Phase::Idle => "Сейчас ничего не играет".into(),
             Phase::Loading => "Загружаю YouTube".into(),
             Phase::Paused => format!("На паузе «{}»", self.track.title),
-            Phase::Playing => format!("Играет «{}»", self.track.title),
+            Phase::Playing | Phase::Buffering => format!("Играет «{}»", self.track.title),
         };
         json!({
-            "playing":self.phase==Phase::Playing, "active":active, "paused":self.phase==Phase::Paused,
-            "proposal":self.proposals(), "personal_search":self.personal, "cur":self.track,
-            "pos":(self.pos*10.0).round()/10.0, "status":status
+            "playing":self.playing(), "active":active, "paused":self.phase==Phase::Paused,
+            "proposal":self.proposals(), "personal_search":self.personal, "repeat":self.repeat,
+            "cur":self.track, "pos":(self.pos*10.0).round()/10.0, "status":status
         })
     }
     fn snapshot(&self, radio: bool) -> Value {
@@ -96,11 +101,11 @@ impl State {
         history.sort_by_key(|entry| std::cmp::Reverse(&entry.updated));
         let history: Vec<_> = history.iter().take(30).map(|entry| &entry.track).collect();
         json!({
-            "source":"youtube", "playing":self.phase==Phase::Playing, "paused":self.phase==Phase::Paused,
-            "loading":self.phase==Phase::Loading, "track":if active{self.track.clone()}else{Track::default()},
+            "source":"youtube", "playing":self.playing(), "paused":self.phase==Phase::Paused,
+            "loading":matches!(self.phase, Phase::Loading | Phase::Buffering), "track":if active{self.track.clone()}else{Track::default()},
             "pos":if active{self.pos}else{0.0}, "dur":if active{self.dur()}else{0.0},
             "client":self.stream.as_ref().map_or("",|v|v.client), "next":next, "queue":self.queue.len(),
-            "radio":radio,"history":history,"error":self.error
+            "radio":radio, "repeat":self.repeat, "history":history, "error":self.error
         })
     }
 }
@@ -112,6 +117,7 @@ pub struct Youtube {
     state: Mutex<State>,
     ready: OnceCell<()>,
     request: AsyncMutex<()>,
+    save_lock: Arc<AsyncMutex<()>>,
     wake: Notify,
     closed: AtomicBool,
     gain: AtomicU32,
@@ -127,6 +133,7 @@ impl Youtube {
             state: Mutex::default(),
             ready: OnceCell::default(),
             request: AsyncMutex::default(),
+            save_lock: Arc::new(AsyncMutex::default()),
             wake: Notify::new(),
             closed: AtomicBool::new(false),
             gain: AtomicU32::new(0.8f32.to_bits()),
@@ -174,6 +181,15 @@ impl Youtube {
     }
 
     pub fn watch(self: &Arc<Self>) {
+        let warm_weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            if let Some(service) = warm_weak.upgrade()
+                && !service.closed.load(Ordering::Acquire)
+            {
+                service.remote.warm_background().await;
+            }
+        });
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             let mut last = Value::Null;
@@ -184,7 +200,7 @@ impl Youtube {
                 }
                 let (mut state, playing) = {
                     let st = service.state.lock().unwrap();
-                    (st.current(), st.phase == Phase::Playing)
+                    (st.current(), st.playing())
                 };
                 state["pos"] = state["pos"].as_f64().unwrap_or_default().floor().into();
                 if state != last {
@@ -202,8 +218,8 @@ impl Youtube {
                 } else {
                     tokio::select! {
                         _ = service.wake.notified() => {}
-                        _ = tokio::time::sleep(Duration::from_secs(600)) => {
-                            service.remote.evict_idle(Duration::from_secs(600)).await;
+                        _ = tokio::time::sleep(Duration::from_secs(1800)) => {
+                            service.remote.evict_idle(Duration::from_secs(1800)).await;
                         }
                     }
                 }
@@ -236,9 +252,9 @@ impl Youtube {
         self.event("music.state", state).await;
     }
 
-    fn save_progress(&self, state: &mut State, complete: bool) {
+    fn record_progress(&self, state: &mut State, complete: bool) -> Option<Vec<u8>> {
         if !valid_id(&state.track.id) || state.pos <= 0.0 {
-            return;
+            return None;
         }
         state.saved = Some(Instant::now());
         let previous = state.history.get(&state.track.id);
@@ -246,7 +262,7 @@ impl Youtube {
             && !complete
             && state.pos >= state.dur() - 20.0
         {
-            return;
+            return None;
         }
         let entry = Saved {
             track: state.track.clone(),
@@ -266,24 +282,53 @@ impl Youtube {
                 state.history.remove(&id);
             }
         }
-        match serde_json::to_vec(&state.history)
-            .map_err(|e| e.to_string())
-            .and_then(|data| save(&self.host.data.join(HISTORY), &data))
+        match serde_json::to_vec(&state.history) {
+            Ok(data) => Some(data),
+            Err(error) => {
+                log::warn!("YouTube: сохранить позицию: {error}");
+                None
+            }
+        }
+    }
+
+    fn persist_progress_bg(self: &Arc<Self>, bytes: Vec<u8>) {
+        let Ok(guard) = self.save_lock.clone().try_lock_owned() else {
+            return;
+        };
+        let path = self.host.data.join(HISTORY);
+        tokio::spawn(async move {
+            let _guard = guard;
+            if let Err(error) = tokio::task::spawn_blocking(move || save(&path, &bytes))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            {
+                log::warn!("YouTube: сохранить позицию: {error}");
+            }
+        });
+    }
+
+    async fn persist_progress_sync(&self, bytes: Vec<u8>) {
+        let _guard = self.save_lock.lock().await;
+        let path = self.host.data.join(HISTORY);
+        if let Err(error) = tokio::task::spawn_blocking(move || save(&path, &bytes))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
         {
-            Ok(()) => {}
-            Err(error) => log::warn!("YouTube: сохранить позицию: {error}"),
+            log::warn!("YouTube: сохранить позицию: {error}");
         }
     }
 
     async fn halt(&self, pause: bool) -> (bool, u64) {
-        let (active, generation, task) = {
+        let (active, generation, task, save_bytes) = {
             let mut state = self.state.lock().unwrap();
             let active = state.phase != Phase::Idle;
-            if active {
-                self.save_progress(&mut state, false);
-            }
+            let save_bytes = if active {
+                self.record_progress(&mut state, false)
+            } else {
+                None
+            };
             state.generation = state.generation.wrapping_add(1);
-            if pause && state.stream.is_some() && active {
+            if pause && (state.stream.is_some() || valid_id(&state.track.id)) && active {
                 state.phase = Phase::Paused;
             } else {
                 state.phase = Phase::Idle;
@@ -295,14 +340,42 @@ impl Youtube {
                 state.proposal = None;
                 state.error.clear();
             }
-            (active, state.generation, state.task.take())
+            (active, state.generation, state.task.take(), save_bytes)
         };
         self.wake.notify_one();
         if let Some(task) = task {
             task.abort();
             let _ = task.await;
         }
+        if let Some(bytes) = save_bytes {
+            self.persist_progress_sync(bytes).await;
+        }
         (active, generation)
+    }
+
+    async fn halt_transition(self: &Arc<Self>, pos: f64) -> u64 {
+        let (generation, task, save_bytes) = {
+            let mut state = self.state.lock().unwrap();
+            let save_bytes = if state.phase != Phase::Idle {
+                self.record_progress(&mut state, false)
+            } else {
+                None
+            };
+            state.generation = state.generation.wrapping_add(1);
+            state.phase = Phase::Buffering;
+            state.pos = pos;
+            state.error.clear();
+            (state.generation, state.task.take(), save_bytes)
+        };
+        self.wake.notify_one();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(bytes) = save_bytes {
+            self.persist_progress_bg(bytes);
+        }
+        generation
     }
 
     async fn radio(&self) -> bool {
@@ -325,19 +398,20 @@ impl Youtube {
             return Ok(vec![Track::from_id(id)]);
         }
         if personal {
-            let headers = self.account.headers(true).await?;
+            let headers = self.account.web_headers();
             if !headers.is_empty() {
-                let results = self.remote.search(query, headers).await?;
-                if !results.is_empty() {
-                    return Ok(results);
+                match self.remote.search(query, headers).await {
+                    Ok(results) if !results.is_empty() => return Ok(results),
+                    Ok(_) => {}
+                    Err(error) => log::debug!("YouTube: персональный поиск не удался: {error}"),
                 }
             }
         }
         self.remote.search(query, HeaderMap::new()).await
     }
 
-    async fn resolve(&self, track: Track) -> Result<(Track, Stream), String> {
-        let anonymous = self.remote.resolve(&track.id, HeaderMap::new()).await;
+    async fn resolve(&self, track: Track, prefer_tv: bool) -> Result<(Track, Stream), String> {
+        let anonymous = self.remote.resolve(&track.id, HeaderMap::new(), prefer_tv).await;
         let (mut info, stream) = match anonymous {
             Ok(value) => value,
             Err(e) => {
@@ -345,7 +419,7 @@ impl Youtube {
                 if auth.is_empty() {
                     return Err(e);
                 }
-                self.remote.resolve(&track.id, auth).await?
+                self.remote.resolve(&track.id, auth, true).await?
             }
         };
         if info.title.is_empty() {
@@ -366,6 +440,7 @@ impl Youtube {
         tracks: Vec<Track>,
         start: f64,
         stream: Option<Stream>,
+        keep_playing: bool,
     ) -> oneshot::Receiver<Result<Track, String>> {
         let (notify, result) = oneshot::channel();
         let mut state = self.state.lock().unwrap();
@@ -373,7 +448,11 @@ impl Youtube {
             let _ = notify.send(Err("Воспроизведение отменено".into()));
             return result;
         }
-        state.phase = Phase::Loading;
+        state.phase = if keep_playing {
+            Phase::Buffering
+        } else {
+            Phase::Loading
+        };
         state.track = tracks.first().cloned().unwrap_or_default();
         state.stream = stream.clone();
         state.pos = start;
@@ -382,7 +461,9 @@ impl Youtube {
         self.wake.notify_one();
         let service = self.clone();
         state.task = Some(tokio::spawn(async move {
-            service.run(generation, tracks, start, stream, notify).await;
+            service
+                .run(generation, tracks, start, stream, keep_playing, notify)
+                .await;
         }));
         result
     }
@@ -393,6 +474,7 @@ impl Youtube {
         tracks: Vec<Track>,
         mut start: f64,
         mut stream: Option<Stream>,
+        mut keep_playing: bool,
         notify: oneshot::Sender<Result<Track, String>>,
     ) {
         let mut notify = Some(notify);
@@ -400,17 +482,20 @@ impl Youtube {
         let mut pending: VecDeque<_> = tracks.into();
         let mut last = String::new();
         let mut retries = 0;
+        let mut force_tv = false;
         let mut finished_selection = None;
         while let Some(track) = pending.pop_front() {
+            let reused_stream = stream.is_some();
             let resolved = if let Some(ready) = stream.take() {
                 Ok((track.clone(), ready))
             } else {
-                self.resolve(track.clone()).await
+                self.resolve(track.clone(), force_tv).await
             };
             let (track, source) = match resolved {
                 Ok(value) => value,
                 Err(e) => {
                     last = e;
+                    force_tv = false;
                     continue;
                 }
             };
@@ -425,25 +510,33 @@ impl Youtube {
                 }
             };
             let radio = self.radio().await;
-            {
+            let needs_related = {
                 let mut state = self.state.lock().unwrap();
                 if state.generation != generation {
                     return;
                 }
+                let same_track = state.track.id == track.id;
                 state.track = track.clone();
                 state.stream = Some(source.clone());
                 state.pos = start;
-                state.phase = Phase::Loading;
+                state.phase = if keep_playing {
+                    Phase::Buffering
+                } else {
+                    Phase::Loading
+                };
                 self.wake.notify_one();
                 state.personal |= interesting("", &track);
-                state.related = if radio && !state.personal {
-                    pending.clone()
-                } else {
-                    VecDeque::new()
-                };
-            }
+                if !radio || state.personal {
+                    state.related.clear();
+                } else if !pending.is_empty() {
+                    state.related = pending.clone();
+                } else if !same_track {
+                    state.related.clear();
+                }
+                radio && !state.personal && pending.is_empty() && state.related.is_empty()
+            };
             log::debug!("YouTube: аудио {} Opus {}", source.client, source.itag);
-            let needs_related = radio && pending.is_empty();
+            let repeat_source = source.clone();
             let mut sent = false;
             // The audio task owns aplay. Dropping it on pause or stop closes the pipe and kills the child.
             let outcome = media::play(
@@ -451,7 +544,7 @@ impl Youtube {
                 source,
                 start,
                 |pos| {
-                    let first = {
+                    let (first, save_bytes) = {
                         let mut state = self.state.lock().unwrap();
                         if state.generation != generation {
                             return;
@@ -460,14 +553,19 @@ impl Youtube {
                         sent = true;
                         state.phase = Phase::Playing;
                         state.pos = pos;
-                        if state
+                        let save_bytes = if state
                             .saved
-                            .is_none_or(|when| when.elapsed() >= Duration::from_secs(15))
+                            .is_none_or(|when| when.elapsed() >= Duration::from_secs(30))
                         {
-                            self.save_progress(&mut state, false);
-                        }
-                        first
+                            self.record_progress(&mut state, false)
+                        } else {
+                            None
+                        };
+                        (first, save_bytes)
                     };
+                    if let Some(bytes) = save_bytes {
+                        self.persist_progress_bg(bytes);
+                    }
                     if first {
                         self.wake.notify_one();
                         if needs_related {
@@ -480,7 +578,7 @@ impl Youtube {
                                 let mut state = service.state.lock().unwrap();
                                 if state.generation == generation
                                     && state.track.id == seed
-                                    && state.phase == Phase::Playing
+                                    && state.playing()
                                 {
                                     state.related = items.into();
                                 }
@@ -498,27 +596,37 @@ impl Youtube {
                 Err(error) => {
                     last = error.to_string();
                     log::warn!("YouTube: воспроизведение {last}");
-                    // CDNs sometimes rotate a URL during playback. Resume the same video at the last audible position.
-                    if sent && retries < 3 && (last.contains("(403") || last.contains("оборвалось"))
+                    // CDNs sometimes rotate a URL or reject ANDROID_VR at ~60s. Resume via TVHTML5 at the last audible position.
+                    if (sent || reused_stream)
+                        && retries < 3
+                        && (last.contains("(403") || last.contains("оборвалось"))
                     {
                         retries += 1;
-                        start = self.state.lock().unwrap().pos;
+                        if sent {
+                            start = self.state.lock().unwrap().pos;
+                        }
+                        if repeat_source.client == "ANDROID_VR" {
+                            force_tv = true;
+                        }
+                        keep_playing = true;
                         pending.push_front(track.clone());
                         continue;
                     }
                     if sent {
                         break;
                     }
+                    force_tv = false;
                     continue;
                 }
                 Ok(()) => {
                     last.clear();
                     retries = 0;
                     start = 0.0;
+                    force_tv = false;
+                    keep_playing = true;
                 }
             }
-            let radio = self.radio().await;
-            let (next, related_end, candidates) = {
+            let (save_bytes, repeat_now) = {
                 let mut state = self.state.lock().unwrap();
                 if state.generation != generation {
                     return;
@@ -526,7 +634,24 @@ impl Youtube {
                 if let Some(stream) = state.stream.as_ref().filter(|st| st.duration > 0.0) {
                     state.pos = stream.duration;
                 }
-                self.save_progress(&mut state, true);
+                (self.record_progress(&mut state, true), state.repeat)
+            };
+            if let Some(bytes) = save_bytes {
+                self.persist_progress_sync(bytes).await;
+            }
+            if repeat_now {
+                if repeat_source.ready.elapsed() < Duration::from_secs(1800) {
+                    stream = Some(repeat_source);
+                }
+                pending.push_front(track);
+                continue;
+            }
+            let radio = self.radio().await;
+            let (next, related_end, candidates) = {
+                let mut state = self.state.lock().unwrap();
+                if state.generation != generation {
+                    return;
+                }
                 if let Some(next) = state.queue.pop_front() {
                     (Some(next), false, VecDeque::new())
                 } else if state.personal {
@@ -587,8 +712,12 @@ impl Youtube {
     }
 
     async fn related(&self, id: &str) -> Result<Vec<Track>, String> {
-        let auth = self.account.headers(true).await.unwrap_or_default();
-        let tracks = self.remote.related(id, auth).await?;
+        let auth = self.account.web_headers();
+        let tracks = match self.remote.related(id, auth.clone()).await {
+            Ok(tracks) => tracks,
+            Err(_) if !auth.is_empty() => self.remote.related(id, HeaderMap::new()).await?,
+            Err(error) => return Err(error),
+        };
         let state = self.state.lock().unwrap();
         Ok(tracks
             .into_iter()
@@ -664,6 +793,7 @@ impl Youtube {
             tracks.into_iter().take(12).collect(),
             start,
             None,
+            false,
         );
         drop(lock);
         let track = finished.await.map_err(|_| "Воспроизведение отменено")??;
@@ -675,7 +805,7 @@ impl Youtube {
     }
 
     async fn change_position(self: &Arc<Self>, op: &str, args: &Value) -> Result<Value, String> {
-        let _lock = self.request.lock().await;
+        let lock = self.request.lock().await;
         let (track, pos, stream, paused) = {
             let state = self.state.lock().unwrap();
             if state.phase == Phase::Idle {
@@ -702,16 +832,33 @@ impl Youtube {
                 state.phase == Phase::Paused,
             )
         };
-        let (_, generation) = self.halt(true).await;
         if paused && op == "seek" {
-            let mut state = self.state.lock().unwrap();
-            if state.generation == generation {
-                state.pos = pos;
-                self.save_progress(&mut state, false);
+            let (_, generation) = self.halt(true).await;
+            let save_bytes = {
+                let mut state = self.state.lock().unwrap();
+                if state.generation == generation {
+                    state.pos = pos;
+                    self.record_progress(&mut state, false)
+                } else {
+                    None
+                }
+            };
+            if let Some(bytes) = save_bytes {
+                self.persist_progress_sync(bytes).await;
             }
         } else {
+            let generation = self.halt_transition(pos).await;
             let stream = stream.filter(|st| st.ready.elapsed() < Duration::from_secs(1800));
-            drop(self.launch(generation, vec![track], pos, stream));
+            let started = self.launch(generation, vec![track], pos, stream, true);
+            drop(lock);
+            match tokio::time::timeout(Duration::from_millis(1200), started).await {
+                Ok(Ok(Ok(_))) | Ok(Err(_)) | Err(_) => {}
+                Ok(Ok(Err(err))) => {
+                    if self.state.lock().unwrap().generation == generation {
+                        return Err(err);
+                    }
+                }
+            }
         }
         Ok(Value::Null)
     }
@@ -772,7 +919,7 @@ impl Youtube {
                 state.proposal.take().unwrap().1.pop_front().unwrap()
             };
             let (_, generation) = self.halt(false).await;
-            let started = self.launch(generation, vec![answer], 0.0, None);
+            let started = self.launch(generation, vec![answer], 0.0, None, false);
             drop(lock);
             let track = started.await.map_err(|_| "Воспроизведение отменено")??;
             return Ok(json!({"ok":true,"answer":format!("Включил «{}».",track.title)}));
@@ -799,14 +946,22 @@ impl Youtube {
                 .recommendations(headers)
                 .await
                 .unwrap_or_default();
-            let mut candidates = {
+            let (mut candidates, unplayed) = {
                 let state = self.state.lock().unwrap();
-                feed.into_iter()
-                    .filter(|track| {
-                        !state.history.contains_key(&track.id) && interesting(&query, track)
-                    })
-                    .collect::<Vec<_>>()
+                let unplayed: Vec<_> = feed
+                    .into_iter()
+                    .filter(|track| !state.history.contains_key(&track.id))
+                    .collect();
+                let matched: Vec<_> = unplayed
+                    .iter()
+                    .filter(|track| interesting(&query, track))
+                    .cloned()
+                    .collect();
+                (matched, unplayed)
             };
+            if candidates.is_empty() && !unplayed.is_empty() && genre_terms(&query).is_none() {
+                candidates = unplayed;
+            }
             if candidates.is_empty() {
                 candidates = self.search(&query, true).await?;
             }
@@ -859,7 +1014,7 @@ impl Youtube {
                     .next()
                     .ok_or("YouTube ничего не нашёл")?;
                 let track = if track.title.is_empty() {
-                    self.resolve(track).await?.0
+                    self.resolve(track, false).await?.0
                 } else {
                     track
                 };
@@ -885,6 +1040,12 @@ impl Youtube {
                 state.related.clear();
                 state.personal = false;
                 Ok(Value::Null)
+            }
+            "repeat" => {
+                let mut state = self.state.lock().unwrap();
+                state.repeat = args["on"].as_bool().unwrap_or(!state.repeat);
+                self.wake.notify_one();
+                Ok(state.repeat.into())
             }
             "warm" => {
                 self.remote.warm().await?;
@@ -913,8 +1074,7 @@ impl Youtube {
     }
 }
 
-fn interesting(query: &str, track: &Track) -> bool {
-    let title = format!("{} {}", track.title, track.author).to_lowercase();
+fn genre_terms(query: &str) -> Option<&'static [&'static str]> {
     let query = query.to_lowercase();
     for (want, terms) in [
         (
@@ -935,8 +1095,16 @@ fn interesting(query: &str, track: &Track) -> bool {
         ),
     ] {
         if want.iter().any(|word| query.contains(word)) {
-            return terms.iter().any(|term| title.contains(term));
+            return Some(terms);
         }
+    }
+    None
+}
+
+fn interesting(query: &str, track: &Track) -> bool {
+    let title = format!("{} {}", track.title, track.author).to_lowercase();
+    if let Some(terms) = genre_terms(query) {
+        return terms.iter().any(|term| title.contains(term));
     }
     [
         "подкаст",
@@ -971,7 +1139,7 @@ mod tests {
         let remote = Remote::new(host.clone());
         remote.warm().await.unwrap();
         let (_, source) = remote
-            .resolve("jNQXAC9IVRw", HeaderMap::new())
+            .resolve("jNQXAC9IVRw", HeaderMap::new(), false)
             .await
             .unwrap();
         let mut bytes = 0;
@@ -1014,5 +1182,104 @@ mod tests {
             prepared.decode("abc".into(), "xyz".into()).await.unwrap(),
             ("cba".into(), "zyx".into())
         );
+    }
+
+    #[tokio::test]
+    async fn repeat_command_toggles_and_persists_in_state() {
+        let host = Host::new(
+            Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+            std::env::temp_dir().join("jarvis-yt-repeat-test"),
+        );
+        let yt = Arc::new(Youtube::new(host));
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], false);
+        assert_eq!(yt.state.lock().unwrap().snapshot(true)["repeat"], false);
+
+        assert_eq!(yt.command("repeat", &json!({"on": true})).await.unwrap(), json!(true));
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], true);
+        assert_eq!(yt.state.lock().unwrap().snapshot(false)["repeat"], true);
+
+        // Pausing / halting playback must preserve repeat setting.
+        let _ = yt.halt(false).await;
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], true);
+
+        // Omitting `on` toggles repeat off.
+        assert_eq!(yt.command("repeat", &json!({})).await.unwrap(), json!(false));
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], false);
+    }
+
+    #[tokio::test]
+    async fn buffering_transition_keeps_playing_track_and_related() {
+        let host = Host::new(
+            Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+            std::env::temp_dir().join("jarvis-yt-buffering-test"),
+        );
+        let yt = Arc::new(Youtube::new(host));
+        {
+            let mut st = yt.state.lock().unwrap();
+            st.phase = Phase::Playing;
+            st.track = Track {
+                id: "dQw4w9WgXcQ".into(),
+                title: "Test Track".into(),
+                author: "Tester".into(),
+            };
+            st.stream = Some(Stream {
+                url: reqwest::Url::parse("https://rr1---sn-test.googlevideo.com/videoplayback")
+                    .unwrap(),
+                agent: "test",
+                client: "TVHTML5",
+                length: 1000,
+                duration: 120.0,
+                ready: Instant::now(),
+                itag: 251,
+            });
+            st.related.push_back(Track {
+                id: "jNQXAC9IVRw".into(),
+                title: "Next Related".into(),
+                author: "Someone".into(),
+            });
+        }
+
+        let gen_after = yt.halt_transition(42.0).await;
+        assert_eq!(gen_after, 1);
+
+        let cur = yt.state.lock().unwrap().current();
+        assert_eq!(cur["playing"], true);
+        assert_eq!(cur["active"], true);
+        assert_eq!(cur["paused"], false);
+
+        let snap = yt.state.lock().unwrap().snapshot(true);
+        assert_eq!(snap["playing"], true);
+        assert_eq!(snap["paused"], false);
+        assert_eq!(snap["loading"], true);
+        assert_eq!(snap["pos"], 42.0);
+        assert_eq!(snap["track"]["ID"], "dQw4w9WgXcQ");
+        assert_eq!(snap["next"][0]["ID"], "jNQXAC9IVRw");
+    }
+
+    #[tokio::test]
+    async fn pause_during_buffering_without_stream_stays_paused() {
+        let host = Host::new(
+            Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+            std::env::temp_dir().join("jarvis-yt-pause-buffer-test"),
+        );
+        let yt = Arc::new(Youtube::new(host));
+        {
+            let mut st = yt.state.lock().unwrap();
+            st.phase = Phase::Buffering;
+            st.track = Track {
+                id: "dQw4w9WgXcQ".into(),
+                title: "Test Track".into(),
+                author: "Tester".into(),
+            };
+            st.pos = 15.0;
+            st.stream = None;
+        }
+
+        let (was_active, _) = yt.halt(true).await;
+        assert!(was_active);
+        let cur = yt.state.lock().unwrap().current();
+        assert_eq!(cur["paused"], true);
+        assert_eq!(cur["active"], true);
+        assert_eq!(cur["cur"]["ID"], "dQw4w9WgXcQ");
     }
 }

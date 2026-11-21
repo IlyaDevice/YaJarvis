@@ -10,8 +10,8 @@ use std::{
 
 const EJS: &str = include_str!("ejs.js");
 const WEB_AGENT: &str = super::remote::WEB_AGENT;
-const MAX_HEAP: usize = 28 << 20;
-const JS_TIMEOUT: Duration = Duration::from_secs(75);
+const MAX_HEAP: usize = 36 << 20;
+const JS_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub struct Prepared {
     context: Context,
@@ -141,95 +141,205 @@ impl Prepared {
     }
 }
 
-#[derive(Default)]
-pub struct Scripts(tokio::sync::Mutex<ScriptCache>);
+#[derive(Default, Clone)]
+pub struct Scripts(Arc<Mutex<ScriptCache>>);
 #[derive(Default)]
 struct ScriptCache {
     current: Option<(Instant, Instant, String, Arc<Prepared>)>,
     failed: Option<(Instant, String)>,
+    inflight: Option<tokio::sync::watch::Receiver<Option<Result<Arc<Prepared>, String>>>>,
+}
+struct ClearInflight<'a>(&'a Arc<Mutex<ScriptCache>>);
+impl Drop for ClearInflight<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().inflight = None;
+    }
+}
+enum ScriptLoad {
+    Reused(Arc<Prepared>),
+    Compiled(String, Arc<Prepared>),
 }
 impl Scripts {
     pub fn cached(&self) -> bool {
-        self.0.try_lock().is_ok_and(|cache| cache.current.is_some())
-    }
-    pub async fn evict_if_idle(&self, idle: Duration) {
-        let mut state = self.0.lock().await;
-        if state
+        self.0
+            .lock()
+            .unwrap()
             .current
             .as_ref()
-            .is_some_and(|(_, used, _, _)| used.elapsed() >= idle)
+            .is_some_and(|(at, _, _, _)| at.elapsed() < Duration::from_secs(1800))
+    }
+    pub async fn evict_if_idle(&self, idle: Duration) {
+        let mut state = self.0.lock().unwrap();
+        if state.inflight.is_none()
+            && state
+                .current
+                .as_ref()
+                .is_some_and(|(_, used, _, _)| used.elapsed() >= idle)
         {
             state.current.take();
         }
     }
-    pub async fn get(&self, client: &Client) -> Result<Arc<Prepared>, String> {
-        let mut state = self.0.lock().await;
-        if let Some((at, used, _, prepared)) = state.current.as_mut()
-            && at.elapsed() < Duration::from_secs(1800)
-        {
-            *used = Instant::now();
-            return Ok(prepared.clone());
+    fn spawn_load<F, Fut>(
+        &self,
+        state: &mut ScriptCache,
+        loader: F,
+    ) -> tokio::sync::watch::Receiver<Option<Result<Arc<Prepared>, String>>>
+    where
+        F: FnOnce(Arc<Mutex<ScriptCache>>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<ScriptLoad, (bool, String)>> + Send + 'static,
+    {
+        if let Some(rx) = &state.inflight {
+            return rx.clone();
         }
-        if let Some((at, error)) = &state.failed
-            && at.elapsed() < Duration::from_secs(120)
-        {
-            return Err(error.clone());
-        }
-        let iframe = fetch(client, "https://www.youtube.com/iframe_api", 1 << 20).await?;
-        let id = Regex::new(r"player\\?/([0-9A-Za-z_-]{8})\\?/")
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        state.inflight = Some(rx.clone());
+        let shared = self.0.clone();
+        tokio::spawn(async move {
+            let guard = ClearInflight(&shared);
+            let outcome = loader(shared.clone()).await;
+            let result = {
+                let mut state = shared.lock().unwrap();
+                state.inflight = None;
+                match outcome {
+                    Ok(ScriptLoad::Reused(prepared)) => {
+                        state.failed = None;
+                        Ok(prepared)
+                    }
+                    Ok(ScriptLoad::Compiled(id, prepared)) => {
+                        let now = Instant::now();
+                        state.current = Some((now, now, id, prepared.clone()));
+                        state.failed = None;
+                        Ok(prepared)
+                    }
+                    Err((deterministic, message)) => {
+                        if deterministic {
+                            state.failed = Some((Instant::now(), message.clone()));
+                        }
+                        Err(message)
+                    }
+                }
+            };
+            std::mem::forget(guard);
+            let _ = tx.send(Some(result));
+        });
+        rx
+    }
+    async fn load_or_wait<F, Fut>(&self, loader: F) -> Result<Arc<Prepared>, String>
+    where
+        F: FnOnce(Arc<Mutex<ScriptCache>>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<ScriptLoad, (bool, String)>> + Send + 'static,
+    {
+        let mut rx = {
+            let mut state = self.0.lock().unwrap();
+            if let Some((at, used, _, prepared)) = state.current.as_mut()
+                && at.elapsed() < Duration::from_secs(1800)
+            {
+                *used = Instant::now();
+                return Ok(prepared.clone());
+            }
+            if let Some((at, error)) = &state.failed
+                && at.elapsed() < Duration::from_secs(120)
+            {
+                return Err(error.clone());
+            }
+            self.spawn_load(&mut state, loader)
+        };
+        rx.wait_for(Option::is_some)
+            .await
+            .map_err(|_| "Движок плеера завершился".to_owned())?
+            .clone()
             .unwrap()
-            .captures(&iframe)
-            .map(|capture| capture[1].to_owned())
-            .ok_or("Не найдена версия плеера YouTube")?;
+    }
+    pub fn warm_background(&self, client: Client) {
+        let mut state = self.0.lock().unwrap();
+        if state
+            .current
+            .as_ref()
+            .is_some_and(|(at, _, _, _)| at.elapsed() < Duration::from_secs(1800))
+            || state
+                .failed
+                .as_ref()
+                .is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(120))
+            || state.inflight.is_some()
+        {
+            return;
+        }
+        let _ = self.spawn_load(&mut state, move |shared| async move {
+            load_script(&client, &shared).await
+        });
+    }
+    pub async fn get(&self, client: &Client) -> Result<Arc<Prepared>, String> {
+        let client = client.clone();
+        self.load_or_wait(move |shared| async move { load_script(&client, &shared).await })
+            .await
+    }
+}
+async fn load_script(
+    client: &Client,
+    shared: &Arc<Mutex<ScriptCache>>,
+) -> Result<ScriptLoad, (bool, String)> {
+    let iframe = fetch(client, "https://www.youtube.com/iframe_api", WEB_AGENT, 1 << 20)
+        .await
+        .map_err(|e| (false, e))?;
+    let id = Regex::new(r"player\\?/([0-9A-Za-z_-]{8})\\?/")
+        .unwrap()
+        .captures(&iframe)
+        .map(|capture| capture[1].to_owned())
+        .ok_or_else(|| (false, "Не найдена версия плеера YouTube".to_owned()))?;
+    {
+        let mut state = shared.lock().unwrap();
         if let Some((at, used, old, prepared)) = state.current.as_mut()
             && *old == id
         {
             let now = Instant::now();
             *at = now;
             *used = now;
-            return Ok(prepared.clone());
+            return Ok(ScriptLoad::Reused(prepared.clone()));
         }
         state.current.take();
-        let url = format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
-        let source = fetch(client, &url, 8 << 20).await?;
-        let started = Instant::now();
-        let (send, result) = tokio::sync::oneshot::channel();
-        std::thread::Builder::new()
-            .name("youtube-script".into())
-            .stack_size(8 << 20)
-            .spawn(move || {
-                let _ = send.send(Prepared::new(source));
-            })
-            .map_err(|_| "Не запустить движок плеера")?;
-        let prepared = match result
-            .await
-            .map_err(|_| "Движок плеера завершился".to_owned())
-            .and_then(|result| result)
-        {
-            Ok(prepared) => Arc::new(prepared),
-            Err(error) => {
-                log::debug!("YouTube: {error}");
-                #[cfg(test)]
-                eprintln!("Player parser: {error}");
-                let message = "Не разобрать текущий плеер YouTube".to_owned();
-                state.failed = Some((Instant::now(), message.clone()));
-                return Err(message);
-            }
-        };
-        log::info!(
-            "YouTube: плеер {id} готов за {:.2} с",
-            started.elapsed().as_secs_f64()
-        );
-        let now = Instant::now();
-        state.current = Some((now, now, id, prepared.clone()));
-        state.failed = None;
-        Ok(prepared)
     }
+    let tv_url = format!("https://www.youtube.com/s/player/{id}/tv-player-ias.vflset/tv-player-ias.js");
+    let source = match fetch(client, &tv_url, super::remote::TV_AGENT, 8 << 20).await {
+        Ok(source) => source,
+        Err(_) => {
+            let web_url = format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
+            fetch(client, &web_url, WEB_AGENT, 8 << 20)
+                .await
+                .map_err(|e| (false, e))?
+        }
+    };
+    let started = Instant::now();
+    let (send, result) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("youtube-script".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let _ = send.send(Prepared::new(source));
+        })
+        .map_err(|_| (false, "Не запустить движок плеера".to_owned()))?;
+    let prepared = match result
+        .await
+        .map_err(|_| "Движок плеера завершился".to_owned())
+        .and_then(|result| result)
+    {
+        Ok(prepared) => Arc::new(prepared),
+        Err(error) => {
+            log::debug!("YouTube: {error}");
+            #[cfg(test)]
+            eprintln!("Player parser: {error}");
+            return Err((true, "Не разобрать текущий плеер YouTube".to_owned()));
+        }
+    };
+    log::info!(
+        "YouTube: плеер {id} готов за {:.2} с",
+        started.elapsed().as_secs_f64()
+    );
+    Ok(ScriptLoad::Compiled(id, prepared))
 }
-async fn fetch(client: &Client, url: &str, limit: usize) -> Result<String, String> {
+async fn fetch(client: &Client, url: &str, agent: &str, limit: usize) -> Result<String, String> {
     let resp = client
         .get(url)
-        .header("User-Agent", WEB_AGENT)
+        .header("User-Agent", agent)
         .send()
         .await
         .map_err(|_| "Не скачать плеер YouTube")?;
@@ -346,4 +456,72 @@ fn boundaries(bytes: &[u8]) -> Vec<usize> {
         cuts.push(bytes.len());
     }
     cuts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    const FIXTURE: &str = r#"(function(){
+        function makeUrl(url, key, sig) {
+            let params = new Map([[key, sig]]);
+            params.set("alr", "yes");
+            return new Wrapped(params);
+        }
+        function Wrapped(params) { this.params = params; }
+        Wrapped.prototype.set = function(k,v) { this.params.set(k,v); };
+        Wrapped.prototype.get = function(k) { return this.params.get(k); };
+        Wrapped.prototype.transform = function() {
+            for (const k of ["s","n"]) {
+                const v=this.get(k);
+                if (v) this.set(k,v.split("").reverse().join(""));
+            }
+        };
+        var config={signatureTimestamp:12345};
+    }).call(this);"#;
+
+    #[tokio::test]
+    async fn single_flight_dedup_and_cancel_safety() {
+        let scripts = Scripts::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        let spawn_call = |scripts: Scripts, calls: Arc<AtomicUsize>, entered: Arc<Notify>, release: Arc<Notify>| {
+            tokio::spawn(async move {
+                scripts
+                    .load_or_wait(move |_shared| async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        entered.notify_one();
+                        release.notified().await;
+                        let prepared = Arc::new(Prepared::new(FIXTURE.to_owned()).map_err(|e| (true, e))?);
+                        Ok(ScriptLoad::Compiled("test1234".into(), prepared))
+                    })
+                    .await
+            })
+        };
+
+        let task1 = spawn_call(scripts.clone(), calls.clone(), entered.clone(), release.clone());
+        entered.notified().await;
+        let task2 = spawn_call(scripts.clone(), calls.clone(), entered.clone(), release.clone());
+        tokio::task::yield_now().await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        task1.abort();
+        let _ = task1.await;
+
+        release.notify_one();
+        let res = task2.await.unwrap().unwrap();
+        assert_eq!(res.timestamp, 12345);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(scripts.cached());
+
+        // Subsequent call hits fresh cache instead of spawning again.
+        let calls_before = calls.load(Ordering::SeqCst);
+        let cached = spawn_call(scripts.clone(), calls.clone(), entered, release).await.unwrap().unwrap();
+        assert_eq!(cached.timestamp, 12345);
+        assert_eq!(calls.load(Ordering::SeqCst), calls_before);
+    }
 }

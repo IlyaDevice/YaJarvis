@@ -69,20 +69,28 @@ impl Classic {
             tokio::task::spawn_blocking(move||crate::alice::text(&command,false)).await.map_err(|e|e.to_string())??;
             self.dialog.on_bot("Передал Алисе");self.dialog.finish_turn("");return Ok(());
         }
+        let mut close_after = false;
         let answer=if let Some(answer)=context.host.command(command).await{answer}else if let Some(answer)=context.tools.ha_vacuum(command).await{answer}else if let Some(answer)=context.tools.smartlife_fast(command).await{answer}else if let Some(answer)=context.tools.fast(command).await{answer}else{
             let history=context.history.lock().unwrap().clone();
             let (extra,defs)=context.tools.prepare().await;
-            let answer=crate::llm::ask_with_history(&context.host,&context.settings,&context.profile,&format!("{}\n{}\n{extra}",context.instructions,crate::rules::BACKEND_RULES),&history,text,&context.tools,defs).await?;
+            let reply=crate::llm::ask_with_history_detail(&context.host,&context.settings,&context.profile,&format!("{}\n{}\n{extra}",context.instructions,crate::rules::BACKEND_RULES),&history,text,&context.tools,defs).await?;
+            close_after = reply.close_dialog && !crate::music::wants_keep_talking(text);
             if self.generation.load(Ordering::SeqCst)==generation{
                 let mut h=context.history.lock().unwrap();
                 h.push(crate::llm::Turn{role:"user",content:text.to_owned()});
-                h.push(crate::llm::Turn{role:"assistant",content:answer.clone()});
+                h.push(crate::llm::Turn{role:"assistant",content:reply.text.clone()});
                 if h.len()>12{let drop_n=h.len()-12;h.drain(..drop_n);}
             }
-            answer
+            reply.text
         };
         if self.generation.load(Ordering::SeqCst)!=generation{return Ok(());}
-        self.dialog.on_bot(&answer);self.speak(context,&answer,generation).await?;self.dialog.finish_turn("");Ok(())
+        self.dialog.on_bot(&answer);
+        if close_after {
+            self.dialog.finish_turn("");
+            self.dialog.request_close();
+            return Ok(());
+        }
+        self.speak(context,&answer,generation).await?;self.dialog.finish_turn("");Ok(())
     }
     async fn speak(&self,context:&Context,text:&str,generation:u64)->Result<(),String>{
         let provider=context.profile.effective_tts_engine();

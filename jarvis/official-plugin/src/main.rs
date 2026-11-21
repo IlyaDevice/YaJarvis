@@ -154,6 +154,7 @@ impl Provider {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    init_logger();
     let plugin = Arc::new(OnceCell::<Provider>::new());
     let endpoint = Peer::open(
         tokio::io::stdin(),
@@ -181,4 +182,25 @@ async fn main() {
         }),
     );
     endpoint.closed().await;
+}
+
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+            || (metadata.level() == log::Level::Info
+                && metadata.target().starts_with("jarvis_youtube"))
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{}", record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn init_logger() {
+    static LOGGER: StderrLogger = StderrLogger;
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
 }

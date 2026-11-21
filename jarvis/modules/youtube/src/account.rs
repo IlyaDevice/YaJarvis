@@ -272,6 +272,10 @@ impl Account {
         self.host.data.join(COOKIES).is_file()
     }
 
+    pub fn web_headers(&self) -> HeaderMap {
+        self.cookie_headers()
+    }
+
     fn cookie_headers(&self) -> HeaderMap {
         fs::read_to_string(self.host.data.join(COOKIES))
             .ok()

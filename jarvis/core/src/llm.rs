@@ -48,11 +48,22 @@ pub struct Turn {
     pub content: String,
 }
 
+pub struct AskReply {
+    pub text: String,
+    pub close_dialog: bool,
+}
+
 pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
     ask_with_history(host, s, p, instructions, &[], text, tools, defs).await
 }
 
 pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&str,history:&[Turn],text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
+    ask_with_history_detail(host, s, p, instructions, history, text, tools, defs)
+        .await
+        .map(|reply| reply.text)
+}
+
+pub async fn ask_with_history_detail(host:&Host,s:&Settings,p:&Profile,instructions:&str,history:&[Turn],text:&str,tools:&Tools,defs:Vec<Value>)->Result<AskReply,String>{
     let explicit = p.effective_llm_engine();
     if !explicit.is_empty() && !matches!(explicit, "openai" | "live" | "chatgpt" | "gemini" | "grok") {
         return ask_plugin(host, explicit, p.effective_llm_model(), instructions, history, text, tools, &defs).await;
@@ -64,7 +75,9 @@ pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&st
                 return Err("Войдите в ChatGPT в «Подключениях»".into());
             }
             let auth = host.provider("chatgpt")?.request("auth.token", Value::Null, Duration::from_secs(20)).await?;
-            return crate::chatgpt::ask_codex_with_history(host, auth, p, instructions, history, text, Some(tools), defs).await;
+            return crate::chatgpt::ask_codex_with_history_detail(host, auth, p, instructions, history, text, Some(tools), defs)
+                .await
+                .map(|r| AskReply { text: r.text, close_dialog: r.close_dialog });
         }
         if configured(s, id).is_empty() {
             return Err(match id {
@@ -79,13 +92,17 @@ pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&st
         let preferred=if ["openai","live",""].contains(&p.engine.as_str()){"openai"}else{p.engine.as_str()};
         if preferred=="chatgpt" && crate::chatgpt::signed_in(&s.chatgpt){
             let auth=host.provider("chatgpt")?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
-            return crate::chatgpt::ask_codex_with_history(host,auth,p,instructions,history,text,Some(tools),defs).await;
+            return crate::chatgpt::ask_codex_with_history_detail(host,auth,p,instructions,history,text,Some(tools),defs)
+                .await
+                .map(|r| AskReply { text: r.text, close_dialog: r.close_dialog });
         }
         let id=if !configured(s,preferred).is_empty(){preferred}else{["openai","gemini","grok"].into_iter().find(|id|!configured(s,id).is_empty()).unwrap_or("chatgpt")};
         if id=="chatgpt" {
             if !crate::chatgpt::signed_in(&s.chatgpt){return Err("Добавьте API-ключ или войдите в ChatGPT в «Подключениях»".into());}
             let auth=host.provider(id)?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
-            return crate::chatgpt::ask_codex_with_history(host,auth,p,instructions,history,text,Some(tools),defs).await;
+            return crate::chatgpt::ask_codex_with_history_detail(host,auth,p,instructions,history,text,Some(tools),defs)
+                .await
+                .map(|r| AskReply { text: r.text, close_dialog: r.close_dialog });
         }
         id
     };
@@ -105,6 +122,7 @@ pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&st
         messages.push(json!({"role":turn.role,"content":turn.content}));
     }
     messages.push(json!({"role":"user","content":text}));
+    let mut music_turn = crate::music::MusicTurnTracker::default();
     for _ in 0..5 {
         let body=match id {
             "gemini"=>{
@@ -117,7 +135,19 @@ pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&st
         };
         let response=provider.request(id,json!({"op":"text","key":key,"model":model,"body":body}),Duration::from_secs(60)).await?;
         let (answer,calls)=decode(id,&response)?;
-        if calls.is_empty(){return if answer.trim().is_empty(){Err("Модель ничего не ответила".into())}else{Ok(answer)};}
+        if response["candidates"][0].get("groundingMetadata").is_some()
+            || response["output"].as_array().is_some_and(|items| items.iter().any(|item| item["type"] == "web_search_call"))
+        {
+            music_turn.note_other();
+        }
+        if calls.is_empty(){
+            return if answer.trim().is_empty(){
+                Err("Модель ничего не ответила".into())
+            } else {
+                let close_dialog = music_turn.should_close(&answer);
+                Ok(AskReply { text: answer, close_dialog })
+            };
+        }
         match id {
             "gemini"=>contents.push(response["candidates"][0]["content"].clone()),
             "grok"=>messages.push(response["choices"][0]["message"].clone()),
@@ -126,6 +156,7 @@ pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&st
         let mut gemini_results=vec![];
         for call in calls {
             let result = run_tool(tools, &defs, &call).await?;
+            music_turn.observe_tool(&call.name, &call.arguments, &result);
             match id {
                 "gemini"=>{let mut value=json!({"name":call.name,"response":{"result":result}});if !call.id.is_empty(){value["id"]=call.id.into();}gemini_results.push(json!({"functionResponse":value}));},
                 "grok"=>messages.push(json!({"role":"tool","tool_call_id":call.id,"content":result})),
@@ -143,11 +174,19 @@ async fn run_tool(tools: &Tools, defs: &[Value], call: &Call) -> Result<String, 
     if !defs.iter().any(|def| def["name"] == call.name) {
         return Err("Модель вызвала необъявленный инструмент".into());
     }
-    Ok(tokio::time::timeout(Duration::from_secs(15), tools.call(&call.name, &call.arguments))
-        .await.unwrap_or_else(|_| "Инструмент не ответил за 15 с".into()))
+    let limit = if call.name == "play_music" { 35 } else { 15 };
+    Ok(match tokio::time::timeout(Duration::from_secs(limit), tools.call(&call.name, &call.arguments)).await {
+        Ok(result) => result,
+        Err(_) => {
+            if call.name == "play_music" {
+                tools.cancel_loading_music().await;
+            }
+            format!("Инструмент не ответил за {limit} с")
+        }
+    })
 }
 
-async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, history: &[Turn], text: &str, tools: &Tools, defs: &[Value]) -> Result<String, String> {
+async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, history: &[Turn], text: &str, tools: &Tools, defs: &[Value]) -> Result<AskReply, String> {
     let mut messages = Vec::with_capacity(history.len() + 2);
     messages.push(json!({"role":"system","content":instructions}));
     for turn in history {
@@ -157,6 +196,7 @@ async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, hist
     let schemas: Vec<_> = defs.iter().filter(|def| def["type"] == "function").map(|def| {
         json!({"type":"function","function":{"name":def["name"],"description":def["description"],"parameters":def["parameters"]}})
     }).collect();
+    let mut music_turn = crate::music::MusicTurnTracker::default();
     for _ in 0..5 {
         let mut payload = json!({"messages":messages,"tools":schemas});
         if !model.is_empty() {
@@ -168,7 +208,10 @@ async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, hist
             if answer.is_empty() || answer.len() > 32 * 1024 {
                 return Err("Текстовый плагин вернул пустой или слишком длинный ответ".into());
             }
-            return Ok(answer.to_owned());
+            return Ok(AskReply {
+                text: answer.to_owned(),
+                close_dialog: music_turn.should_close(answer),
+            });
         };
         if calls.len() > 16 { return Err("Плагин вернул слишком много вызовов инструментов".into()); }
         let mut parsed = Vec::with_capacity(calls.len());
@@ -190,6 +233,7 @@ async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, hist
         messages.push(json!({"role":"assistant","content":answer,"tool_calls":tool_calls}));
         for call in parsed {
             let output = run_tool(tools, defs, &call).await?;
+            music_turn.observe_tool(&call.name, &call.arguments, &output);
             messages.push(json!({"role":"tool","tool_call_id":call.id,"content":output}));
         }
     }

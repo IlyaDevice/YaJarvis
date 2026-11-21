@@ -27,6 +27,8 @@ pub struct Tools {
     pub music_fast:Option<MusicFastFn>,
     /// Добавить в очередь YouTube.
     pub music_queue: Option<MusicFn>,
+    /// Отменить незавершённый запуск музыки (например, по тайм-ауту инструмента).
+    pub music_cancel: Option<Arc<dyn Fn() -> crate::plugins::BoxFut<()> + Send + Sync>>,
     /// Общая память: «вспомни», «забудь/запомни».
     pub memory: Option<Arc<crate::memory::Memory>>,
 }
@@ -49,7 +51,12 @@ fn as_str(v: &Value) -> String {
 
 impl Tools {
     pub fn new(host: Arc<Host>, store: Store) -> Tools {
-        Tools { host, store, music: None, music_ctl: None, music_fast:None, music_queue: None, memory: None }
+        Tools { host, store, music: None, music_ctl: None, music_fast:None, music_queue: None, music_cancel: None, memory: None }
+    }
+    pub async fn cancel_loading_music(&self) {
+        if let Some(cancel) = &self.music_cancel {
+            cancel().await;
+        }
     }
     /// Каталог из контекста определяет доступность инструментов уже в первой реплике.
     pub async fn prepare(&self)->(String,Vec<Value>) {
@@ -209,14 +216,15 @@ impl Tools {
                 "description": format!("Найти по всему YouTube и включить звук видео на колонке: любой ролик, кавер, ремикс, концерт, подкаст или песню. {who} Если сказали только «включи на YouTube трек», сначала спроси название или исполнителя. Подбирай сам, когда об этом попросили. Не обещай «сейчас поищу» без вызова."),
                 "parameters": {"type": "object", "properties": {
                     "query": {"type": "string", "description": "что искать: исполнитель и название"},
-                    "queue": {"type": "boolean", "description": "true — не включать сразу, а добавить в очередь после того, что играет («добавь в очередь», «потом включи»)"}},
+                    "queue": {"type": "boolean", "description": "true — не включать сразу, а добавить в очередь после того, что играет («добавь в очередь», «потом включи»)"},
+                    "keep_talking": {"type": "boolean", "description": "true — если кроме включения музыки хозяин попросил ещё о чём-то (ответить на вопрос, рассказать, не отключаться)"}},
                     "required": ["query"]}}));
         }
         if self.music_ctl.is_some() && self.host.provider("youtube").is_ok() {
             defs.push(json!({"type": "function", "name": "music_control",
-                "description": "Управлять тем, что сейчас играет с YouTube: пауза, продолжить, перемотка вперёд/назад, с начала, следующее видео, похожее (радио), выключить, что играет.",
+                "description": "Управлять тем, что сейчас играет с YouTube: пауза, продолжить, перемотка вперёд/назад, с начала, следующее видео, похожее (радио), повтор (на репит), выключить, что играет.",
                 "parameters": {"type": "object", "properties": {
-                    "command": {"type": "string", "description": "команда по-русски, например «пауза», «продолжи», «перемотай вперёд на 2 минуты», «назад на 30 секунд», «сначала», «следующее», «включи похожее», «выключи музыку», «что играет»"}},
+                    "command": {"type": "string", "description": "команда по-русски, например «пауза», «продолжи», «перемотай вперёд на 2 минуты», «назад на 30 секунд», «сначала», «следующее», «включи похожее», «включи повтор», «выключи повтор», «выключи музыку», «что играет»"}},
                     "required": ["command"]}}));
         }
         if self.use_ch("alice") {
