@@ -11,30 +11,170 @@ use std::{
 };
 use tokio::io::AsyncWriteExt;
 
+const FIRST_CHUNK: u64 = 64 << 10;
 const CHUNK: u64 = 256 << 10;
+const PREFETCH_CHUNKS: usize = 4;
 const CLUSTER: u32 = 0x1f43b675;
 
 struct Input {
-    client: Client,
-    stream: Stream,
-    pos: u64,
-    total: u64,
+    rx: tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    task: tokio::task::JoinHandle<()>,
     data: Vec<u8>,
     index: usize,
-    chunk: u64,
+    eof: bool,
+}
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn send_err(tx: &tokio::sync::mpsc::Sender<io::Result<Vec<u8>>>, err: io::Error) {
+    let _ = tx.send(Err(err)).await;
+}
+
+async fn prefetch(
+    client: Client,
+    mut stream: Stream,
+    mut pos: u64,
+    tx: tokio::sync::mpsc::Sender<io::Result<Vec<u8>>>,
+) {
+    let mut total = stream.length;
+    let mut chunk = CHUNK;
+    let mut first = true;
+    while (total == 0 || pos < total) && !tx.is_closed() {
+        let mut want = if first { FIRST_CHUNK.min(chunk) } else { chunk };
+        let mut last = io::Error::other("YouTube не отдал звук");
+        let mut fetched = false;
+        for retry in 0..4 {
+            let mut redirects = 0u8;
+            loop {
+                let end = if total == 0 {
+                    pos + want - 1
+                } else {
+                    (pos + want - 1).min(total - 1)
+                };
+                let response = client
+                    .get(stream.url.clone())
+                    .header("User-Agent", stream.agent)
+                    .header("Range", format!("bytes={pos}-{end}"))
+                    .send()
+                    .await;
+                match response {
+                    Ok(response) if response.status().is_redirection() => {
+                        let Some(location) = response
+                            .headers()
+                            .get(reqwest::header::LOCATION)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| stream.url.join(s).ok())
+                            .filter(crate::remote::valid_media_url)
+                        else {
+                            return send_err(
+                                &tx,
+                                io::Error::other("Неверное перенаправление аудио YouTube"),
+                            )
+                            .await;
+                        };
+                        redirects += 1;
+                        if redirects > 5 {
+                            return send_err(
+                                &tx,
+                                io::Error::other("Слишком много перенаправлений аудио YouTube"),
+                            )
+                            .await;
+                        }
+                        stream.url = location;
+                        continue;
+                    }
+                    Ok(response)
+                        if response.status() == StatusCode::FORBIDDEN && want > 64 << 10 =>
+                    {
+                        chunk = want / 2;
+                        want = chunk;
+                        first = false;
+                        continue;
+                    }
+                    Ok(response) if response.status() == StatusCode::PARTIAL_CONTENT => {
+                        let Some((start, last_byte, content_total)) = content_range(&response)
+                            .filter(|&(start, last, total)| {
+                                start == pos && (start..=end).contains(&last) && total > last
+                            })
+                        else {
+                            return send_err(&tx, invalid("Неверный диапазон аудио YouTube"))
+                                .await;
+                        };
+                        if total != 0 && total != content_total {
+                            return send_err(&tx, invalid("Размер аудио YouTube изменился"))
+                                .await;
+                        }
+                        match bytes(response, want as usize).await {
+                            Ok(data) if data.len() as u64 == last_byte - start + 1 => {
+                                total = content_total;
+                                pos += data.len() as u64;
+                                first = false;
+                                if tx.send(Ok(data)).await.is_err() {
+                                    return;
+                                }
+                                fetched = true;
+                                break;
+                            }
+                            _ => {
+                                last = io::Error::other("Соединение с аудио YouTube оборвалось");
+                                break;
+                            }
+                        }
+                    }
+                    Ok(response) if response.status() == StatusCode::OK && pos == 0 => {
+                        let data = match bytes(response, want.max(CHUNK) as usize).await {
+                            Ok(data) => data,
+                            Err(e) => return send_err(&tx, io::Error::other(e)).await,
+                        };
+                        if total != 0 && total != data.len() as u64 {
+                            return send_err(&tx, invalid("Неполный ответ YouTube")).await;
+                        }
+                        if !data.is_empty() {
+                            let _ = tx.send(Ok(data)).await;
+                        }
+                        return;
+                    }
+                    Ok(response) => {
+                        let status = response.status();
+                        last = io::Error::other(format!("YouTube не отдал звук ({status})"));
+                        if !status.is_server_error() {
+                            return send_err(&tx, last).await;
+                        }
+                        break;
+                    }
+                    Err(_) => {
+                        last = io::Error::other("Соединение с аудио YouTube оборвалось");
+                        break;
+                    }
+                }
+            }
+            if fetched {
+                break;
+            }
+            if retry < 3 {
+                tokio::time::sleep(Duration::from_millis(250 * (retry + 1))).await;
+            }
+        }
+        if !fetched {
+            return send_err(&tx, last).await;
+        }
+    }
 }
 
 impl Input {
     fn new(client: Client, stream: Stream, pos: u64) -> Self {
-        let total = stream.length;
+        let (tx, rx) = tokio::sync::mpsc::channel(PREFETCH_CHUNKS);
+        let task = tokio::spawn(prefetch(client, stream, pos, tx));
         Self {
-            client,
-            stream,
-            pos,
-            total,
+            rx,
+            task,
             data: Vec::new(),
             index: 0,
-            chunk: CHUNK,
+            eof: false,
         }
     }
 
@@ -42,75 +182,24 @@ impl Input {
         if self.index < self.data.len() {
             return Ok(true);
         }
-        if self.total != 0 && self.pos >= self.total {
+        if self.eof {
             return Ok(false);
         }
-        let mut last = io::Error::other("YouTube не отдал звук");
-        for retry in 0..4 {
-            let end = if self.total == 0 {
-                self.pos + self.chunk - 1
-            } else {
-                (self.pos + self.chunk - 1).min(self.total - 1)
-            };
-            let response = self
-                .client
-                .get(self.stream.url.clone())
-                .header("User-Agent", self.stream.agent)
-                .header("Range", format!("bytes={}-{}", self.pos, end))
-                .send()
-                .await;
-            match response {
-                Ok(response)
-                    if response.status() == StatusCode::FORBIDDEN && self.chunk > 64 << 10 =>
-                {
-                    self.chunk /= 2;
-                    continue;
-                }
-                Ok(response) if response.status() == StatusCode::PARTIAL_CONTENT => {
-                    let (start, last_byte, total) = content_range(&response)
-                        .filter(|&(start, last, total)| {
-                            start == self.pos && (start..=end).contains(&last) && total > last
-                        })
-                        .ok_or_else(|| invalid("Неверный диапазон аудио YouTube"))?;
-                    if self.total != 0 && self.total != total {
-                        return Err(invalid("Размер аудио YouTube изменился"));
-                    }
-                    match bytes(response, self.chunk as usize).await {
-                        Ok(data) if data.len() as u64 == last_byte - start + 1 => {
-                            self.total = total;
-                            self.data = data;
-                            self.index = 0;
-                            return Ok(true);
-                        }
-                        _ => last = io::Error::other("Соединение с аудио YouTube оборвалось"),
-                    }
-                }
-                Ok(response) if response.status() == StatusCode::OK && self.pos == 0 => {
-                    let data = bytes(response, self.chunk as usize)
-                        .await
-                        .map_err(io::Error::other)?;
-                    if self.total != 0 && self.total != data.len() as u64 {
-                        return Err(invalid("Неполный ответ YouTube"));
-                    }
-                    self.total = data.len() as u64;
-                    self.data = data;
-                    self.index = 0;
-                    return Ok(!self.data.is_empty());
-                }
-                Ok(response) => {
-                    let status = response.status();
-                    last = io::Error::other(format!("YouTube не отдал звук ({status})"));
-                    if !status.is_server_error() {
-                        return Err(last);
-                    }
-                }
-                Err(_) => last = io::Error::other("Соединение с аудио YouTube оборвалось"),
+        match self.rx.recv().await {
+            Some(Ok(data)) => {
+                self.data = data;
+                self.index = 0;
+                Ok(!self.data.is_empty())
             }
-            if retry < 3 {
-                tokio::time::sleep(Duration::from_millis(250 * (retry + 1))).await;
+            Some(Err(err)) => {
+                self.eof = true;
+                Err(err)
+            }
+            None => {
+                self.eof = true;
+                Ok(false)
             }
         }
-        Err(last)
     }
 
     async fn byte(&mut self) -> io::Result<Option<u8>> {
@@ -119,7 +208,6 @@ impl Input {
         }
         let byte = self.data[self.index];
         self.index += 1;
-        self.pos += 1;
         Ok(Some(byte))
     }
 
@@ -136,7 +224,6 @@ impl Input {
                 out = Some(tail);
             }
             self.index = end;
-            self.pos += n as u64;
             len -= n as u64;
         }
         Ok(())
@@ -321,7 +408,7 @@ pub async fn play(
         .stdin
         .take()
         .ok_or_else(|| io::Error::other("Нет входа aplay"))?;
-    let lead = Duration::from_millis(120);
+    let lead = Duration::from_millis(350);
     let mut next_write = Instant::now();
     write_audio(&mut stdin, data).await?;
     next_write += Duration::from_secs_f64(data.len() as f64 / 96_000.0);
@@ -426,5 +513,150 @@ impl Audio {
             }
             return Ok(Some((sec, &self.out[..count * 2])));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    #[tokio::test]
+    async fn input_prefetches_chunks_and_aborts_on_drop() {
+        let payload: Vec<u8> = (0..(400 * 1024usize)).map(|i| (i % 251) as u8).collect();
+        let total = payload.len();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let req_count = requests.clone();
+        let data = Arc::new(payload.clone());
+
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let req_count = req_count.clone();
+                let data = data.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    loop {
+                        let n = match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => n,
+                        };
+                        req_count.fetch_add(1, Ordering::SeqCst);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let range = req
+                            .lines()
+                            .find_map(|l| l.strip_prefix("Range: bytes=").or_else(|| l.strip_prefix("range: bytes=")))
+                            .unwrap_or("0-0")
+                            .trim();
+                        let (s, e) = range.split_once('-').unwrap();
+                        let start: usize = s.parse().unwrap();
+                        let end: usize = e.parse::<usize>().unwrap().min(total - 1);
+                        let slice = &data[start..=end];
+                        let header = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{total}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                            slice.len()
+                        );
+                        if sock.write_all(header.as_bytes()).await.is_err()
+                            || sock.write_all(slice).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let stream = Stream {
+            url: reqwest::Url::parse(&format!("http://{addr}/audio.webm")).unwrap(),
+            agent: "test",
+            client: "TEST",
+            length: total as u64,
+            duration: 30.0,
+            ready: Instant::now(),
+            itag: 251,
+        };
+        let client = Client::builder().no_proxy().build().unwrap();
+        let mut input = Input::new(client.clone(), stream.clone(), 0);
+        // Yield briefly so background prefetch downloads chunk 1 + chunk 2 ahead of consumer.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(requests.load(Ordering::SeqCst) >= 2);
+
+        let mut received = vec![0u8; total];
+        input.take(total as u64, Some(&mut received)).await.unwrap();
+        assert_eq!(received, payload);
+        assert!(input.byte().await.unwrap().is_none());
+        drop(input);
+
+        // Verify dropping an active Input aborts background prefetch before downloading everything.
+        let count_before = requests.load(Ordering::SeqCst);
+        let input2 = Input::new(client, stream, 0);
+        drop(input2);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(requests.load(Ordering::SeqCst), count_before);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn redirect_validation_allows_googlevideo_and_blocks_other_hosts() {
+        assert!(crate::remote::valid_media_url(
+            &reqwest::Url::parse("https://rr3---sn-test.googlevideo.com/videoplayback?id=1").unwrap()
+        ));
+        assert!(!crate::remote::valid_media_url(
+            &reqwest::Url::parse("http://rr3---sn-test.googlevideo.com/videoplayback").unwrap()
+        ));
+        assert!(!crate::remote::valid_media_url(
+            &reqwest::Url::parse("https://rr3---sn-test.googlevideo.com:8443/videoplayback").unwrap()
+        ));
+        assert!(!crate::remote::valid_media_url(
+            &reqwest::Url::parse("https://user@rr3---sn-test.googlevideo.com/videoplayback").unwrap()
+        ));
+        assert!(!crate::remote::valid_media_url(
+            &reqwest::Url::parse("https://evil.example/videoplayback").unwrap()
+        ));
+
+        // Verify 302 redirect to a non-googlevideo host is rejected during prefetch.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: https://evil.example/audio\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+        let stream = Stream {
+            url: reqwest::Url::parse(&format!("http://{addr}/audio.webm")).unwrap(),
+            agent: "test",
+            client: "TEST",
+            length: 1024,
+            duration: 10.0,
+            ready: Instant::now(),
+            itag: 251,
+        };
+        let client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let mut input = Input::new(client, stream, 0);
+        let err = input.byte().await.unwrap_err();
+        assert!(err.to_string().contains("перенаправление"), "{err}");
+        server.abort();
     }
 }

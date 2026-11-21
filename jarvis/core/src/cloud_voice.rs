@@ -42,18 +42,35 @@ impl Voice {
         const TICK_MS: u64 = 40;
         const SAMPLES_PER_TICK: usize = crate::audio::MIC_RATE as usize * TICK_MS as usize / 1000;
         const MAX_SAMPLES_PER_TICK: usize = SAMPLES_PER_TICK * 4;
-        let mut started=false;let mut tasks=tokio::task::JoinSet::<Value>::new();let mut interval=tokio::time::interval(Duration::from_millis(TICK_MS));
+        let mut started=false;let mut tasks=tokio::task::JoinSet::<(String,String,String,Value)>::new();let mut interval=tokio::time::interval(Duration::from_millis(TICK_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut handles=std::collections::HashMap::<String,tokio::task::AbortHandle>::new();let mut seen=std::collections::HashSet::new();
         let mut pending_calls=Vec::<Value>::new();
+        let mut music_turn = crate::music::MusicTurnTracker::default();
+        let mut music_turn_id = 0i64;
         let mut up=jarvis_dsp::audio::Upsampler::new(3);let mut phase=0;let mut speaking=false;
         loop {
             tokio::select!{
                 biased;
                 result=tasks.join_next(),if !tasks.is_empty()=>{
                     self.dialog.working(-1);
-                    let value=match result.ok_or("Вызов инструмента завершился")? {Ok(value)=>value,Err(e) if e.is_cancelled()=>continue,Err(e)=>return Err(e.to_string())};
+                    let (name,args,outcome,value)=match result.ok_or("Вызов инструмента завершился")? {Ok(item)=>item,Err(e) if e.is_cancelled()=>continue,Err(e)=>return Err(e.to_string())};
                     let id=value.pointer("/toolResponse/functionResponses/0/id").or_else(||value.pointer("/item/call_id")).and_then(Value::as_str).unwrap_or("");handles.remove(id);
+                    let turn_id = self.dialog.utterance().0;
+                    if turn_id != music_turn_id {
+                        music_turn = crate::music::MusicTurnTracker::default();
+                        music_turn_id = turn_id;
+                    }
+                    music_turn.observe_tool(&name, &args, &outcome);
+                    if tasks.is_empty()
+                        && music_turn.should_close(&outcome)
+                        && !crate::music::wants_keep_talking(&self.dialog.utterance().1)
+                    {
+                        self.dialog.on_bot_note(&outcome);
+                        self.dialog.mute();
+                        self.dialog.request_close();
+                        return Ok(());
+                    }
                     send(&mut socket,value).await?;if self.id!="gemini" && (self.id!="elevenlabs" || tasks.is_empty()){send(&mut socket,json!({"type":"response.create"})).await?;}
                 },
                 Some(text)=commands.recv(),if started=>{
@@ -86,7 +103,15 @@ impl Voice {
                     if ["session.output_transcript.delta","response.audio_transcript.delta","response.output_audio_transcript.delta"].contains(&kind){self.dialog.on_bot(event["delta"].as_str().unwrap_or(""));}
                     if ["session.output_audio.delta","response.audio.delta","response.output_audio.delta"].contains(&kind){self.audio(event["delta"].as_str().unwrap_or("")).await?;speaking=true;}
                     if let Some(content)=event.get("serverContent"){
-                        if content.get("groundingMetadata").is_some(){log::debug!("Gemini Live: получены результаты поиска");}
+                        if content.get("groundingMetadata").is_some(){
+                            log::debug!("Gemini Live: получены результаты поиска");
+                            let turn_id = self.dialog.utterance().0;
+                            if turn_id != music_turn_id {
+                                music_turn = crate::music::MusicTurnTracker::default();
+                                music_turn_id = turn_id;
+                            }
+                            music_turn.note_other();
+                        }
                         if let Some(text)=content.pointer("/inputTranscription/text").and_then(Value::as_str){self.dialog.on_user(text);}
                         if let Some(text)=content.pointer("/outputTranscription/text").and_then(Value::as_str){self.dialog.on_bot(text);}
                         for part in content.pointer("/modelTurn/parts").and_then(Value::as_array).into_iter().flatten(){if let Some(data)=part.pointer("/inlineData/data").and_then(Value::as_str){self.audio(data).await?;speaking=true;}}
@@ -110,9 +135,22 @@ impl Voice {
                         let Some(tools)=tools.clone() else {continue;};
                         let id=self.id.clone();let declared=defs.iter().any(|d|d["name"]==call["name"]);self.dialog.working(1);
                         let handle=tasks.spawn(async move{
-                            let name=call["name"].as_str().unwrap_or("");let arguments=call["arguments"].as_str().map(str::to_string).unwrap_or_else(||call["args"].to_string());
-                            let result=if declared{tokio::time::timeout(Duration::from_secs(15),tools.call(name,&arguments)).await.unwrap_or_else(|_|"Инструмент не ответил вовремя".into())}else{"Этот инструмент не был объявлен".into()};
-                            match id.as_str(){"gemini"=>json!({"toolResponse":{"functionResponses":[{"id":call["id"],"name":name,"response":{"result":result}}]}}),_=>json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":call["call_id"],"output":result}})}
+                            let name=call["name"].as_str().unwrap_or("").to_owned();
+                            let arguments=call["arguments"].as_str().map(str::to_string).unwrap_or_else(||call["args"].to_string());
+                            let limit = if name == "play_music" { 35 } else { 15 };
+                            let result=if declared{
+                                match tokio::time::timeout(Duration::from_secs(limit),tools.call(&name,&arguments)).await {
+                                    Ok(result) => result,
+                                    Err(_) => {
+                                        if name == "play_music" {
+                                            tools.cancel_loading_music().await;
+                                        }
+                                        "Инструмент не ответил вовремя".into()
+                                    }
+                                }
+                            }else{"Этот инструмент не был объявлен".into()};
+                            let payload = match id.as_str(){"gemini"=>json!({"toolResponse":{"functionResponses":[{"id":call["id"],"name":name,"response":{"result":result}}]}}),_=>json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":call["call_id"],"output":result}})};
+                            (name, arguments, result, payload)
                         });
                         handles.insert(call_id,handle);
                     }

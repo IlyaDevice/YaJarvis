@@ -56,6 +56,7 @@ struct State {
     saved: Option<Instant>,
     proposal: Option<(Instant, VecDeque<Track>)>,
     personal: bool,
+    repeat: bool,
     error: String,
     task: Option<JoinHandle<()>>,
 }
@@ -80,8 +81,8 @@ impl State {
         };
         json!({
             "playing":self.phase==Phase::Playing, "active":active, "paused":self.phase==Phase::Paused,
-            "proposal":self.proposals(), "personal_search":self.personal, "cur":self.track,
-            "pos":(self.pos*10.0).round()/10.0, "status":status
+            "proposal":self.proposals(), "personal_search":self.personal, "repeat":self.repeat,
+            "cur":self.track, "pos":(self.pos*10.0).round()/10.0, "status":status
         })
     }
     fn snapshot(&self, radio: bool) -> Value {
@@ -100,7 +101,7 @@ impl State {
             "loading":self.phase==Phase::Loading, "track":if active{self.track.clone()}else{Track::default()},
             "pos":if active{self.pos}else{0.0}, "dur":if active{self.dur()}else{0.0},
             "client":self.stream.as_ref().map_or("",|v|v.client), "next":next, "queue":self.queue.len(),
-            "radio":radio,"history":history,"error":self.error
+            "radio":radio, "repeat":self.repeat, "history":history, "error":self.error
         })
     }
 }
@@ -112,6 +113,7 @@ pub struct Youtube {
     state: Mutex<State>,
     ready: OnceCell<()>,
     request: AsyncMutex<()>,
+    save_lock: Arc<AsyncMutex<()>>,
     wake: Notify,
     closed: AtomicBool,
     gain: AtomicU32,
@@ -127,6 +129,7 @@ impl Youtube {
             state: Mutex::default(),
             ready: OnceCell::default(),
             request: AsyncMutex::default(),
+            save_lock: Arc::new(AsyncMutex::default()),
             wake: Notify::new(),
             closed: AtomicBool::new(false),
             gain: AtomicU32::new(0.8f32.to_bits()),
@@ -174,6 +177,15 @@ impl Youtube {
     }
 
     pub fn watch(self: &Arc<Self>) {
+        let warm_weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            if let Some(service) = warm_weak.upgrade()
+                && !service.closed.load(Ordering::Acquire)
+            {
+                service.remote.warm_background().await;
+            }
+        });
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             let mut last = Value::Null;
@@ -236,9 +248,9 @@ impl Youtube {
         self.event("music.state", state).await;
     }
 
-    fn save_progress(&self, state: &mut State, complete: bool) {
+    fn record_progress(&self, state: &mut State, complete: bool) -> Option<Vec<u8>> {
         if !valid_id(&state.track.id) || state.pos <= 0.0 {
-            return;
+            return None;
         }
         state.saved = Some(Instant::now());
         let previous = state.history.get(&state.track.id);
@@ -246,7 +258,7 @@ impl Youtube {
             && !complete
             && state.pos >= state.dur() - 20.0
         {
-            return;
+            return None;
         }
         let entry = Saved {
             track: state.track.clone(),
@@ -266,22 +278,51 @@ impl Youtube {
                 state.history.remove(&id);
             }
         }
-        match serde_json::to_vec(&state.history)
-            .map_err(|e| e.to_string())
-            .and_then(|data| save(&self.host.data.join(HISTORY), &data))
+        match serde_json::to_vec(&state.history) {
+            Ok(data) => Some(data),
+            Err(error) => {
+                log::warn!("YouTube: сохранить позицию: {error}");
+                None
+            }
+        }
+    }
+
+    fn persist_progress_bg(self: &Arc<Self>, bytes: Vec<u8>) {
+        let Ok(guard) = self.save_lock.clone().try_lock_owned() else {
+            return;
+        };
+        let path = self.host.data.join(HISTORY);
+        tokio::spawn(async move {
+            let _guard = guard;
+            if let Err(error) = tokio::task::spawn_blocking(move || save(&path, &bytes))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            {
+                log::warn!("YouTube: сохранить позицию: {error}");
+            }
+        });
+    }
+
+    async fn persist_progress_sync(&self, bytes: Vec<u8>) {
+        let _guard = self.save_lock.lock().await;
+        let path = self.host.data.join(HISTORY);
+        if let Err(error) = tokio::task::spawn_blocking(move || save(&path, &bytes))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
         {
-            Ok(()) => {}
-            Err(error) => log::warn!("YouTube: сохранить позицию: {error}"),
+            log::warn!("YouTube: сохранить позицию: {error}");
         }
     }
 
     async fn halt(&self, pause: bool) -> (bool, u64) {
-        let (active, generation, task) = {
+        let (active, generation, task, save_bytes) = {
             let mut state = self.state.lock().unwrap();
             let active = state.phase != Phase::Idle;
-            if active {
-                self.save_progress(&mut state, false);
-            }
+            let save_bytes = if active {
+                self.record_progress(&mut state, false)
+            } else {
+                None
+            };
             state.generation = state.generation.wrapping_add(1);
             if pause && state.stream.is_some() && active {
                 state.phase = Phase::Paused;
@@ -295,12 +336,15 @@ impl Youtube {
                 state.proposal = None;
                 state.error.clear();
             }
-            (active, state.generation, state.task.take())
+            (active, state.generation, state.task.take(), save_bytes)
         };
         self.wake.notify_one();
         if let Some(task) = task {
             task.abort();
             let _ = task.await;
+        }
+        if let Some(bytes) = save_bytes {
+            self.persist_progress_sync(bytes).await;
         }
         (active, generation)
     }
@@ -337,8 +381,8 @@ impl Youtube {
         self.remote.search(query, HeaderMap::new()).await
     }
 
-    async fn resolve(&self, track: Track) -> Result<(Track, Stream), String> {
-        let anonymous = self.remote.resolve(&track.id, HeaderMap::new()).await;
+    async fn resolve(&self, track: Track, prefer_tv: bool) -> Result<(Track, Stream), String> {
+        let anonymous = self.remote.resolve(&track.id, HeaderMap::new(), prefer_tv).await;
         let (mut info, stream) = match anonymous {
             Ok(value) => value,
             Err(e) => {
@@ -346,7 +390,7 @@ impl Youtube {
                 if auth.is_empty() {
                     return Err(e);
                 }
-                self.remote.resolve(&track.id, auth).await?
+                self.remote.resolve(&track.id, auth, true).await?
             }
         };
         if info.title.is_empty() {
@@ -401,17 +445,19 @@ impl Youtube {
         let mut pending: VecDeque<_> = tracks.into();
         let mut last = String::new();
         let mut retries = 0;
+        let mut force_tv = false;
         let mut finished_selection = None;
         while let Some(track) = pending.pop_front() {
             let resolved = if let Some(ready) = stream.take() {
                 Ok((track.clone(), ready))
             } else {
-                self.resolve(track.clone()).await
+                self.resolve(track.clone(), force_tv).await
             };
             let (track, source) = match resolved {
                 Ok(value) => value,
                 Err(e) => {
                     last = e;
+                    force_tv = false;
                     continue;
                 }
             };
@@ -444,6 +490,7 @@ impl Youtube {
                 };
             }
             log::debug!("YouTube: аудио {} Opus {}", source.client, source.itag);
+            let repeat_source = source.clone();
             let needs_related = radio && pending.is_empty();
             let mut sent = false;
             // The audio task owns aplay. Dropping it on pause or stop closes the pipe and kills the child.
@@ -452,7 +499,7 @@ impl Youtube {
                 source,
                 start,
                 |pos| {
-                    let first = {
+                    let (first, save_bytes) = {
                         let mut state = self.state.lock().unwrap();
                         if state.generation != generation {
                             return;
@@ -461,14 +508,19 @@ impl Youtube {
                         sent = true;
                         state.phase = Phase::Playing;
                         state.pos = pos;
-                        if state
+                        let save_bytes = if state
                             .saved
-                            .is_none_or(|when| when.elapsed() >= Duration::from_secs(15))
+                            .is_none_or(|when| when.elapsed() >= Duration::from_secs(30))
                         {
-                            self.save_progress(&mut state, false);
-                        }
-                        first
+                            self.record_progress(&mut state, false)
+                        } else {
+                            None
+                        };
+                        (first, save_bytes)
                     };
+                    if let Some(bytes) = save_bytes {
+                        self.persist_progress_bg(bytes);
+                    }
                     if first {
                         self.wake.notify_one();
                         if needs_related {
@@ -499,27 +551,31 @@ impl Youtube {
                 Err(error) => {
                     last = error.to_string();
                     log::warn!("YouTube: воспроизведение {last}");
-                    // CDNs sometimes rotate a URL during playback. Resume the same video at the last audible position.
+                    // CDNs sometimes rotate a URL or reject ANDROID_VR at ~60s. Resume via TVHTML5 at the last audible position.
                     if sent && retries < 3 && (last.contains("(403") || last.contains("оборвалось"))
                     {
                         retries += 1;
                         start = self.state.lock().unwrap().pos;
+                        if repeat_source.client == "ANDROID_VR" {
+                            force_tv = true;
+                        }
                         pending.push_front(track.clone());
                         continue;
                     }
                     if sent {
                         break;
                     }
+                    force_tv = false;
                     continue;
                 }
                 Ok(()) => {
                     last.clear();
                     retries = 0;
                     start = 0.0;
+                    force_tv = false;
                 }
             }
-            let radio = self.radio().await;
-            let (next, related_end, candidates) = {
+            let (save_bytes, repeat_now) = {
                 let mut state = self.state.lock().unwrap();
                 if state.generation != generation {
                     return;
@@ -527,7 +583,24 @@ impl Youtube {
                 if let Some(stream) = state.stream.as_ref().filter(|st| st.duration > 0.0) {
                     state.pos = stream.duration;
                 }
-                self.save_progress(&mut state, true);
+                (self.record_progress(&mut state, true), state.repeat)
+            };
+            if let Some(bytes) = save_bytes {
+                self.persist_progress_sync(bytes).await;
+            }
+            if repeat_now {
+                if repeat_source.ready.elapsed() < Duration::from_secs(1800) {
+                    stream = Some(repeat_source);
+                }
+                pending.push_front(track);
+                continue;
+            }
+            let radio = self.radio().await;
+            let (next, related_end, candidates) = {
+                let mut state = self.state.lock().unwrap();
+                if state.generation != generation {
+                    return;
+                }
                 if let Some(next) = state.queue.pop_front() {
                     (Some(next), false, VecDeque::new())
                 } else if state.personal {
@@ -709,10 +782,17 @@ impl Youtube {
         };
         let (_, generation) = self.halt(true).await;
         if paused && op == "seek" {
-            let mut state = self.state.lock().unwrap();
-            if state.generation == generation {
-                state.pos = pos;
-                self.save_progress(&mut state, false);
+            let save_bytes = {
+                let mut state = self.state.lock().unwrap();
+                if state.generation == generation {
+                    state.pos = pos;
+                    self.record_progress(&mut state, false)
+                } else {
+                    None
+                }
+            };
+            if let Some(bytes) = save_bytes {
+                self.persist_progress_sync(bytes).await;
             }
         } else {
             let stream = stream.filter(|st| st.ready.elapsed() < Duration::from_secs(1800));
@@ -872,7 +952,7 @@ impl Youtube {
                     .next()
                     .ok_or("YouTube ничего не нашёл")?;
                 let track = if track.title.is_empty() {
-                    self.resolve(track).await?.0
+                    self.resolve(track, false).await?.0
                 } else {
                     track
                 };
@@ -898,6 +978,12 @@ impl Youtube {
                 state.related.clear();
                 state.personal = false;
                 Ok(Value::Null)
+            }
+            "repeat" => {
+                let mut state = self.state.lock().unwrap();
+                state.repeat = args["on"].as_bool().unwrap_or(!state.repeat);
+                self.wake.notify_one();
+                Ok(state.repeat.into())
             }
             "warm" => {
                 self.remote.warm().await?;
@@ -991,7 +1077,7 @@ mod tests {
         let remote = Remote::new(host.clone());
         remote.warm().await.unwrap();
         let (_, source) = remote
-            .resolve("jNQXAC9IVRw", HeaderMap::new())
+            .resolve("jNQXAC9IVRw", HeaderMap::new(), false)
             .await
             .unwrap();
         let mut bytes = 0;
@@ -1034,5 +1120,28 @@ mod tests {
             prepared.decode("abc".into(), "xyz".into()).await.unwrap(),
             ("cba".into(), "zyx".into())
         );
+    }
+
+    #[tokio::test]
+    async fn repeat_command_toggles_and_persists_in_state() {
+        let host = Host::new(
+            Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+            std::env::temp_dir().join("jarvis-yt-repeat-test"),
+        );
+        let yt = Arc::new(Youtube::new(host));
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], false);
+        assert_eq!(yt.state.lock().unwrap().snapshot(true)["repeat"], false);
+
+        assert_eq!(yt.command("repeat", &json!({"on": true})).await.unwrap(), json!(true));
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], true);
+        assert_eq!(yt.state.lock().unwrap().snapshot(false)["repeat"], true);
+
+        // Pausing / halting playback must preserve repeat setting.
+        let _ = yt.halt(false).await;
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], true);
+
+        // Omitting `on` toggles repeat off.
+        assert_eq!(yt.command("repeat", &json!({})).await.unwrap(), json!(false));
+        assert_eq!(yt.state.lock().unwrap().current()["repeat"], false);
     }
 }

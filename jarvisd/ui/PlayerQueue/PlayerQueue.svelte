@@ -96,7 +96,7 @@
   <div class="card-head">
     <h2 id="player-queue-title">Очередь</h2>
     {#if state}
-      <span class="meta">{yandex ? "Яндекс Музыка" : `${queued} в очереди${state.radio ? " · дальше похожее" : ""}`}</span>
+      <span class="meta">{yandex ? "Яндекс Музыка" : `${queued} в очереди${state.repeat ? " · повтор" : state.radio ? " · дальше похожее" : ""}`}</span>
     {/if}
   </div>
   <form class={styles.form} onsubmit={submit}>

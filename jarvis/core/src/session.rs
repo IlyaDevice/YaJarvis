@@ -3,7 +3,11 @@
 
 use crate::journal::Journal;
 use std::{
-    sync::{Arc, Mutex, mpsc::Receiver},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
+    },
     time::{Duration, Instant},
 };
 
@@ -53,6 +57,7 @@ pub struct Dialog {
     journal: Arc<Journal>,
     route: String,
     st: Mutex<DState>,
+    close_requested: AtomicBool,
 }
 
 const PROMISES: &[&str] = &["поищу", "найду", "подберу", "включу", "включаю", "поставлю", "запущу"];
@@ -68,7 +73,39 @@ pub fn last_sentence(s: &str) -> &str {
 
 impl Dialog {
     pub fn new(journal: Arc<Journal>, route: &str, model: &str) -> Dialog {
-        Dialog { journal, route: route.into(), st: Mutex::new(DState { model: model.into(), last_activity: Some(Instant::now()), ..Default::default() }) }
+        Dialog {
+            journal,
+            route: route.into(),
+            st: Mutex::new(DState { model: model.into(), last_activity: Some(Instant::now()), ..Default::default() }),
+            close_requested: AtomicBool::new(false),
+        }
+    }
+
+    pub fn request_close(&self) {
+        self.close_requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn close_requested(&self) -> bool {
+        self.close_requested.load(Ordering::SeqCst)
+    }
+
+    pub fn on_bot_note(&self, text: &str) {
+        let note = text.trim();
+        if note.is_empty() {
+            return;
+        }
+        let mut st = self.st.lock().unwrap();
+        if st.turn == 0 {
+            self.next_turn(&mut st);
+        }
+        let existing = st.turn_bot.trim();
+        if existing.is_empty() {
+            st.turn_bot = note.into();
+        } else if !existing.contains(note) {
+            st.turn_bot = format!("{existing} {note}");
+        }
+        let answer = st.turn_bot.trim().to_string();
+        self.journal.update(st.turn, |t| t.answer = answer);
     }
 
     pub fn set_model(&self, model: &str) {
@@ -336,5 +373,22 @@ mod tests {
         assert!(dialog.idle_at(8.0, start + Duration::from_secs(16)));
         assert_eq!(dialog.user_turns(), 0);
         assert_eq!(dialog.utterance().0, 0);
+    }
+
+    #[test]
+    fn request_close_and_bot_note_update_turn() {
+        let j = Arc::new(Journal::default());
+        let d = Dialog::new(j.clone(), "r", "m");
+        assert!(!d.close_requested());
+        d.on_user("включи сало");
+        d.on_bot("Ща врублю.");
+        d.on_bot_note("Включил с YouTube: Сало.");
+        d.request_close();
+        assert!(d.close_requested());
+        d.finish_turn("");
+        let items = j.history();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].answer.contains("Ща врублю."));
+        assert!(items[0].answer.contains("Включил с YouTube: Сало."));
     }
 }

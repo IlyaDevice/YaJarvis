@@ -80,6 +80,7 @@
           <span class="chip">{yandex ? "через Алису" : "через Джарвиса"}</span>
           {#if state.album}<span class="chip">Альбом «{state.album}»</span>{/if}
           {#if !yandex && state.radio}<span class="chip">радио</span>{/if}
+          {#if !yandex && state.repeat}<span class="chip">повтор</span>{/if}
         </div>
       {/if}
     </div>
@@ -113,6 +114,11 @@
           onclick={(event) => control(event, "toggle")}>{@html icon(playback === "playing" ? "pause" : "play", "solid")}</button>
         <button class="cbtn" id="pl-next" type="button" disabled={!active || pending || (!yandex && !state?.next?.length)}
           aria-label="Следующий" onclick={(event) => control(event, "next")}>{@html icon("skip", "solid")}</button>
+        <button class="cbtn" class:on={!yandex && !!state?.repeat} id="pl-repeat" type="button"
+          disabled={!active || pending || yandex}
+          data-tip={yandex ? "Повтор доступен для YouTube" : state?.repeat ? "Повтор включён: этот трек по кругу" : "Повторять этот трек"}
+          aria-label="Повтор" aria-pressed={!yandex && !!state?.repeat}
+          onclick={(event) => control(event, "repeat")}>{@html icon("repeat")}</button>
       </div>
       <div class={styles.volume} id="np-vol" title="Громкость колонки">
         {@html icon("speaker")}<div bind:this={volume}></div><b class="vol-big" id="vol-big">–</b>

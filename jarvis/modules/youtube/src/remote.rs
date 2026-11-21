@@ -12,7 +12,7 @@ use std::{
 pub const WEB_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0 Safari/537.36";
 pub const WEB_VERSION: &str = "2.20261112.01.00";
 pub const TV_AGENT: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1";
-const TV_VERSION: &str = "5.20260707";
+const TV_VERSION: &str = "4.20240101";
 const VR_VERSION: &str = "1.65.10";
 const VR_AGENT: &str = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
 
@@ -61,6 +61,11 @@ impl Remote {
             .get(&self.host.client().await?)
             .await
             .map(|_| ())
+    }
+    pub async fn warm_background(&self) {
+        if let Ok(client) = self.host.client().await {
+            self.scripts.warm_background(client);
+        }
     }
     pub async fn evict_idle(&self, idle: Duration) {
         self.scripts.evict_if_idle(idle).await;
@@ -151,7 +156,7 @@ impl Remote {
             *self.visitor.lock().unwrap() = Some((Instant::now(), visitor.into()));
         }
     }
-    pub async fn resolve(&self, id: &str, auth: HeaderMap) -> Result<(Track, Stream), String> {
+    pub async fn resolve(&self, id: &str, auth: HeaderMap, prefer_tv: bool) -> Result<(Track, Stream), String> {
         if !valid_id(id) {
             return Err("Неверный ID видео YouTube".into());
         }
@@ -162,7 +167,7 @@ impl Remote {
             String::new()
         };
         let mut backup = None;
-        if auth.is_empty() && !self.scripts.cached() {
+        if !prefer_tv && auth.is_empty() && !self.scripts.cached() {
             self.scripts.warm_background(client.clone());
             match vr(&client, id, &visitor).await {
                 Ok(value) => return Ok(value),
@@ -486,6 +491,13 @@ async fn formats(
     }
     Err("YouTube не вернул доступную аудиодорожку Opus".into())
 }
+pub(crate) fn valid_media_url(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|h| h.ends_with(".googlevideo.com"))
+}
 async fn link(item: &Value, prepared: Option<&Arc<Prepared>>) -> Result<Url, String> {
     let query: BTreeMap<String, String> = reqwest::Url::parse(&format!(
         "https://www.youtube.com/?{}",
@@ -500,14 +512,7 @@ async fn link(item: &Value, prepared: Option<&Arc<Prepared>>) -> Result<Url, Str
         .or_else(|| query.get("url").map(String::as_str))
         .ok_or("Нет ссылки YouTube")?;
     let mut url = Url::parse(raw).map_err(|_| "Неверная ссылка YouTube")?;
-    if url.scheme() != "https"
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || !url
-            .host_str()
-            .is_some_and(|h| h.ends_with(".googlevideo.com"))
-    {
+    if !valid_media_url(&url) {
         return Err("Неверный адрес аудио YouTube".into());
     }
     let signature = query.get("s").cloned().unwrap_or_default();

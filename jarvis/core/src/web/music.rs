@@ -23,6 +23,10 @@ pub async fn post(State(app): State<App>, Json(v): Json<Value>) -> Response {
             Some(i) => ("unqueue", json!({"index":i})),
             None => return bad("Неверный номер в очереди"),
         },
+        "repeat" => match v["on"].as_bool() {
+            Some(on) => ("repeat", json!({"on": on})),
+            None => return bad("Нужно указать on"),
+        },
         "radio" => {
             let Some(on) = v["on"].as_bool() else {
                 return bad("Нужно указать on");

@@ -15,6 +15,7 @@ pub struct Remote {
     pub paused: bool,
     pub proposal: bool,
     pub personal_search: bool,
+    pub repeat: bool,
     pub cur: Value,
     pub pos: f64,
     pub status: String,
@@ -221,7 +222,7 @@ impl Music {
             Ok(v) => v,
             Err(_) => {
                 let s = self.state();
-                json!({"source":"youtube", "playing":s.playing,"paused":s.paused,"track":s.cur,"pos":s.pos})
+                json!({"source":"youtube", "playing":s.playing,"paused":s.paused,"repeat":s.repeat,"track":s.cur,"pos":s.pos})
             }
         };
         if self.use_alice() {
@@ -390,6 +391,29 @@ pub fn command(text: &str) -> Option<(&'static str, Value, &'static str)> {
         return simple("stop", "Выключил.");
     }
     if starts(&[
+        "на повтор",
+        "на репит",
+        "включи повтор",
+        "поставь на повтор",
+        "поставь на репит",
+        "включи репит",
+        "повтор трека",
+        "повторяй",
+    ]) {
+        return Some(("repeat", json!({"on": true}), "Повтор включён."));
+    }
+    if starts(&[
+        "выключи повтор",
+        "убери повтор",
+        "выключи репит",
+        "убери репит",
+        "без повтора",
+        "отключи повтор",
+        "не повторяй",
+    ]) {
+        return Some(("repeat", json!({"on": false}), "Повтор выключен."));
+    }
+    if starts(&[
         "следующ",
         "включи следующ",
         "поставь следующ",
@@ -490,6 +514,101 @@ pub fn volume_loop(music: Arc<Music>, host: Arc<Host>, duck: impl Fn() -> bool +
     });
 }
 
+pub fn played_music_title(tool_name: &str, result: &str) -> Option<String> {
+    match tool_name {
+        "play_music" => result
+            .strip_prefix("Включил с YouTube:")
+            .map(|s| s.trim().trim_end_matches('.').to_string()),
+        "music_control" => result
+            .strip_prefix("Включил «")
+            .and_then(|s| s.strip_suffix("».").or_else(|| s.strip_suffix('»')))
+            .map(|s| s.trim().to_string()),
+        _ => None,
+    }
+}
+
+pub fn wants_keep_talking(text: &str) -> bool {
+    let lower = text.to_lowercase().replace('ё', "е");
+    lower.contains('?')
+        || [
+            "не отключай",
+            "не выключай",
+            "не закрывай",
+            "останься",
+            "поболта",
+            "поговори",
+            "расскажи",
+            "объясни",
+            "подскажи",
+            "какая погода",
+            "сколько врем",
+            "что такое",
+            "кто такой",
+            "кто такая",
+            "почему ",
+            "зачем ",
+            "как сдела",
+        ]
+        .iter()
+        .any(|p| lower.contains(p))
+}
+
+pub fn should_auto_close_after_music(
+    played_title: Option<&str>,
+    other_tools: bool,
+    keep_talking: bool,
+    answer: &str,
+) -> bool {
+    let Some(title) = played_title else {
+        return false;
+    };
+    !other_tools
+        && !keep_talking
+        && !answer.contains('?')
+        && answer.chars().count() <= title.chars().count() + 100
+}
+
+#[derive(Default)]
+pub struct MusicTurnTracker {
+    played_title: Option<String>,
+    other_tools: bool,
+    keep_talking: bool,
+}
+
+impl MusicTurnTracker {
+    pub fn note_other(&mut self) {
+        self.other_tools = true;
+    }
+
+    pub fn observe_tool(&mut self, name: &str, args: &str, result: &str) {
+        if name == "play_music" || name == "music_control" {
+            if let Ok(v) = serde_json::from_str::<Value>(args)
+                && v.get("keep_talking").and_then(Value::as_bool) == Some(true)
+            {
+                self.keep_talking = true;
+            }
+            if let Some(title) = played_music_title(name, result) {
+                if !self.other_tools {
+                    self.played_title = Some(title);
+                }
+            } else {
+                self.other_tools = true;
+            }
+        } else {
+            self.other_tools = true;
+        }
+    }
+
+    pub fn should_close(&self, answer: &str) -> bool {
+        should_auto_close_after_music(
+            self.played_title.as_deref(),
+            self.other_tools,
+            self.keep_talking,
+            answer,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,5 +648,59 @@ mod tests {
         assert!(m.use_alice());
         m.alice.lock().unwrap().media_log("[audio stream=42] pause (position 2000)");
         assert!(!m.use_alice());
+    }
+
+    #[test]
+    fn repeat_voice_commands_toggle_on_and_off() {
+        assert_eq!(command("поставь на повтор").unwrap().1, json!({"on": true}));
+        assert_eq!(command("на репит").unwrap().1, json!({"on": true}));
+        assert_eq!(command("включи повтор").unwrap().0, "repeat");
+        assert_eq!(command("выключи повтор").unwrap().1, json!({"on": false}));
+        assert_eq!(command("не повторяй").unwrap().1, json!({"on": false}));
+        assert!(command("повтори что ты сказал").is_none());
+    }
+
+    #[test]
+    fn auto_close_after_music_only_triggers_for_single_intent_play() {
+        assert_eq!(
+            played_music_title("play_music", "Включил с YouTube: Сало.").as_deref(),
+            Some("Сало")
+        );
+        assert_eq!(
+            played_music_title("music_control", "Включил «Сало».").as_deref(),
+            Some("Сало")
+        );
+        assert!(played_music_title("play_music", "В очереди: Сало.").is_none());
+        assert!(
+            played_music_title(
+                "play_music",
+                "Нашёл «Сало». Послушаем? Ролик ещё не включён."
+            )
+            .is_none()
+        );
+        assert!(played_music_title("play_music", "Не получилось: ошибка").is_none());
+        assert!(played_music_title("music_control", "Пауза.").is_none());
+
+        assert!(wants_keep_talking("Включи Сало и расскажи новости"));
+        assert!(wants_keep_talking("Включи музыку?"));
+        assert!(!wants_keep_talking("Включи на ютубе Сало"));
+
+        let mut tr = MusicTurnTracker::default();
+        tr.observe_tool("play_music", r#"{"query":"Сало"}"#, "Включил с YouTube: Сало.");
+        assert!(tr.should_close("Включил трек «Сало» с YouTube."));
+        assert!(!tr.should_close("Включил трек «Сало». Что ещё сделать?"));
+
+        let mut tr_keep = MusicTurnTracker::default();
+        tr_keep.observe_tool(
+            "play_music",
+            r#"{"query":"Сало","keep_talking":true}"#,
+            "Включил с YouTube: Сало.",
+        );
+        assert!(!tr_keep.should_close("Включил Сало."));
+
+        let mut tr_multi = MusicTurnTracker::default();
+        tr_multi.observe_tool("play_music", r#"{"query":"Сало"}"#, "Включил с YouTube: Сало.");
+        tr_multi.observe_tool("smart_home", r#"{"on":false}"#, "Готово.");
+        assert!(!tr_multi.should_close("Включил Сало и выключил свет."));
     }
 }

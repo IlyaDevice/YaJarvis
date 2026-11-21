@@ -68,7 +68,12 @@ pub fn signed_in(v: &Value) -> bool {
     ["refresh", "account"].iter().all(|k| v.get(k).and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
 }
 
-pub type Brain = Arc<dyn Fn(String) -> BoxFut<Result<String, String>> + Send + Sync>;
+pub struct BrainReply {
+    pub text: String,
+    pub close_dialog: bool,
+}
+
+pub type Brain = Arc<dyn Fn(String) -> BoxFut<Result<BrainReply, String>> + Send + Sync>;
 
 static SESSIONS: LazyLock<Mutex<HashMap<String, Weak<ChatGptSession>>>> = LazyLock::new(Mutex::default);
 
@@ -313,11 +318,25 @@ pub async fn brain_request(params: Value) -> Result<Value, String> {
     let task = params.get("task").or(params.get("Task")).and_then(Value::as_str).unwrap_or("");
     let s = SESSIONS.lock().unwrap().get(id).and_then(Weak::upgrade).ok_or("session closed")?;
     let brain = s.brain.clone().ok_or("brain unavailable")?;
-    let task = s.with_history(task);
+    let raw_task = task.to_string();
+    let user_text = s.dialog.utterance().1;
+    let full_task = s.with_history(task);
+    let session = s.clone();
     drop(s);
     let t0 = Instant::now();
-    let r = match tokio::time::timeout(Duration::from_secs(45), brain(task)).await {
-        Ok(r) => r.map(Value::String),
+    let r = match tokio::time::timeout(Duration::from_secs(45), brain(full_task)).await {
+        Ok(Ok(reply)) => {
+            if reply.close_dialog
+                && !crate::music::wants_keep_talking(&user_text)
+                && !crate::music::wants_keep_talking(&raw_task)
+            {
+                session.dialog.on_bot_note(&reply.text);
+                session.dialog.mute();
+                session.dialog.request_close();
+            }
+            Ok(Value::String(reply.text))
+        }
+        Ok(Err(e)) => Err(e),
         Err(_) => Err("бэкенд не ответил за 45 с".into()),
     };
     match &r {
@@ -358,7 +377,13 @@ pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str
     ask_codex_with_history(host, auth, p, instructions, &[], text, tools, defs).await
 }
 
-pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instructions: &str, history: &[crate::llm::Turn], text: &str, tools: Option<&Tools>, mut defs: Vec<Value>) -> Result<String, String> {
+pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instructions: &str, history: &[crate::llm::Turn], text: &str, tools: Option<&Tools>, defs: Vec<Value>) -> Result<String, String> {
+    ask_codex_with_history_detail(host, auth, p, instructions, history, text, tools, defs)
+        .await
+        .map(|reply| reply.text)
+}
+
+pub async fn ask_codex_with_history_detail(host: &Host, auth: Value, p: &Profile, instructions: &str, history: &[crate::llm::Turn], text: &str, tools: Option<&Tools>, mut defs: Vec<Value>) -> Result<BrainReply, String> {
     let model = if p.effective_llm_model().is_empty() { BACKEND_MODELS[0].to_string() } else { p.effective_llm_model().to_string() };
     let effort = effort(&model, &p.effort);
     if p.web_search {
@@ -370,6 +395,7 @@ pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instr
     }).collect();
     input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}));
     let session = new_id();
+    let mut music_turn = crate::music::MusicTurnTracker::default();
     for _ in 0..5 {
         let n = host.provider("chatgpt")?;
         let body = json!({"model": model, "instructions": instructions, "input": input, "tools": defs, "tool_choice": "auto",
@@ -378,11 +404,21 @@ pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instr
         let answer = r.get("answer").or(r.get("Answer")).and_then(Value::as_str).unwrap_or("").trim().to_string();
         let calls = r.get("calls").or(r.get("Calls")).and_then(Value::as_array).cloned().unwrap_or_default();
         if calls.is_empty() {
-            return if answer.is_empty() { Err("модель ничего не ответила".into()) } else { Ok(answer) };
+            if answer.is_empty() {
+                return Err("модель ничего не ответила".into());
+            }
+            let close_dialog = music_turn.should_close(&answer);
+            return Ok(BrainReply { text: answer, close_dialog });
         }
         let Some(tools) = tools else { return Err("модель попросила инструмент, которого нет".into()) };
         if calls.len()>32{return Err("Слишком много вызовов инструментов".into());}
-        let full_output=r["output"].as_array();if let Some(output)=full_output{input.extend(output.clone());}
+        let full_output=r["output"].as_array();
+        if let Some(output)=full_output{
+            if output.iter().any(|item| item["type"] == "web_search_call") {
+                music_turn.note_other();
+            }
+            input.extend(output.clone());
+        }
         for c in calls {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
             if !defs.iter().any(|d|d["name"]==name){return Err("Модель вызвала необъявленный инструмент".into());}
@@ -397,6 +433,7 @@ pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instr
                     format!("Не успел: инструмент не ответил за {limit} с.")
                 }
             };
+            music_turn.observe_tool(name, args, &result);
             log::info!("подписка: {name}({args}) → {result}");
             if full_output.is_none(){input.push(json!({"type": "function_call", "name": c["name"], "arguments": c["arguments"], "call_id": c["call_id"]}));}
             input.push(json!({"type": "function_call_output", "call_id": c["call_id"], "output": result}));

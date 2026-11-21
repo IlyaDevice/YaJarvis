@@ -10,8 +10,8 @@ use std::{
 
 const EJS: &str = include_str!("ejs.js");
 const WEB_AGENT: &str = super::remote::WEB_AGENT;
-const MAX_HEAP: usize = 28 << 20;
-const JS_TIMEOUT: Duration = Duration::from_secs(75);
+const MAX_HEAP: usize = 36 << 20;
+const JS_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub struct Prepared {
     context: Context,
@@ -278,7 +278,7 @@ async fn load_script(
     client: &Client,
     shared: &Arc<Mutex<ScriptCache>>,
 ) -> Result<ScriptLoad, (bool, String)> {
-    let iframe = fetch(client, "https://www.youtube.com/iframe_api", 1 << 20)
+    let iframe = fetch(client, "https://www.youtube.com/iframe_api", WEB_AGENT, 1 << 20)
         .await
         .map_err(|e| (false, e))?;
     let id = Regex::new(r"player\\?/([0-9A-Za-z_-]{8})\\?/")
@@ -298,10 +298,16 @@ async fn load_script(
         }
         state.current.take();
     }
-    let url = format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
-    let source = fetch(client, &url, 8 << 20)
-        .await
-        .map_err(|e| (false, e))?;
+    let tv_url = format!("https://www.youtube.com/s/player/{id}/tv-player-ias.vflset/tv-player-ias.js");
+    let source = match fetch(client, &tv_url, super::remote::TV_AGENT, 8 << 20).await {
+        Ok(source) => source,
+        Err(_) => {
+            let web_url = format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
+            fetch(client, &web_url, WEB_AGENT, 8 << 20)
+                .await
+                .map_err(|e| (false, e))?
+        }
+    };
     let started = Instant::now();
     let (send, result) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
@@ -330,10 +336,10 @@ async fn load_script(
     );
     Ok(ScriptLoad::Compiled(id, prepared))
 }
-async fn fetch(client: &Client, url: &str, limit: usize) -> Result<String, String> {
+async fn fetch(client: &Client, url: &str, agent: &str, limit: usize) -> Result<String, String> {
     let resp = client
         .get(url)
-        .header("User-Agent", WEB_AGENT)
+        .header("User-Agent", agent)
         .send()
         .await
         .map_err(|_| "Не скачать плеер YouTube")?;

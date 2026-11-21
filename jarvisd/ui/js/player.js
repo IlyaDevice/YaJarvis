@@ -132,6 +132,10 @@ export function musicAct(a, b, { disableControl = true } = {}) {
     return music({ action: "radio", on: !M.radio }, control)
       .then((ok) => ok && toast(M.radio ? "Радио: после очереди — похожее" : "Радио выключено: после очереди тишина"));
   }
+  if (a === "repeat") {
+    return music({ action: "repeat", on: !M.repeat }, control)
+      .then((ok) => ok && toast(M.repeat ? "Повтор трека включён" : "Повтор выключен"));
+  }
   if (a === "prev" && M.source !== "yandex") {
     const previous = M.history?.[1];
     if (previous) return music({ action: "id", query: previous.ID }, control);

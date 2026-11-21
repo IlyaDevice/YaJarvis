@@ -691,7 +691,7 @@ impl Engine {
                 });
                 log::info!("бэкенд: контекст и инструменты за {:.2} с", t0.elapsed().as_secs_f64());
                 let instr = format!("{}{ctx}", rules::BACKEND_RULES);
-                chatgpt::ask_codex(&host, auth?, &p, &instr, &task, Some(&tools), defs).await
+                chatgpt::ask_codex_with_history_detail(&host, auth?, &p, &instr, &[], &task, Some(&tools), defs).await
             })
         })
     }
@@ -889,6 +889,12 @@ impl Engine {
                 self.st.lock().unwrap().echo.stopped(Instant::now());
                 speaking = false;
                 self.leds.set(Mode::Listening);
+            }
+            if x.dialog().close_requested() {
+                log::info!("разговор: музыка включена — закрываю разговор");
+                self.player.stop(true);
+                x.dialog().finish_turn("");
+                return close(&sess);
             }
             if tick.elapsed() < Duration::from_millis(100) {
                 continue;
