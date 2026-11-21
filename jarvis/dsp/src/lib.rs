@@ -178,7 +178,7 @@ mod simd {
         if n == 0 || k == 0 {
             return;
         }
-        assert!(dst_stride >= n && src_stride >= k && w_stride >= n);
+        assert!(dst_stride >= n && w_stride >= n);
         assert!(dst.len() >= 3 * dst_stride + n);
         assert!(src.len() >= 3 * src_stride + k);
         assert!(w.len() >= (k - 1) * w_stride + n);
@@ -346,7 +346,7 @@ mod simd {
         if n == 0 || k == 0 {
             return;
         }
-        assert!(dst_stride >= n && src_stride >= k && w_stride >= n);
+        assert!(dst_stride >= n && w_stride >= n);
         assert!(dst.len() >= dst_stride + n);
         assert!(src.len() >= src_stride + k);
         assert!(w.len() >= (k - 1) * w_stride + n);
@@ -489,7 +489,7 @@ mod simd {
         if n == 0 || k == 0 {
             return;
         }
-        assert!(dst_stride >= n && src_stride >= k && w_stride >= n);
+        assert!(dst_stride >= n && w_stride >= n);
         assert!(dst.len() >= 3 * dst_stride + n);
         assert!(src.len() >= 3 * src_stride + k);
         assert!(w.len() >= (k - 1) * w_stride + n);
@@ -547,7 +547,7 @@ mod simd {
         if n == 0 || k == 0 {
             return;
         }
-        assert!(dst_stride >= n && src_stride >= k && w_stride >= n);
+        assert!(dst_stride >= n && w_stride >= n);
         assert!(dst.len() >= dst_stride + n);
         assert!(src.len() >= src_stride + k);
         assert!(w.len() >= (k - 1) * w_stride + n);
