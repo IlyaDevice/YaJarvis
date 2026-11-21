@@ -11,11 +11,12 @@ const musicListeners = new Set();
 let musicReadPending = false;
 let musicWrites = 0;
 let musicRevision = 0;
+let bufferingTimer = 0;
 export const NP = { angle: 0, omega: 0, env: 0, held: false, scrub: null, lastA: 0, lastT: 0, samples: [], seekHeld: null };
 export const CRUISE = 200, SPIN_UP = 0.22, SPIN_DOWN = 0.2, COAST = 0.45;
 export const clockStr = (s) => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 export const mPlaying = () => !!M?.playing && !M.paused;
-export const mPos = () => !M ? 0 : NP.scrub != null ? NP.scrub : NP.seekHeld != null ? NP.seekHeld : mPlaying() ? Math.min(M.dur || Infinity, M.pos + (Date.now() - mAt) / 1000) : M.pos;
+export const mPos = () => !M ? 0 : NP.scrub != null ? NP.scrub : NP.seekHeld != null ? NP.seekHeld : mPlaying() && !M.loading ? Math.min(M.dur || Infinity, M.pos + (Date.now() - mAt) / 1000) : M.pos;
 export const hash = (n) => { const s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s); };
 export const noise = (x) => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return hash(i) * (1 - u) + hash(i + 1) * u; };
 
@@ -64,6 +65,11 @@ function renderMusic() {
 function acceptMusic(state) {
   M = state;
   mAt = Date.now();
+  clearTimeout(bufferingTimer);
+  bufferingTimer = 0;
+  if (state?.playing && state?.loading) {
+    bufferingTimer = setTimeout(() => { bufferingTimer = 0; void musicData(); }, 400);
+  }
   renderMusic();
 }
 
@@ -248,13 +254,13 @@ export function setVolume(v) {
 }
 
 export async function music(body, btn) {
-  musicRevision++;
+  const revision = ++musicRevision;
   musicWrites++;
   try {
     let state;
     await act(btn, async () => { state = await api("POST", "/api/music", body); });
     if (!state) return false;
-    acceptMusic(state);
+    if (revision === musicRevision) acceptMusic(state);
     return true;
   } finally {
     musicWrites--;
