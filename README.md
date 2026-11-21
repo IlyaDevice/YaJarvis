@@ -256,24 +256,29 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 Если YaJavis пригодился, поставьте **Star** вверху страницы. О багах и идеях пишите в [Issues](https://github.com/newfpv/YaJavis/issues) — прикладывайте модель колонки, версию YaJavis и шаги воспроизведения (предварительно убрав из логов личные токены и ключи).
 
-### Contributors и авторы открытых проектов
+### Contributors и авторы проектов
 
-Авторы проектов и исследований, на которые опирался YaJavis:
+Участники и авторы открытых проектов, на которых держится и опирается YaJavis:
 
 <table>
 <tr>
+<td align="center" width="110"><a href="https://github.com/i7d3v3l0p3r"><img src="https://github.com/i7d3v3l0p3r.png?size=96" width="48" alt="i7d3v3l0p3r"><br><sub><b>i7d3v3l0p3r</b></sub></a></td>
 <td align="center" width="110"><a href="https://github.com/dimap"><img src="https://github.com/dimap.png?size=96" width="48" alt="dimap"><br><sub><b>dimap</b></sub></a></td>
 <td align="center" width="110"><a href="https://github.com/Marker284"><img src="https://github.com/Marker284.png?size=96" width="48" alt="Marker284"><br><sub><b>Marker284</b></sub></a></td>
-<td align="center" width="110"><a href="https://github.com/rison1337"><img src="https://github.com/rison1337.png?size=96" width="48" alt="rison1337"><br><sub><b>rison1337</b></sub></a></td>
-<td align="center" width="110"><a href="https://github.com/amirilivice"><img src="https://github.com/amirilivice.png?size=96" width="48" alt="amirilivice"><br><sub><b>amirilivice</b></sub></a></td>
 </tr>
 <tr>
+<td align="center" width="110"><a href="https://github.com/rison1337"><img src="https://github.com/rison1337.png?size=96" width="48" alt="rison1337"><br><sub><b>rison1337</b></sub></a></td>
+<td align="center" width="110"><a href="https://github.com/amirilivice"><img src="https://github.com/amirilivice.png?size=96" width="48" alt="amirilivice"><br><sub><b>amirilivice</b></sub></a></td>
 <td align="center" width="110"><a href="https://github.com/tangenx"><img src="https://github.com/tangenx.png?size=96" width="48" alt="tangenx"><br><sub><b>tangenx</b></sub></a></td>
+</tr>
+<tr>
 <td align="center" width="110"><a href="https://github.com/Morvex885"><img src="https://github.com/Morvex885.png?size=96" width="48" alt="Morvex885"><br><sub><b>Morvex885</b></sub></a></td>
 <td align="center" width="110"><a href="https://github.com/nyakokitsu"><img src="https://github.com/nyakokitsu.png?size=96" width="48" alt="nyakokitsu"><br><sub><b>nyakokitsu</b></sub></a></td>
 <td align="center" width="110"><a href="https://github.com/dscripka"><img src="https://github.com/dscripka.png?size=96" width="48" alt="dscripka"><br><sub><b>dscripka</b></sub></a></td>
 </tr>
 </table>
+
+Спасибо **[i7d3v3l0p3r](https://github.com/i7d3v3l0p3r)** за перенос веб-панели и установщика на SvelteKit, доработки плагина «Обучение слова», установщика и профиля Firefox для VLESS REALITY.
 
 **Дизайн YaJavis вдохновлён [yapanel](https://github.com/dimap/yapanel-web) автора [dimap](https://github.com/dimap).** Тёмная тема, тёплый оранжевый акцент, карточки состояния и подача графиков стали визуальным ориентиром для нашей панели. Спасибо dimap за открытый проект.
 
