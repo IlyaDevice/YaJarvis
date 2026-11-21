@@ -68,21 +68,22 @@
             </div>
             <div class="chars cn-grid">
               {#each services as service (service.key)}
-                <button type="button" class="card cn {styles.service}" class:on={service.on}
-                  data-item={service.key} aria-label={service.name} onclick={() => connOpen(service.key)}>
-                  <span class="cn-h">
+                <article class="card cn" class:on={service.on} data-item={service.key}>
+                  <div class="cn-h">
                     <span class="char-av cn-av">
                       {#if service.icon}{@html icon(service.icon)}{:else}{service.mono}{/if}
                     </span>
-                    <b class={styles.serviceName}>{service.name}</b>
-                  </span>
-                  <span class="cn-t">{service.about}</span>
-                  <span class="cn-f">
+                    <h2>{service.name}</h2>
+                  </div>
+                  <p class="cn-t">{service.about}</p>
+                  <div class="cn-f">
                     <span class="st {service.status.cls}">{service.status.text}</span>
                     <span class="spacer"></span>
                     <span class="char-edit">{@html icon(service.on ? "tune" : "plus")}{service.on ? "Настроить" : "Подключить"}</span>
-                  </span>
-                </button>
+                  </div>
+                  <button type="button" class={styles.serviceAction} aria-label={service.name}
+                    onclick={() => connOpen(service.key)}></button>
+                </article>
               {/each}
             </div>
           </section>
