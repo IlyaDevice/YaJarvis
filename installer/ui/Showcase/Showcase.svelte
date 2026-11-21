@@ -7,7 +7,7 @@
   import styles from "./Showcase.module.css";
 
   const slides = [
-    { image: dashboard, title: "Всё под рукой.", text: "Диалог, музыка и состояние Станции — на одной странице.", alt: "Главная панель YaJavis" },
+    { image: dashboard, title: "Всё под рукой.", text: "Диалог, музыка и состояние Станции — на одной странице.", alt: "Главная панель YaJarvis" },
     { image: connections, title: "Вы выбираете, с кем говорить.", text: "Подключите OpenAI, Gemini, Grok или ElevenLabs и устройства умного дома.", alt: "Подключения AI и умного дома" },
     { image: assistant, title: "Голос и характер — ваши.", text: "Выберите голос, модель и характер. Создавайте разных ассистентов и переключайте их в панели.", alt: "Настройки голосового ассистента" },
     { image: charts, title: "Понимайте свою Станцию.", text: "Память, процессор, температура и Wi-Fi — всё состояние Станции в браузере.", alt: "Графики состояния колонки" },
@@ -65,14 +65,14 @@
   });
 </script>
 
-<aside class={styles.root} aria-label="Знакомство с YaJavis">
+<aside class={styles.root} aria-label="Знакомство с YaJarvis">
   <div class={styles.heading}>
     <span class={styles.eyebrow}>Больше возможностей вашей Станции</span>
     <h2>Ваша Станция. <span>Новые возможности.</span></h2>
     <p>Выберите голос. Включите музыку. Управляйте домом.</p>
   </div>
   <button type="button" class={styles.preview} onclick={openPreview} aria-label="Рассмотреть скриншот панели">
-    <span class={styles.previewBar}><span></span><span></span><span></span><small>Панель YaJavis</small><span class={styles.zoomHint}>Развернуть ↗</span></span>
+    <span class={styles.previewBar}><span></span><span></span><span></span><small>Панель YaJarvis</small><span class={styles.zoomHint}>Развернуть ↗</span></span>
     <img bind:this={preview} src={slide.image} alt={slide.alt} width="2000" height="1125">
   </button>
   <div class={styles.caption}>

@@ -36,7 +36,7 @@ return {
       headers = {
         ["Authorization"] = "Bearer " .. key,
         ["Content-Type"] = "application/json",
-        ["X-Title"] = "YaJavis",
+        ["X-Title"] = "YaJarvis",
       },
       body = jarvis.json.encode(payload),
     })

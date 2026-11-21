@@ -41,7 +41,7 @@ use std::{path::PathBuf, sync::Arc};
 
 pub const DEFAULT_REPO: &str = match option_env!("JARVIS_REPO") {
     Some(r) => r,
-    None => "newfpv/YaJavis",
+    None => "newfpv/YaJarvis",
 };
 
 pub fn version() -> &'static str {

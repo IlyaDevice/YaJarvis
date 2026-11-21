@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/cover.svg" alt="YaJavis — ваш голосовой помощник на Яндекс Станции" width="100%">
+  <img src="docs/cover.svg" alt="YaJarvis — ваш голосовой помощник на Яндекс Станции" width="100%">
 </p>
 
 <h1 align="center">Джарвис на вашей Яндекс Станции</h1>
@@ -10,42 +10,42 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/newfpv/YaJavis/releases/latest"><img src="https://img.shields.io/github/v/release/newfpv/YaJavis?style=flat-square&amp;label=release&amp;color=f77b2c&amp;labelColor=202027" alt="Последний релиз"></a>
-  <a href="https://github.com/newfpv/YaJavis/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/newfpv/YaJavis/release.yml?style=flat-square&amp;label=build&amp;labelColor=202027" alt="Сборка релиза"></a>
+  <a href="https://github.com/newfpv/YaJarvis/releases/latest"><img src="https://img.shields.io/github/v/release/newfpv/YaJarvis?style=flat-square&amp;label=release&amp;color=f77b2c&amp;labelColor=202027" alt="Последний релиз"></a>
+  <a href="https://github.com/newfpv/YaJarvis/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/newfpv/YaJarvis/release.yml?style=flat-square&amp;label=build&amp;labelColor=202027" alt="Сборка релиза"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f77b2c?style=flat-square&amp;labelColor=202027" alt="Лицензия MIT"></a>
-  <a href="#сколько-колонок-с-джарвисом"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnewfpv%2FYaJavis%2Fstats-data%2Fbadge.json&amp;style=flat-square" alt="Колонок с Джарвисом"></a>
+  <a href="#сколько-колонок-с-джарвисом"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnewfpv%2FYaJarvis%2Fstats-data%2Fbadge.json&amp;style=flat-square" alt="Колонок с Джарвисом"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/newfpv/YaJavis/releases/latest"><strong>Скачать</strong></a> ·
+  <a href="https://github.com/newfpv/YaJarvis/releases/latest"><strong>Скачать</strong></a> ·
   <a href="#установка"><strong>Установка</strong></a> ·
   <a href="docs/FAQ.md"><strong>FAQ и бесплатный старт</strong></a> ·
   <a href="docs/PLUGINS.md"><strong>Вики по плагинам</strong></a> ·
   <a href="#панель-управления"><strong>Панель</strong></a> ·
-  <a href="https://github.com/newfpv/YaJavis/issues"><strong>Обратная связь</strong></a>
+  <a href="https://github.com/newfpv/YaJarvis/issues"><strong>Обратная связь</strong></a>
 </p>
 
-![Главная панель YaJavis: диалог, состояние колонки и музыкальный плеер](docs/screenshots/dashboard.png)
+![Главная панель YaJarvis: диалог, состояние колонки и музыкальный плеер](docs/screenshots/dashboard.png)
 
 ---
 
-## Что умеет YaJavis
+## Что умеет YaJarvis
 
-YaJavis работает на колонке рядом со штатной Алисой — на чистом Rust, без ПК или домашнего сервера 24/7.
+YaJarvis работает на колонке рядом со штатной Алисой — на чистом Rust, без ПК или домашнего сервера 24/7.
 
 <p align="center">
-  <img src="docs/features.png" alt="Что умеет YaJavis: локальное слово активации, 5 AI-провайдеров, YouTube и Алиса, умный дом, пулы ключей и VPN, веб-панель SvelteKit" width="100%">
+  <img src="docs/features.png" alt="Что умеет YaJarvis: локальное слово активации, 5 AI-провайдеров, YouTube и Алиса, умный дом, пулы ключей и VPN, веб-панель SvelteKit" width="100%">
 </p>
 
 ---
 
 ## Проект бесплатный? Как пользоваться без оплаты
 
-**Да, YaJavis полностью бесплатен (лицензия MIT).** В проекте нет подписок автору, скрытых платежей и платного посредника — колонка общается напрямую с выбранным вами AI-сервисом по вашим ключам или через бесплатные/пользовательские плагины.
+**Да, YaJarvis полностью бесплатен (лицензия MIT).** В проекте нет подписок автору, скрытых платежей и платного посредника — колонка общается напрямую с выбранным вами AI-сервисом по вашим ключам или через бесплатные/пользовательские плагины.
 
 <p align="center">
   <a href="docs/FAQ.md#1-проект-бесплатный-нужна-ли-подписка-на-ии">
-    <img src="docs/pricing.png" alt="Как пользоваться YaJavis бесплатно: Google Gemini Live, ElevenLabs Free, OpenRouter :free и Ollama, работа без AI-ключей, ChatGPT Plus/Pro и OpenAI/Grok API" width="100%">
+    <img src="docs/pricing.png" alt="Как пользоваться YaJarvis бесплатно: Google Gemini Live, ElevenLabs Free, OpenRouter :free и Ollama, работа без AI-ключей, ChatGPT Plus/Pro и OpenAI/Grok API" width="100%">
   </a>
 </p>
 
@@ -83,7 +83,7 @@ YaJavis работает на колонке рядом со штатной Ал
 </details>
 
 <details>
-<summary><strong>Как полностью удалить YaJavis с колонки?</strong></summary>
+<summary><strong>Как полностью удалить YaJarvis с колонки?</strong></summary>
 
 1. **Через установщик `JarvisSetup`:** запустите его, выберите колонку и на экране проверки нажмите красную кнопку **«Удалить Джарвиса»**.
 2. **Вручную через ADB:** выполните `adb connect IP-КОЛОНКИ:5555` и `adb -s IP-КОЛОНКИ:5555 shell "sh /data/opt/jarvisd/jarvisd.sh uninstall"`.
@@ -112,7 +112,7 @@ YaJavis работает на колонке рядом со штатной Ал
 Откройте **PowerShell** и выполните:
 
 ```powershell
-irm https://github.com/newfpv/YaJavis/releases/latest/download/install.ps1 | iex
+irm https://github.com/newfpv/YaJarvis/releases/latest/download/install.ps1 | iex
 ```
 
 ### macOS и Linux
@@ -120,7 +120,7 @@ irm https://github.com/newfpv/YaJavis/releases/latest/download/install.ps1 | iex
 Откройте **Терминал** и выполните:
 
 ```sh
-curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/newfpv/YaJarvis/releases/latest/download/install.sh | sh
 ```
 
 Для macOS и Linux добавьте `adb` (Android Platform Tools) в `PATH`; на Windows установщик при необходимости сам подтянет `adb`. После запуска откроется страница установщика в браузере:
@@ -134,14 +134,14 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 Во время установки справа показаны возможности и скриншоты интерфейса, а слева — прогресс и подробный журнал.
 
-![Установщик YaJavis со знакомством с возможностями проекта](docs/screenshots/installer.png)
+![Установщик YaJarvis со знакомством с возможностями проекта](docs/screenshots/installer.png)
 
 </details>
 
 <details>
 <summary><strong>Скачать установщик вручную</strong></summary>
 
-Вы можете просмотреть скрипт установки заранее или скачать готовый бинарник со страницы [последнего релиза](https://github.com/newfpv/YaJavis/releases/latest):
+Вы можете просмотреть скрипт установки заранее или скачать готовый бинарник со страницы [последнего релиза](https://github.com/newfpv/YaJarvis/releases/latest):
 
 | Система | Файл |
 | :--- | :--- |
@@ -159,7 +159,7 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 ## Плагины и расширения
 
-В YaJavis чёткое разделение между ядром и подключаемыми пакетами:
+В YaJarvis чёткое разделение между ядром и подключаемыми пакетами:
 
 - **Встроенные в ядро (`jarvisd`).** Микрофон, локальный детектор слова «Джарвис», звук, кнопки, подсветка, связь с Алисой, память, веб-панель и **5 голосовых/AI-провайдеров** (`ChatGPT`, `OpenAI`, `Gemini`, `Grok`, `ElevenLabs`) — ничего лишнего запускать не нужно.
 - **Официальные плагины (10 пакетов).** Устанавливаются прямо из мастера или в **«Подключения → Плагины»**:
@@ -192,7 +192,7 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 <details>
 <summary><strong>Графики — процессор, память, температура и Wi-Fi</strong></summary>
 
-![Графики состояния колонки и нагрузки YaJavis](docs/screenshots/charts.png)
+![Графики состояния колонки и нагрузки YaJarvis](docs/screenshots/charts.png)
 
 </details>
 
@@ -225,7 +225,7 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 В панели откройте **Безопасность → Обновления → Проверить → Обновить**.
 
-Новая версия скачивается из [GitHub Releases](https://github.com/newfpv/YaJavis/releases), подбирается под архитектуру колонки (`arm64` / `armv7`) и проверяется по **SHA-256** перед записью. При неудачном запуске `jarvis-supervisor` автоматически откатывает предыдущий рабочий бинарник. Автоматическая ночная установка (с 03:00 до 06:00 в простое) включается отдельно в настройках обновлений.
+Новая версия скачивается из [GitHub Releases](https://github.com/newfpv/YaJarvis/releases), подбирается под архитектуру колонки (`arm64` / `armv7`) и проверяется по **SHA-256** перед записью. При неудачном запуске `jarvis-supervisor` автоматически откатывает предыдущий рабочий бинарник. Автоматическая ночная установка (с 03:00 до 06:00 в простое) включается отдельно в настройках обновлений.
 
 Для ручного обновления файлом загрузите в панель `jarvisd-arm64` или `jarvisd-armv7`.
 
@@ -233,9 +233,9 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 ## Сколько колонок с Джарвисом
 
-<p align="center"><img src="https://raw.githubusercontent.com/newfpv/YaJavis/stats-data/stats.svg" alt="Счётчик установок YaJavis: колонки по моделям и версиям" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/newfpv/YaJarvis/stats-data/stats.svg" alt="Счётчик установок YaJarvis: колонки по моделям и версиям" width="100%"></p>
 
-Счёт ведёт сам GitHub: при первом запуске и при смене версии колонка один раз скачивает пустой файл из служебного релиза [`stats`](https://github.com/newfpv/YaJavis/releases/tag/stats). В имени файла передаются только модель колонки и версия YaJavis — без IP-адресов, ключей и идентификаторов владельца. Статистика обновляется раз в 6 часов и отключается в панели: **Безопасность → Счётчик установок**.
+Счёт ведёт сам GitHub: при первом запуске и при смене версии колонка один раз скачивает пустой файл из служебного релиза [`stats`](https://github.com/newfpv/YaJarvis/releases/tag/stats). В имени файла передаются только модель колонки и версия YaJarvis — без IP-адресов, ключей и идентификаторов владельца. Статистика обновляется раз в 6 часов и отключается в панели: **Безопасность → Счётчик установок**.
 
 ---
 
@@ -254,11 +254,11 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 ## Поддержать проект и авторы
 
-Если YaJavis пригодился, поставьте **Star** вверху страницы. О багах и идеях пишите в [Issues](https://github.com/newfpv/YaJavis/issues) — прикладывайте модель колонки, версию YaJavis и шаги воспроизведения (предварительно убрав из логов личные токены и ключи).
+Если YaJarvis пригодился, поставьте **Star** вверху страницы. О багах и идеях пишите в [Issues](https://github.com/newfpv/YaJarvis/issues) — прикладывайте модель колонки, версию YaJarvis и шаги воспроизведения (предварительно убрав из логов личные токены и ключи).
 
 ### Contributors и авторы проектов
 
-Участники и авторы открытых проектов, на которых держится и опирается YaJavis:
+Участники и авторы открытых проектов, на которых держится и опирается YaJarvis:
 
 <table>
 <tr>
@@ -280,7 +280,7 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 Спасибо **[i7d3v3l0p3r](https://github.com/i7d3v3l0p3r)** за перенос веб-панели и установщика на SvelteKit, доработки плагина «Обучение слова», установщика и профиля Firefox для VLESS REALITY.
 
-**Дизайн YaJavis вдохновлён [yapanel](https://github.com/dimap/yapanel-web) автора [dimap](https://github.com/dimap).** Тёмная тема, тёплый оранжевый акцент, карточки состояния и подача графиков стали визуальным ориентиром для нашей панели. Спасибо dimap за открытый проект.
+**Дизайн YaJarvis вдохновлён [yapanel](https://github.com/dimap/yapanel-web) автора [dimap](https://github.com/dimap).** Тёмная тема, тёплый оранжевый акцент, карточки состояния и подача графиков стали визуальным ориентиром для нашей панели. Спасибо dimap за открытый проект.
 
 Спасибо **[Marker284 и сообществу Yandex Station Extended](https://github.com/Marker284/yandex-station-extended)** за исследования Станций; **[rison1337](https://github.com/rison1337/Alisa-ChatGPT-voice-assistant)** и **[amirilivice](https://github.com/amirilivice/quasard)** — за проекты, послужившие отправной точкой работы с голосовым ассистентом на колонке.
 
@@ -290,4 +290,4 @@ curl -fsSL https://github.com/newfpv/YaJavis/releases/latest/download/install.sh
 
 [MIT License](LICENSE). Сторонние компоненты сохраняют свои лицензии.
 
-YaJavis — независимый проект сообщества, не официальный продукт производителей колонки и используемых AI-сервисов.
+YaJarvis — независимый проект сообщества, не официальный продукт производителей колонки и используемых AI-сервисов.

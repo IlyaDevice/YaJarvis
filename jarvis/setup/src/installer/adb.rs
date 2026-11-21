@@ -85,7 +85,7 @@ fn cache_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
     base.filter(|path| path.is_absolute())
-        .map(|path| path.join("YaJavis/platform-tools"))
+        .map(|path| path.join("YaJarvis/platform-tools"))
 }
 
 fn file(path: &Path) -> bool {

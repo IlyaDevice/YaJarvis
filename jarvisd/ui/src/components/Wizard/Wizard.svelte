@@ -299,7 +299,7 @@
       {:else}
         <div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Готово</h1>
           <p>Если настроили голосовой движок, скажите <b>«Джарвис, привет»</b>. Добавить и удалить плагины можно в «Подключениях».</p>
-          <a class="btn" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">{@html icon("ext")}Поставить звезду на GitHub</a>
+          <a class="btn" href="https://github.com/newfpv/YaJarvis" target="_blank" rel="noopener noreferrer">{@html icon("ext")}Поставить звезду на GitHub</a>
           <p class="muted">Мастер можно открыть снова в разделе «Безопасность».</p>
         </div>
       {/if}

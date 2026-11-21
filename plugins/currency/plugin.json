@@ -4,7 +4,7 @@
   "version": "1.1.0",
   "description": "Официальные курсы ЦБ РФ или Нацбанка Беларуси. «Джарвис, курс доллара», «сколько 100 евро».",
   "author": "YaJarvis",
-  "homepage": "https://github.com/newfpv/YaJavis/tree/main/plugins/currency",
+  "homepage": "https://github.com/newfpv/YaJarvis/tree/main/plugins/currency",
   "kind": "lua",
   "main": "main.lua",
   "permissions": ["tools", "commands", "network", "storage"],

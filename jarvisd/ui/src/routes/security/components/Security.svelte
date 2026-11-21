@@ -117,7 +117,7 @@
   <div class="sec-b">
     <div class="row">
       <button class="btn" type="button" onclick={() => wizOpen(0)}>{@html icon("right")}Показать знакомство</button>
-      <a class="btn ghost" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">
+      <a class="btn ghost" href="https://github.com/newfpv/YaJarvis" target="_blank" rel="noopener noreferrer">
         {@html icon("ext")}Поставить звезду на GitHub
       </a>
     </div>

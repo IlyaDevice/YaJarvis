@@ -104,7 +104,7 @@ impl Destination {
                 }
                 Ok(Self {
                     provider: "koofr".into(),
-                    endpoint: "https://app.koofr.net/dav/Koofr/YaJavis/".into(),
+                    endpoint: "https://app.koofr.net/dav/Koofr/YaJarvis/".into(),
                     user: email.into(),
                     password,
                 })
@@ -138,10 +138,10 @@ impl Destination {
                 return Err(cloud_error(status));
             }
         }
-        let name = format!("yajavis-connection-{}.txt", rand_hex(4));
+        let name = format!("yajarvis-connection-{}.txt", rand_hex(4));
         self.put(
             &name,
-            "Проверка подключения YaJavis\n".as_bytes().to_vec(),
+            "Проверка подключения YaJarvis\n".as_bytes().to_vec(),
             "text/plain; charset=utf-8",
             false,
         )

@@ -4,9 +4,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const repo = process.env.REPO || "newfpv/YaJavis";
+const repo = process.env.REPO || "newfpv/YaJarvis";
 const out = process.argv[2] || "stats-out";
-const headers = { Accept: "application/vnd.github+json", "User-Agent": "yajavis-stats" };
+const headers = { Accept: "application/vnd.github+json", "User-Agent": "yajarvis-stats" };
 if (process.env.GH_TOKEN) headers.Authorization = "Bearer " + process.env.GH_TOKEN;
 
 async function gh(path) {

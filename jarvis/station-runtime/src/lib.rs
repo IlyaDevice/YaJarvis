@@ -12,6 +12,7 @@ pub const PREVIOUS: &str = "jarvisd.prev-rust";
 pub const PENDING: &str = "update-rust.json";
 pub const FAILURE: &str = "update-rust.error";
 pub const MAX_BINARY: u64 = 32 << 20;
+// Стабильный идентификатор формата для OTA-обновлений с 0.10.x — менять нельзя.
 pub const IDENTITY: &str = "yajavis-rust-1";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

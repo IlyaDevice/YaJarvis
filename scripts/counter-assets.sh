@@ -7,7 +7,7 @@ V=${1:?версия, например 0.9.53}
 MODELS="lite lite2 mini1 mini2 mini3 mini3pro midi station2 station3 street fiero other"
 if ! gh release view stats >/dev/null 2>&1; then
     gh release create stats --prerelease --title "Счётчик установок (служебный)" \
-        --notes "Служебный релиз. Колонки с YaJavis скачивают отсюда пустые файлы, а GitHub считает скачивания — так в README видно, сколько колонок с Джарвисом. Передаются только модель и версия. Скачивать здесь ничего не нужно."
+        --notes "Служебный релиз. Колонки с YaJarvis скачивают отсюда пустые файлы, а GitHub считает скачивания — так в README видно, сколько колонок с Джарвисом. Передаются только модель и версия. Скачивать здесь ничего не нужно."
 fi
 have=$(gh release view stats --json assets -q '.assets[].name')
 dir=$(mktemp -d)

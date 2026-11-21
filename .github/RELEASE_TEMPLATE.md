@@ -16,4 +16,4 @@
 
 Для новой установки выберите подходящий `JarvisSetup` в загрузках. Для обновления колонки файлом — `jarvisd-arm64` или `jarvisd-armv7`.
 
-**[Инструкция](https://github.com/newfpv/YaJavis#установка)** · **[Сообщить о проблеме](https://github.com/newfpv/YaJavis/issues)**
+**[Инструкция](https://github.com/newfpv/YaJarvis#установка)** · **[Сообщить о проблеме](https://github.com/newfpv/YaJarvis/issues)**

@@ -59,11 +59,11 @@
   <header class={styles.topbar}>
     <div class={styles.brand}>
       <span class={styles.logo}></span>
-      <span>YaJavis<small>Установка Джарвиса</small></span>
+      <span>YaJarvis<small>Установка Джарвиса</small></span>
     </div>
     <div class={styles.topMeta}>
       <span class={styles.version}>{version}</span>
-      <a href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">
+      <a href="https://github.com/newfpv/YaJarvis" target="_blank" rel="noopener noreferrer">
         Проект на GitHub <span aria-hidden="true">↗</span>
       </a>
     </div>
@@ -111,7 +111,7 @@
 
   <footer class={styles.bottomBar}>
     <span>Установка на вашу колонку · Без отдельного сервера</span>
-    <a href="https://github.com/newfpv/YaJavis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">
+    <a href="https://github.com/newfpv/YaJarvis#contributors-и-авторы-проектов" target="_blank" rel="noopener noreferrer">
       Авторы и благодарности
     </a>
   </footer>

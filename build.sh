@@ -2,7 +2,7 @@
 # Build release assets for Linux-based Stations. Desktop installers build natively.
 set -eu
 cd "$(dirname "$0")"
-: "${VERSION:=dev}" "${REPO:=newfpv/YaJavis}" "${ZIG:=zig}"
+: "${VERSION:=dev}" "${REPO:=newfpv/YaJarvis}" "${ZIG:=zig}"
 VERSION=${VERSION#v}
 export JARVIS_VERSION="$VERSION" JARVIS_REPO="$REPO"
 if [ -z "${STATION_PLUGIN_IDS:-}" ] && [ -z "${JARVIS_UI:-}" ]; then

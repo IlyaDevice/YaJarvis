@@ -1,4 +1,4 @@
-//! Source-level interface for trusted modules linked into the YaJavis executable.
+//! Source-level interface for trusted modules linked into the YaJarvis executable.
 pub use serde_json::{Map, Value, json};
 #[cfg(feature = "process")]
 pub mod process;

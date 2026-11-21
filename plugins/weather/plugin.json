@@ -4,7 +4,7 @@
   "version": "1.1.0",
   "description": "Погода сейчас и на три дня по Open-Meteo, без ключей. «Джарвис, какая погода?», «погода завтра», «нужен ли зонт».",
   "author": "YaJarvis",
-  "homepage": "https://github.com/newfpv/YaJavis/tree/main/plugins/weather",
+  "homepage": "https://github.com/newfpv/YaJarvis/tree/main/plugins/weather",
   "kind": "lua",
   "main": "main.lua",
   "permissions": ["tools", "commands", "network", "storage"],

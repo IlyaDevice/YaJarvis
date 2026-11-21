@@ -88,7 +88,7 @@
   {:else if update}
     <div class={["row", styles.actions]}>
       <span>Версия <b>{update.version}</b></span>
-      <a class="btn sm ghost" href="https://github.com/newfpv/YaJavis/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a>
+      <a class="btn sm ghost" href="https://github.com/newfpv/YaJarvis/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a>
       {#if update.busy}
         <span class="note"><span class="spin"></span>{update.busy}…</span>
       {:else if update.available}

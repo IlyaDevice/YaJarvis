@@ -1,4 +1,4 @@
-# Сборка YaJavis
+# Сборка YaJarvis
 
 Для сборки пакетов колонки нужны Git, актуальный стабильный Rust, Zig, CMake, Ninja, Python 3 и tar. Сборка официальных плагинов под ARMv7 также использует libclang для привязок QuickJS.
 

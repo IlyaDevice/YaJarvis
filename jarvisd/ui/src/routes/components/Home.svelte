@@ -12,7 +12,7 @@
   import HomeVolume from "./HomeVolume/HomeVolume.svelte";
 
   const { poll, onPoll } = getPanel();
-  const supportPreference = "yajavis.star.dismissed";
+  const supportPreference = "yajarvis.star.dismissed";
   let overview = $state.raw(readOverview(S));
   let chat = $state();
   let metrics = $state();
@@ -63,8 +63,8 @@
           <svg viewBox="0 0 24 24"><path d="M9 19c-4.3 1.3-4.3-2.2-6-2.6M15 22v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.2-1.5 6.2-6.9a5.4 5.4 0 0 0-1.5-3.7 5.3 5.3 0 0 0-.1-3.7S17.5.8 15 2.6a12.8 12.8 0 0 0-6 0C6.5.8 5.3 1.2 5.3 1.2a5 5 0 0 0-.1 3.7 5.4 5.4 0 0 0-1.5 3.7c0 5.4 3.2 6.2 6.2 6.9a3.4 3.4 0 0 0-.9 2.6V22"/></svg>
         </span>
         <div class="github-copy">
-          <h2>Поддержать YaJavis</h2><p>Нравится проект? Оставьте звезду на GitHub.</p>
-          <a class="github-link" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">Поставить звезду {@html icon("ext")}</a>
+          <h2>Поддержать YaJarvis</h2><p>Нравится проект? Оставьте звезду на GitHub.</p>
+          <a class="github-link" href="https://github.com/newfpv/YaJarvis" target="_blank" rel="noopener noreferrer">Поставить звезду {@html icon("ext")}</a>
         </div>
       </section>
     {/if}

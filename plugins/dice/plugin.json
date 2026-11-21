@@ -4,7 +4,7 @@
   "version": "1.1.0",
   "description": "Подбросить монетку, бросить кубик, выбрать случайное число. Заодно самый простой пример плагина.",
   "author": "YaJarvis",
-  "homepage": "https://github.com/newfpv/YaJavis/tree/main/plugins/dice",
+  "homepage": "https://github.com/newfpv/YaJarvis/tree/main/plugins/dice",
   "kind": "lua",
   "main": "main.lua",
   "permissions": ["tools", "commands"],
