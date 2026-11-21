@@ -1,5 +1,4 @@
 // Каркас: вход, состояние с колонки, опрос, сайдбар, маршруты, запуск.
-import { viewProfile } from "./assistant.js";
 import { ST, navPill, statsData } from "./charts.js";
 import { $, $$, act, api, dirty, esc, icon, ICONS, setDirty } from "./core.js";
 import { homeData, viewHome } from "./home.js";
@@ -195,7 +194,14 @@ export function route() {
   const h = routedHash.slice(1) || "home";
   const loadSvelteView = svelteViews.get(h);
   const v0 = $("#view"); v0.oninput = v0.onchange = v0.onclick = null;   // обработчики прошлой страницы
-  if (h.startsWith("p/")) { page = "p:" + h.slice(2); viewProfile(h.slice(2)); }
+  if (h.startsWith("p/")) {
+    const id = h.slice(2);
+    page = "p:" + id;
+    void viewSvelte(v0, async () => {
+      const { mountProfile } = await import("../Profile/mountProfile.js");
+      return (target) => mountProfile(target, id);
+    });
+  }
   else if (h === "connections" || h.startsWith("connections/")) {
     page = "connections";
     void viewSvelte(v0, async () => {
