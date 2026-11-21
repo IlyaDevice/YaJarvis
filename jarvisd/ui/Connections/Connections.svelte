@@ -66,7 +66,7 @@
                 <span class="meta">{connected ? `подключено ${connected} из ${services.length}` : description}</span>
               {/if}
             </div>
-            <div class="chars cn-grid">
+            <div class="cn-grid">
               {#each services as service (service.key)}
                 <article class="card cn" class:on={service.on} data-item={service.key}>
                   <div class="cn-h">
