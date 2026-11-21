@@ -143,7 +143,7 @@ fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(8)
-        .thread_stack_size(512 * 1024)
+        .thread_stack_size(if cfg!(debug_assertions) { 2 * 1024 * 1024 } else { 1024 * 1024 })
         .enable_all()
         .build()
         .expect("tokio");

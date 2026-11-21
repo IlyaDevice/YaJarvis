@@ -4,6 +4,8 @@ use jarvis_chatgpt::{Callback, ChatGpt};
 use jarvis_cloud::{Message, Provider};
 use serde_json::{Value, json};
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
@@ -42,61 +44,65 @@ impl Cloud {
         })
     }
 
+    async fn open_live(&self, params: Value) -> Result<Value, String> {
+        let key = params["key"].as_str().ok_or("Нет API-ключа")?;
+        let network = (self.services)("network".into(), Value::Null).await?;
+        let session = params.get("session").filter(|value| !value.is_null());
+        let mut socket = self.provider.socket_for(key, &network, session).await?;
+        let (send, mut outgoing) = mpsc::channel::<Value>(8);
+        let (incoming, received) = mpsc::channel(12);
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    value = outgoing.recv() => {
+                        let Some(value) = value else { break };
+                        if socket.send(value.to_string().into()).await.is_err() {
+                            let _ = incoming.send(Err("Обрыв голосового соединения".into())).await;
+                            break;
+                        }
+                    }
+                    message = socket.next() => match message {
+                        Some(Ok(Message::Close(reason))) => {
+                            let reason = reason.map(|reason| reason.reason.to_string()).unwrap_or_default();
+                            let _ = incoming.send(Ok(json!({"close":reason}))).await;
+                            break;
+                        }
+                        Some(Ok(message)) if message.is_text() || message.is_binary() => {
+                            let event = serde_json::from_slice::<Value>(&message.into_data())
+                                .map(|event| json!({"event":event}))
+                                .map_err(|_| "Неверное голосовое событие".into());
+                            if incoming.send(event).await.is_err() { break }
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(_)) => {
+                            let _ = incoming.send(Err("Обрыв голосового соединения".into())).await;
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }).abort_handle();
+        let live = Arc::new(Live {
+            id,
+            send,
+            received: tokio::sync::Mutex::new(received),
+            task,
+        });
+        if let Some(previous) = self.current.lock().unwrap().replace(live) {
+            previous.task.abort();
+        }
+        Ok(json!({"id":id}))
+    }
+
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
         if method == self.provider.id() {
             let network = (self.services)("network".into(), Value::Null).await?;
-            return self.provider.request(params, network).await;
+            return Box::pin(self.provider.request(params, network)).await;
         }
         if method == "live.open" {
-            let key = params["key"].as_str().ok_or("Нет API-ключа")?;
-            let network = (self.services)("network".into(), Value::Null).await?;
-            let session = params.get("session").filter(|value| !value.is_null());
-            let mut socket = self.provider.socket_for(key, &network, session).await?;
-            let (send, mut outgoing) = mpsc::channel::<Value>(8);
-            let (incoming, received) = mpsc::channel(12);
-            let id = self.next.fetch_add(1, Ordering::Relaxed);
-            let task = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        value = outgoing.recv() => {
-                            let Some(value) = value else { break };
-                            if socket.send(value.to_string().into()).await.is_err() {
-                                let _ = incoming.send(Err("Обрыв голосового соединения".into())).await;
-                                break;
-                            }
-                        }
-                        message = socket.next() => match message {
-                            Some(Ok(Message::Close(reason))) => {
-                                let reason = reason.map(|reason| reason.reason.to_string()).unwrap_or_default();
-                                let _ = incoming.send(Ok(json!({"close":reason}))).await;
-                                break;
-                            }
-                            Some(Ok(message)) if message.is_text() || message.is_binary() => {
-                                let event = serde_json::from_slice::<Value>(&message.into_data())
-                                    .map(|event| json!({"event":event}))
-                                    .map_err(|_| "Неверное голосовое событие".into());
-                                if incoming.send(event).await.is_err() { break }
-                            }
-                            Some(Ok(_)) => {}
-                            Some(Err(_)) => {
-                                let _ = incoming.send(Err("Обрыв голосового соединения".into())).await;
-                                break;
-                            }
-                            None => break,
-                        }
-                    }
-                }
-            }).abort_handle();
-            let live = Arc::new(Live {
-                id,
-                send,
-                received: tokio::sync::Mutex::new(received),
-                task,
-            });
-            if let Some(previous) = self.current.lock().unwrap().replace(live) {
-                previous.task.abort();
-            }
-            return Ok(json!({"id":id}));
+            return Box::pin(self.open_live(params)).await;
         }
         let id = params["id"].as_u64().ok_or("Нет голосовой сессии")?;
         if method == "live.close" {
@@ -178,28 +184,30 @@ impl Builtin {
     }
 
     /// Execute an in-process provider request subject to the caller timeout.
-    pub async fn request(
-        &self,
-        method: &str,
+    pub fn request<'a>(
+        &'a self,
+        method: &'a str,
         params: Value,
         timeout: Duration,
-    ) -> Result<Value, String> {
-        let fut = async {
-            match self {
-                Self::ChatGpt(provider) => provider.request(method, params).await,
-                Self::Cloud(provider) => provider.request(method, params).await,
-            }
-        };
-        tokio::time::timeout(timeout, fut)
-            .await
-            .map_err(|_| "Провайдер не ответил вовремя".to_string())?
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let fut: Pin<Box<dyn Future<Output = Result<Value, String>> + Send + '_>> = match self {
+                Self::ChatGpt(provider) => Box::pin(provider.request(method, params)),
+                Self::Cloud(provider) => Box::pin(provider.request(method, params)),
+            };
+            tokio::time::timeout(timeout, fut)
+                .await
+                .map_err(|_| "Провайдер не ответил вовремя".to_string())?
+        })
     }
 
     /// Gracefully shut down active voice calls and drop cached HTTP clients.
-    pub async fn stop(&self) {
-        match self {
-            Self::ChatGpt(provider) => provider.shutdown().await,
-            Self::Cloud(provider) => provider.stop(),
-        }
+    pub fn stop(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            match self {
+                Self::ChatGpt(provider) => provider.shutdown().await,
+                Self::Cloud(provider) => provider.stop(),
+            }
+        })
     }
 }

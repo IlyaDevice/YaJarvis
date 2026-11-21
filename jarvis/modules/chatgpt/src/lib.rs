@@ -31,12 +31,12 @@ impl ChatGpt {
     pub async fn shutdown(&self){let voices=std::mem::take(&mut*self.voices.lock().unwrap());self.stop();for (_,voice) in voices{voice.close().await;}}
     pub async fn request(&self,method:&str,params:Value)->Result<Value,String>{
         match method{
-            "auth.token"=>self.token().await,
+            "auth.token"=>Box::pin(self.token()).await,
             "login.status"=>Ok(self.login_state()),
-            "login.start"=>self.start().await,
+            "login.start"=>Box::pin(self.start()).await,
             "auth.logout"=>{self.stop();let before=(self.services)("auth.get".into(),Value::Null).await?;(self.services)("auth.set".into(),json!({"before":before,"after":{}})).await?;Ok(json!({}))},
-            "codex.request"=>self.codex(params).await,
-            "voice.warm"=>{
+            "codex.request"=>Box::pin(self.codex(params)).await,
+            "voice.warm"=>Box::pin(async move {
                 let auth=(self.services)("auth.get".into(),Value::Null).await?;
                 if auth["refresh"].as_str().is_some_and(|value| !value.is_empty()) {
                     let client=self.client().await?;
@@ -44,17 +44,17 @@ impl ChatGpt {
                     // Reuse DNS, SOCKS and TLS. HEAD carries no token, audio or conversation.
                     let _=client.head(url).timeout(Duration::from_secs(4)).send().await;
                 }
-                Ok(Value::Null)
-            },
-            "voice.open"=>{
+                Ok::<Value,String>(Value::Null)
+            }).await,
+            "voice.open"=>Box::pin(async move {
                 let _lock=self.voice_lock.lock().await;let id=params["id"].as_str().ok_or("Нужен ID звонка")?;
                 if self.voices.lock().unwrap().contains_key(id){return Ok(json!({"rate":48000}));}
                 if self.voices.lock().unwrap().len()>=2{return Err("Лимит: два звонка ChatGPT".into());}
-                let generation=self.generation.load(std::sync::atomic::Ordering::SeqCst);let voice=rtc_voice::RtcVoice::open(self,&params).await?;
+                let generation=self.generation.load(std::sync::atomic::Ordering::SeqCst);let voice=Box::pin(rtc_voice::RtcVoice::open(self,&params)).await?;
                 if generation!=self.generation.load(std::sync::atomic::Ordering::SeqCst){voice.close().await;return Err("Звонок отменён".into());}
                 let model=voice.requested_model;
-                self.voices.lock().unwrap().insert(voice.id.clone(),voice);Ok(json!({"rate":48000,"requested_model":model}))
-            },
+                self.voices.lock().unwrap().insert(voice.id.clone(),voice);Ok::<Value,String>(json!({"rate":48000,"requested_model":model}))
+            }).await,
             "voice.feed"=>{let voice=self.voice(&params)?;voice.feed(params["pcm"].as_str().ok_or("Нет PCM")?)?;Ok(Value::Null)},
             "voice.say"=>{self.voice(&params)?.say(params["text"].as_str().unwrap_or("")).await?;Ok(Value::Null)},
             "voice.close"=>{let voice=self.voices.lock().unwrap().remove(params["id"].as_str().unwrap_or(""));if let Some(voice)=voice{voice.close().await;}Ok(Value::Null)},
