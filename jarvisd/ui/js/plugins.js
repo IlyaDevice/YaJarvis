@@ -132,12 +132,17 @@ export function plValues(root) {
 
 export async function plInstall(btn, repo, id, then) {
   await act(btn, async () => {
+    const label = btn?.innerHTML;
     if (btn) btn.innerHTML = `<span class="spin"></span>Ставлю…`;
-    const r = await api("POST", "/api/plugins/install", { repo, id });
-    if (r.restarting && !await waitModuleChange()) return;
-    await verifyInstall([r.plugin], r.reboot_from);
-    toast(`«${r.plugin?.name || id}» установлен`);
-    await then?.();
+    try {
+      const r = await api("POST", "/api/plugins/install", { repo, id });
+      if (r.restarting && !await waitModuleChange()) return;
+      await verifyInstall([r.plugin], r.reboot_from);
+      toast(`«${r.plugin?.name || id}» установлен`);
+      await then?.();
+    } finally {
+      if (btn) btn.innerHTML = label;
+    }
   });
 }
 
@@ -152,22 +157,16 @@ export async function plUpdate(btn, id, then) {
   });
 }
 
-export async function plUpdateAll(btn, then) {
+export async function plUpdateAll(then) {
   const plugins = plUpdateCandidates();
-  await act(btn, async () => {
-    const original = btn.textContent;
-    btn.textContent = "Обновляю плагины…";
-    try {
-      const r = await api("POST", "/api/plugins/update-all", plugins.map(updateRequest));
-      await verifyInstall(r.updated, r.reboot_from);
-      await then?.();
-      const summary = `Обновлено плагинов: ${r.updated.length}`;
-      const errors = r.errors.map(({ id, error }) => `${plugins.find((p) => p.id === id)?.name || id}: ${error}`);
-      if (errors.length) throw new Error([summary, ...errors].join(". "));
-      toast(r.updated.length ? summary : "Плагины уже актуальны");
-    } finally {
-      btn.textContent = original;
-    }
+  await act(null, async () => {
+    const r = await api("POST", "/api/plugins/update-all", plugins.map(updateRequest));
+    await verifyInstall(r.updated, r.reboot_from);
+    await then?.();
+    const summary = `Обновлено плагинов: ${r.updated.length}`;
+    const errors = r.errors.map(({ id, error }) => `${plugins.find((p) => p.id === id)?.name || id}: ${error}`);
+    if (errors.length) throw new Error([summary, ...errors].join(". "));
+    toast(r.updated.length ? summary : "Плагины уже актуальны");
   });
 }
 

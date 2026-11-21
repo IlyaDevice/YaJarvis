@@ -1031,7 +1031,7 @@ h1 { font-size: 34px; line-height: 40px; }
 .cn-group { display: grid; gap: 14px; }
 .cn-gh { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .cn-gh h2 { margin: 0; font-size: 17px; }
-.cn-grid { grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
+.cn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
 .cn { display: flex; flex-direction: column; gap: 12px; padding: 22px; cursor: pointer; transition: transform .3s var(--spring), border-color .2s; }
 .cn:hover { transform: translateY(-3px); }
 .cn:active { transform: scale(.985); }

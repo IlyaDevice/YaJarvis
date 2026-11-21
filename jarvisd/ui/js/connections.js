@@ -3,15 +3,16 @@
 // «Плагины» — что стоит на колонке (список: включить, настроить) и что можно поставить.
 // Сервису, который живёт в плагине (YouTube, умный дом, VPN), окно предлагает поставить плагин и показывает его.
 import { $, $$, act, api, esc, icon, plural, tip, toast } from "./core.js";
-import { S, page, reload } from "./main.js";
+import { S, reload } from "./main.js";
 import { PL, PL_KIND, plBadge, plCatItem, plCatalog, plEnable, plField, plIcon, plInstall, plInstalled, plItems, plLoad, plMarkWarned, plOfficialItems,
-  plHasUpdate, plOfficial, plRemove, plRepo, plSave, plSize, plState, plUpdate, plUpdateAll, plUpdateCandidates, plUpload, plValues, plWarnHtml, plWarned } from "./plugins.js";
+  plHasUpdate, plRemove, plRepo, plSave, plSize, plState, plUpdate, plUpdateAll, plUpdateCandidates, plUpload, plValues, plWarnHtml, plWarned } from "./plugins.js";
 
 // ---------------------------------------------------------------- характеры
 // ---------------------------------------------------------------- подключения
 // Подключения — плитками, как «Характеры»: на плитке назначение и состояние, всё остальное — в окне по клику.
 // Новое подключение = ещё одна запись в connDefs().
-export const CONN = { open: "", net: {}, haEntities: [], tab: "svc" };
+const CONN = { open: "", net: {}, haEntities: [], tab: "svc" };
+let connectionView;
 const servicePlugin = (id) => S.providers?.[id]?.plugin || "home";
 
 export function haRoomRow(r = {}) {
@@ -94,7 +95,7 @@ export function connDefs() {
   const keyBody = (id, place, how, label, helpTitle) => `<div class="f"><label for="k-${id}">${label ? label[0] : k[id] ? "Новый ключ" : "Ключ"}</label><div class="row"><input type="password" id="k-${id}" placeholder="${place}" autocomplete="off"><button class="btn primary" data-key="${id}">${label ? label[1] : k[id] ? "Заменить" : "Сохранить"}</button></div></div>
     ${how ? `<details${k[id] ? "" : " open"}><summary>${helpTitle || "Где его взять"}</summary><ol class="how">${how}</ol></details>` : ""}`;
   const key = (id, o) => ({ id, group: o.group, plugin: o.plugin || id, mono: o.mono, name: o.name, about: o.about, more: o.more,
-    on: !!k[id], need: !k[id] && !o.optional, state: k[id] ? `ключ ${esc(String(k[id]).replace(/^задан,?\s*/, ""))}` : o.optional ? "не подключено" : "нужен ключ",
+    on: !!k[id], need: !k[id] && !o.optional, state: k[id] ? `ключ ${String(k[id]).replace(/^задан,?\s*/, "")}` : o.optional ? "не подключено" : "нужен ключ",
     body: (o.top || "") + keyBody(id, o.place, o.how, o.label, o.helpTitle) + (o.vpn ? vpnRow(o.vpn) : ""), drop: k[id] ? `<button class="btn ghost danger" data-clear="${id}">${o.dropText || "Убрать ключ"}</button>` : "" });
   return [
     { id:"homeassistant", group:"home", plugin:servicePlugin("homeassistant"), mono:"HA", name:"Home Assistant", about:"Устройства дома, Xiaomi Home и уборка выбранных комнат",
@@ -109,7 +110,7 @@ export function connDefs() {
       drop:S.home_assistant?.configured?`<button class="btn ghost danger" id="ha-disconnect">Отключить</button>`:"" },
     { id: "chatgpt", plugin: "chatgpt", group: "voice", mono: "GP", name: "Подписка ChatGPT", about: "Голос Джарвиса за счёт подписки Plus или Pro — без оплаты API за минуты",
       more: "Включается у ассистента: движок «GPT-Live по подписке».",
-      on: !!cg.signed_in, state: cg.signed_in ? esc(["вход выполнен", cg.plan].filter(Boolean).join(" · ")) : lg.code ? "ждёт код" : "не подключено",
+      on: !!cg.signed_in, state: cg.signed_in ? ["вход выполнен", cg.plan].filter(Boolean).join(" · ") : lg.code ? "ждёт код" : "не подключено",
       wait: !cg.signed_in && !!lg.code,
       body: cg.signed_in ? `<div class="cn-ok">${icon("done")}<span>Колонка вошла в ChatGPT${cg.plan ? ` · <b>${esc(cg.plan)}</b>` : ""}${cg.email ? `<small>${esc(cg.email)}</small>` : ""}</span></div>
           ${cg.limited_until * 1000 > Date.now() ? `<p class="err">Кончился лимит голоса в подписке. До ${new Date(cg.limited_until * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} Джарвис говорит через Gemini${S.keys?.gemini ? "" : " — но ключа Gemini нет, добавьте его ниже"}.</p>` : ""}
@@ -154,7 +155,7 @@ export function connDefs() {
         + vpnRow("youtube"),
       drop: ya.signed_in ? `<button class="btn ghost danger" id="ya-out">Выйти</button>` : yt.set ? `<button class="btn ghost danger" id="yt-clear">Убрать куки</button>` : "" },
     { id: "vpn", group: "system", plugin: "vpn", icon: "shield", name: "VPN для Джарвиса", about: "Через VPN идёт только сам Джарвис, Алиса — всегда напрямую. Что именно пускать через VPN — галочки ниже",
-      on: !!v.set && !v.error, bad: !!v.error, need: !v.set, state: v.set ? (v.error ? "ошибка" : esc(v.name || v.host)) : "не задан",
+      on: !!v.set && !v.error, bad: !!v.error, need: !v.set, state: v.set ? (v.error ? "ошибка" : v.name || v.host) : "не задан",
       body: `${v.set && v.host ? `<div class="vpn ${v.error ? "bad" : "ok"}"><b>${esc(v.name || v.host)}</b><small>${esc(v.host)}:${esc(v.port)} · ${esc(v.network)} + ${esc(v.security)}</small></div>` : v.set ? `<p class="err">${esc(v.error || "VPN запускается…")}</p>` : `<p class="note">Пока не задан — колонка ходит в интернет напрямую. Вставьте ссылку vless://… из вашего VPN (3x-ui, Marzban, Hiddify и т. п.).</p>`}
         ${v.error ? `<p class="err">${esc(v.error)}</p>` : ""}
         <textarea id="vless" class="code" placeholder="vless://…" spellcheck="false" aria-label="Ссылка VLESS"></textarea>
@@ -172,46 +173,61 @@ export const CONN_GROUPS = [
   ["media", "Музыка и видео", ""],
   ["system", "Сеть", ""],
 ];
-// плагины, на которых держатся сервисы
-const HOSTED = { home: "Умный дом", youtube: "YouTube", vpn: "VPN" };
 const plKey = (x) => "pl:" + (x.official ? x.id : (x.repo || "file") + "/" + x.id);
 
 // items — всё, что на странице: сервисы ({kind:"svc"}) и плагины ({kind:"pl"}).
 function connItems() {
   // сервис из плагина виден, только когда плагин стоит и включён: оболочку человек собирает сам
   const svc = connDefs().filter((c) => !c.plugin || plInstalled(c.plugin)?.enabled).map((c) => ({ ...c, kind: "svc", key: "svc:" + c.id }));
-  const pls = plItems().map((x) => ({ kind: "pl", key: plKey(x), x, id: x.id, name: x.name, about: esc(x.description || ""), on: !!x.inst, icon: x.inst?.icon || x.icon }));
+  const pls = plItems().map((x) => ({ kind: "pl", key: plKey(x), x, id: x.id, name: x.name, about: x.description || "", icon: x.inst?.icon || x.icon }));
   return [...svc, ...pls];
 }
 
-export function viewConnections(openKey = "") {
-  $("#view").innerHTML = `<header class="ph ph-row"><div><h1>Подключения</h1><p class="sub">Сервисы — ключи и входы в аккаунты. Плагины — умения, которые ставятся на колонку отдельно</p></div>
-    <div class="actions"><button class="btn" data-net data-tip="Колонка достучится до облаков с вашими ключами и покажет время ответа">${icon("radio")}Проверить связь</button></div></header>
-  <div class="seg cx-tabs" id="cx-tabs" role="tablist"><button type="button" role="tab" data-tab="svc">Сервисы<small id="cx-n-svc"></small></button><button type="button" role="tab" data-tab="pl">Плагины<small id="cx-n-pl"></small></button></div>
-  <div id="conns" class="cx-list"></div>
-  <div class="modal hidden" id="cn-modal" role="dialog" aria-modal="true" aria-labelledby="cn-mt"><div class="modal-bg" data-close></div><div class="modal-card cn-card" id="cn-card"></div></div>`;
+export function bindConnections(modal, render, openKey) {
+  const controller = new AbortController();
+  const { signal } = controller;
+  const view = { modal, render };
+  connectionView = view;
   CONN.open = "";
-  const view = $("#view");
-  const modal = $("#cn-modal");
-  view.oninput = null;
-  view.onchange = connChange;
-  view.onclick = connClick;
-  view.onkeydown = (e) => {
-    if (page !== "connections") return; // обработчик висит на #view и после ухода со страницы
-    const t = e.target.closest("[data-item]");
-    if (t && e.target === t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); connOpen(t.dataset.item); }
-    if (e.key === "Escape" && CONN.open) connClose();
-    serviceKeydown(e, modal);
-  };
+
+  modal.addEventListener("click", connClick, { signal });
+  modal.addEventListener("change", connChange, { signal });
+  window.addEventListener("keydown", (event) => {
+    if (modal.classList.contains("hidden") || modal.classList.contains("out")) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (view.cancelWarning) view.cancelWarning();
+      else connClose();
+      return;
+    }
+    if (event.target instanceof Element && modal.contains(event.target)) serviceKeydown(event, modal);
+  }, { signal });
+
   const refresh = () => {
-    if (page !== "connections" || $("#cn-modal") !== modal) return;
+    if (connectionView !== view) return;
     drawConns();
     if (openKey && connOpen(openKey)) openKey = "";
   };
+  const requests = [plLoad(), plCatalog(false), plCatalog(false, "community")];
   refresh();
-  plLoad().then(refresh);
-  plCatalog(false).then(refresh);
-  plCatalog(false, "community").then(refresh);
+  for (const request of requests) void request.then(refresh);
+  return () => {
+    controller.abort();
+    clearTimeout(view.wait);
+    clearTimeout(view.focus);
+    clearTimeout(view.move);
+    if (connectionView === view) {
+      connectionView = undefined;
+      CONN.open = "";
+    }
+    view.cancelWarning?.();
+  };
+}
+
+export function selectConnectionTab(tab) {
+  if (CONN.tab === tab) return;
+  CONN.tab = tab;
+  drawConns();
 }
 
 function tileState(it) {
@@ -221,94 +237,49 @@ function tileState(it) {
   return { cls: it.bad ? "bad" : it.on ? "ok" : it.need ? "warn" : "", text: it.state };
 }
 
-export function connTile(it) {
-  const st = tileState(it);
-  const missing = it.kind === "pl" && !it.x.inst;
-  const action = missing ? `${icon("plus")}Установить` : it.on ? `${icon("tune")}Настроить` : `${icon("plus")}Подключить`;
-  const av = it.kind === "pl" ? plIcon(it.icon) : it.icon ? icon(it.icon) : esc(it.mono);
-  return `<article class="card cn${it.on && !missing ? " on" : ""}${missing ? " off" : ""}" data-item="${esc(it.key)}" tabindex="0" role="button" aria-label="${esc(it.name)}">
-    <div class="cn-h"><span class="char-av cn-av">${av}</span><h2>${esc(it.name)}</h2>${it.kind === "pl" && !it.x.official ? `<span class="cx-tag" data-tip="Неофициальный плагин">${icon("shield")}</span>` : ""}</div>
-    <p class="cn-t">${it.about}</p>
-    <div class="cn-f"><span class="st ${st.cls}">${esc(st.text)}</span><span class="spacer"></span><span class="char-edit">${action}</span></div>
-  </article>`;
-}
+function drawConns() {
+  const view = connectionView;
+  if (!view) return;
+  const items = connItems();
+  const services = items.filter((it) => it.kind === "svc");
+  view.render({
+    tab: CONN.tab,
+    services: services.map((service) => ({
+      key: service.key, name: service.name, about: service.about, on: service.on,
+      group: service.group, mono: service.mono, icon: service.icon, status: tileState(service),
+    })),
+    plugins: items.filter((it) => it.kind === "pl").map((plugin) => ({ ...plugin, status: tileState(plugin) })),
+    officialReady: plOfficialItems().length > 0,
+    officialError: PL.official.request ? "" : PL.official.error,
+    communityEmpty: Boolean(PL.community.items && !PL.community.request && !PL.community.error),
+    communityError: PL.community.request ? "" : PL.community.error,
+    freeSpace: PL.data?.free_mb,
+    repo: plRepo(),
+    canUpdate: plUpdateCandidates().length > 0,
+  });
+  if (CONN.open && !connBody(CONN.open, items)) connClose();
 
-// plRow — строка установленного плагина: значок, что это, состояние, вкл/выкл, «Настроить».
-// Не установленный — значок, что это, размер и «Установить».
-function plRow(it) {
-  const x = it.x, p = x.inst, st = plState(x);
-  if (!p) return `<div class="cx-row add" data-item="${esc(it.key)}" tabindex="0" role="button" aria-label="${esc(it.name)} — подробнее">
-    <span class="char-av cn-av">${plIcon(it.icon)}</span>
-    <div class="cx-row-t"><b>${esc(it.name)}</b><small>${it.about}</small></div>
-    <span class="cx-size">${x.size ? plSize(x.size) : ""}</span>
-    <button class="btn sm" type="button" data-pl-install="${esc(x.repo)}" data-id="${esc(x.id)}" data-official="${x.official ? 1 : ""}">${icon("plus")}Установить</button>
-  </div>`;
-  return `<div class="cx-row${p.enabled ? "" : " off"}" data-item="${esc(it.key)}" tabindex="0" role="button" aria-label="${esc(it.name)} — настроить">
-    <span class="char-av cn-av">${plIcon(it.icon)}</span>
-    <div class="cx-row-t"><b>${esc(it.name)}${x.official ? "" : `<span class="plg-b warn">неофициальный</span>`}</b><small>${it.about}</small></div>
-    <span class="st ${st.cls}">${esc(st.text)}</span>
-    <div class="cx-acts"><label class="sw" data-tip="${p.enabled ? "Выключить" : "Включить"}"><input type="checkbox" data-pl-on="${esc(p.id)}"${p.enabled ? " checked" : ""} aria-label="${p.enabled ? "Выключить" : "Включить"} ${esc(it.name)}"><span class="tr"></span></label>
-      <button class="btn sm" type="button" data-pl-open="${esc(it.key)}">${icon("tune")}Настроить</button>
-      <button class="btn sm ghost danger" type="button" data-pl-del="${esc(p.id)}" aria-label="Удалить ${esc(it.name)}">${icon("trash")}<span>Удалить</span></button></div>
-  </div>`;
-}
-
-function svcHtml(items) {
-  return CONN_GROUPS.map(([g, title, sub]) => {
-    const list = items.filter((it) => it.group === g).sort((a, b) => (b.on ? 1 : 0) - (a.on ? 1 : 0));
-    if (!list.length) return "";
-    const n = list.filter((it) => it.on).length;
-    return `<section class="cn-group"><div class="cn-gh"><h2>${title}</h2><span class="meta">${n ? `подключено ${n} из ${list.length}` : esc(sub)}</span></div>
-      <div class="chars cn-grid">${list.map(connTile).join("")}</div></section>`;
-  }).join("");
-}
-
-function plHtml(items) {
-  const inst = items.filter((it) => it.x.inst);
-  const have = new Set(inst.map((it) => it.id));
-  const offer = items.filter((it) => !it.x.inst && it.x.official && !have.has(it.id));
-  const comm = items.filter((it) => !it.x.inst && !it.x.official);
-  const offerMessage = plOfficialItems().length ? "Все официальные плагины уже стоят."
-    : PL.official.error && !PL.official.request ? "Официальный каталог пока недоступен." : "Загружаю каталог…";
-  return `<section class="cn-group"><div class="cn-gh"><h2>Установлены</h2><span class="spacer"></span>
-      <button class="btn sm" id="pl-update-all" type="button"${plUpdateCandidates().length ? "" : " disabled"}>Обновить всё</button></div>
-      ${inst.length ? `<div class="card cx-rows">${inst.map(plRow).join("")}</div>`
-        : `<div class="card plg-empty">${icon("puzzle")}<p class="muted">Пока ни одного плагина. Ядро Джарвиса лёгкое: нужные умения ставятся отдельно — выберите ниже.</p></div>`}</section>
-    <section class="cn-group"><div class="cn-gh"><h2>Можно поставить</h2><span class="meta">официальные, от автора YaJarvis</span></div>
-      ${offer.length ? `<div class="card cx-rows">${offer.map(plRow).join("")}</div>` : `<p class="note">${offerMessage}</p>`}
-      ${PL.official.error && !PL.official.request ? `<p class="note bad" role="status">Не удалось обновить официальный каталог: ${esc(PL.official.error)}</p>` : ""}</section>
-    <section class="cn-group"><div class="cn-gh"><h2>От сообщества</h2><span class="meta">их пишут другие люди</span></div>
-      <p class="note cx-warn">${icon("shield")}<span>Автор YaJarvis сторонние плагины не проверяет: ставьте то, чему доверяете. Хотите сделать свой — <a class="lnk" href="https://github.com/${esc(plRepo())}/blob/main/docs/PLUGINS.md" target="_blank" rel="noopener">инструкция</a>.</span></p>
-      ${comm.length ? `<div class="card cx-rows">${comm.map(plRow).join("")}</div>`
-        : PL.community.items && !PL.community.request && !PL.community.error ? `<p class="note">Пока никто не опубликовал свой плагин.</p>` : ""}
-      ${PL.community.error && !PL.community.request ? `<p class="note bad" role="status">Не удалось обновить каталог сообщества: ${esc(PL.community.error)}</p>` : ""}</section>
-    <div class="cx-foot"><span>${PL.data?.free_mb ? `Свободно на колонке ${PL.data.free_mb} МБ` : ""}</span><span class="spacer"></span>
-      <label class="btn sm" data-tip="Архив плагина .zip — например, скачанный из его релиза">${icon("upload")}Плагин из файла<input type="file" id="pl-file" accept=".zip,application/zip" hidden></label>
-      <button class="btn sm ghost" type="button" id="pl-refresh">${icon("search")}Обновить каталог</button></div>`;
-}
-
-export function drawConns() {
-  const box = $("#conns");
-  if (!box) return;
-  const all = connItems();
-  const svc = all.filter((it) => it.kind === "svc"), pls = all.filter((it) => it.kind === "pl");
-  $$("#cx-tabs [data-tab]").forEach((b) => { const on = b.dataset.tab === CONN.tab; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); });
-  const nSvc = svc.filter((it) => it.on).length, nPl = pls.filter((it) => it.x.inst).length;
-  $("#cx-n-svc").textContent = nSvc ? String(nSvc) : "";
-  $("#cx-n-pl").textContent = nPl ? String(nPl) : "";
-  box.innerHTML = CONN.tab === "pl" ? plHtml(pls) : svcHtml(svc);
-  if (CONN.open && !connBody(CONN.open)) connClose();
-  // вход кодом: ждём, пока человек введёт код на сайте
-  clearTimeout(drawConns.wait);
-  if (svc.some((c) => c.wait)) drawConns.wait = setTimeout(async () => {
-    if (page !== "connections") return;
-    const was = { cg: S.chatgpt.signed_in, yt: S.youtube?.account?.signed_in, xm: S.xiaomi?.signed_in, sl: S.smartlife?.signed_in };
-    await reload(); drawConns();
-    if (!was.sl && S.smartlife?.signed_in) toast("Smart Life подключён — ищу устройства");
-    if (!was.xm && S.xiaomi?.signed_in) toast("Xiaomi Home подключён — ищу устройства");
-    if (!was.cg && S.chatgpt.signed_in) toast("ChatGPT подключён");
-    if (!was.yt && S.youtube?.account?.signed_in) toast("YouTube подключён");
-  }, 3000);
+  // Вход кодом завершается на другом устройстве.
+  clearTimeout(view.wait);
+  if (!view.checking && services.some((service) => service.wait)) {
+    view.wait = setTimeout(async () => {
+      const was = { cg: S.chatgpt.signed_in, yt: S.youtube?.account?.signed_in, xm: S.xiaomi?.signed_in, sl: S.smartlife?.signed_in };
+      view.checking = true;
+      try {
+        await reload();
+        if (connectionView !== view) return;
+        if (!was.sl && S.smartlife?.signed_in) toast("Smart Life подключён — ищу устройства");
+        if (!was.xm && S.xiaomi?.signed_in) toast("Xiaomi Home подключён — ищу устройства");
+        if (!was.cg && S.chatgpt.signed_in) toast("ChatGPT подключён");
+        if (!was.yt && S.youtube?.account?.signed_in) toast("YouTube подключён");
+      } catch (error) {
+        if (connectionView === view) toast(error.message, true);
+      } finally {
+        view.checking = false;
+        if (connectionView === view) drawConns();
+      }
+    }, 3000);
+  }
 }
 
 // pluginBlock — плагин внутри окна сервиса или плагина: версия, вкл/выкл, обновить, удалить.
@@ -378,9 +349,9 @@ export function mountService(root, id) {
   return () => { active = false; clearTimeout(timer); };
 }
 
-function connBody(key) {
-  const card = $("#cn-card");
-  const it = connItems().find((x) => x.key === key);
+function connBody(key, items = connItems()) {
+  const card = connectionView?.modal.querySelector("#cn-card");
+  const it = items.find((x) => x.key === key);
   if (!card || !it) return false;
   const st = tileState(it);
   let html;
@@ -403,7 +374,7 @@ function connBody(key) {
         ${fields.length ? `<div class="cn-body plg-form">${fields.map((s) => plField(p, s)).join("")}</div>
           <div class="row"><span class="spacer"></span><button class="btn primary" type="button" data-pl-save="${esc(p.id)}">Сохранить</button></div>` : ""}
         ${svcs.length ? `<div class="cx-links"><b>${svcs.length > 1 ? "Входы и ключи этого плагина" : "Вход и настройки"}</b>${svcs.map((c) => `<button class="cx-link" type="button" data-goto="svc:${esc(c.id)}">
-            <span class="char-av cn-av">${c.icon ? icon(c.icon) : esc(c.mono)}</span><span>${esc(c.name)}<small>${esc(c.state.replace(/<[^>]+>/g, ""))}</small></span>${icon("right")}</button>`).join("")}</div>`
+            <span class="char-av cn-av">${c.icon ? icon(c.icon) : esc(c.mono)}</span><span>${esc(c.name)}<small>${esc(c.state)}</small></span>${icon("right")}</button>`).join("")}</div>`
           : training ? (S.settings.wake_training ? '<div><a class="btn primary" href="#training">Открыть обучение</a></div>' : "")
           : fields.length ? "" : `<p class="note">У этого плагина нет настроек: он просто работает. Выключить или удалить его можно ниже.</p>`}
         ${pluginBlock(p, plCatItem(p), true)}`;
@@ -413,60 +384,77 @@ function connBody(key) {
   return true;
 }
 
-function modalShow() {
-  const m = $("#cn-modal");
+function modalShow(m) {
   m.classList.remove("hidden", "out"); void m.offsetWidth; m.classList.add("in");
 }
 
 // connOpen — открыть окно: ключ «svc:youtube» / «pl:weather» или просто id сервиса (ссылки #connections/youtube).
 export function connOpen(key) {
-  if (!key) return;
-  if (key === "plugins" || key === "services") { CONN.tab = key === "plugins" ? "pl" : "svc"; drawConns(); return true; }
+  const view = connectionView;
+  if (!view || !key) return false;
+  if (key === "plugins" || key === "services") {
+    selectConnectionTab(key === "plugins" ? "pl" : "svc");
+    return true;
+  }
   const items = connItems();
   if (!key.includes(":")) key = items.find((item) => item.id === key)?.key;
   if (!key || !items.some((x) => x.key === key)) return false;
   const tab = key.startsWith("pl:") ? "pl" : "svc";
   if (CONN.tab !== tab) { CONN.tab = tab; CONN.open = ""; drawConns(); }
-  if (!connBody(key)) return false;
+  if (!connBody(key, items)) return false;
   CONN.open = key;
-  modalShow();
+  modalShow(view.modal);
   // на телефоне не фокусируем поле: иначе сразу выпрыгивает клавиатура и закрывает окно
-  if (matchMedia("(hover: hover)").matches) setTimeout(() => $("#cn-card input:not([type=checkbox]), #cn-card textarea, #cn-card .btn.primary")?.focus(), 60);
+  clearTimeout(view.focus);
+  if (matchMedia("(hover: hover)").matches) view.focus = setTimeout(() => {
+    view.modal.querySelector("#cn-card input:not([type=checkbox]), #cn-card textarea, #cn-card .btn.primary")?.focus();
+  }, 60);
   return true;
 }
 
 // connWarn — предупреждение перед неофициальным плагином в том же окне; true — ставим.
-function connWarn(name) {
+function connWarn(view, name) {
   if (plWarned()) return Promise.resolve(true);
+  if (view.cancelWarning) return Promise.resolve(false);
   return new Promise((done) => {
+    const { modal } = view;
     const back = CONN.open;
     CONN.open = "";
-    $("#cn-card").innerHTML = plWarnHtml(name);
-    modalShow();
+    clearTimeout(view.focus);
+    modal.querySelector("#cn-card").innerHTML = plWarnHtml(name);
+    modalShow(modal);
+    modal.querySelector("button[data-close]")?.focus();
     const finish = async (yes) => {
-      if (yes && $("#pl-warn-ok")?.checked) await plMarkWarned();
-      $("#cn-modal").removeEventListener("click", onClick, true);
-      if (back && yes) { CONN.open = back; connBody(back); } else connClose();
+      if (view.cancelWarning !== cancel) return;
+      view.cancelWarning = undefined;
+      modal.removeEventListener("click", onClick, true);
+      if (yes && modal.querySelector("#pl-warn-ok")?.checked) await plMarkWarned();
+      if (connectionView !== view) { done(false); return; }
+      if (back && yes && connBody(back)) CONN.open = back;
+      else connClose();
       done(yes);
     };
+    const cancel = () => { void finish(false); };
     const onClick = (e) => {
-      if (e.target.closest("#pl-warn-yes")) { e.stopPropagation(); finish(true); }
-      else if (e.target.closest("[data-close]")) { e.stopPropagation(); finish(false); }
+      if (e.target.closest("#pl-warn-yes")) { e.stopPropagation(); void finish(true); }
+      else if (e.target.closest("[data-close]")) { e.stopPropagation(); cancel(); }
     };
-    $("#cn-modal").addEventListener("click", onClick, true);
+    view.cancelWarning = cancel;
+    modal.addEventListener("click", onClick, true);
   });
 }
 
-export function connClose() {
-  const m = $("#cn-modal");
+function connClose() {
+  const m = connectionView?.modal;
   CONN.open = "";
   if (!m || m.classList.contains("hidden")) return;
+  clearTimeout(connectionView.focus);
   m.classList.remove("in"); m.classList.add("out");
   setTimeout(() => { if (m.classList.contains("out")) m.classList.add("hidden"); }, 260);
 }
 
-export async function connNetTest(btn, root = document, draw = drawConns) {
-  const result = () => root.querySelector("#net-res");
+export async function connNetTest(btn, root = connectionView?.modal, draw = drawConns) {
+  const result = () => root?.querySelector("#net-res");
   await act(btn, async () => {
     if (result()) result().innerHTML = `<div class="nr"><span class="spin"></span>Проверяю…</div>`;
     let r;
@@ -482,40 +470,78 @@ export async function connNetTest(btn, root = document, draw = drawConns) {
   });
 }
 
-export async function connClick(e) {
-  if (page !== "connections") return;
+async function refreshConnectionState(view) {
+  if (connectionView !== view) return;
+  await reload();
+  if (connectionView === view) drawConns();
+}
+
+export function refreshConnectionCatalog() {
+  const view = connectionView;
+  const requests = [plCatalog(true), plCatalog(true, "community")];
+  drawConns();
+  return Promise.all(requests.map((request) => request.then(() => {
+    if (connectionView === view) drawConns();
+  })));
+}
+
+export function updateConnectionPlugins() {
+  const view = connectionView;
+  return plUpdateAll(() => refreshConnectionState(view));
+}
+
+export async function installConnectionPlugin(plugin, button = null) {
+  const view = connectionView;
+  if (!view || (!plugin.official && !(await connWarn(view, plugin.id))) || connectionView !== view) return;
+  await plInstall(button, plugin.repo, plugin.id, () => refreshConnectionState(view));
+}
+
+export function setConnectionPluginEnabled(id, enabled) {
+  const view = connectionView;
+  return plEnable(id, enabled, () => refreshConnectionState(view));
+}
+
+export function removeConnectionPlugin(id, button = null) {
+  const view = connectionView;
+  return plRemove(button, id, async () => {
+    if (connectionView !== view) return;
+    if (!CONN.open.startsWith("svc:")) connClose();
+    await refreshConnectionState(view);
+  });
+}
+
+export async function uploadConnectionPlugin(file) {
+  const view = connectionView;
+  if (!view || !(await connWarn(view, file.name)) || connectionView !== view) return;
+  await plUpload(file, async (plugin) => {
+    await refreshConnectionState(view);
+    if (connectionView === view && plugin?.id) connOpen(plKey({ ...plugin, repo: plugin.source }));
+  });
+}
+
+async function connClick(e) {
+  const view = connectionView;
+  if (!view || e.currentTarget !== view.modal) return;
   const t = e.target;
   if (t.closest("[data-close]")) return connClose();
-  const tab = t.closest("#cx-tabs [data-tab]");
-  if (tab) { CONN.tab = tab.dataset.tab; drawConns(); return; }
   const go = t.closest("[data-goto]");
-  if (go) { connClose(); setTimeout(() => connOpen(go.dataset.goto), 280); return; }
-  if (t.closest("[data-item] .sw")) return; // переключатель в строке плагина ловит connChange
-  const plOpen = t.closest("[data-pl-open]");
-  if (plOpen) return connOpen(plOpen.dataset.plOpen);
-  const refresh = t.closest("#pl-refresh");
-  if (refresh) return act(refresh, () => Promise.all([
-    plCatalog(true).then(drawConns),
-    plCatalog(true, "community").then(drawConns),
-  ]));
-  const after = async () => { await reload(); drawConns(); };
-  const updateAll = t.closest("#pl-update-all");
-  if (updateAll) return plUpdateAll(updateAll, after);
-  const inst = t.closest("[data-pl-install]");
-  if (inst) {
-    e.stopPropagation();
-    if (!inst.dataset.official && !(await connWarn(inst.dataset.id))) return;
-    return plInstall(inst, inst.dataset.plInstall, inst.dataset.id, after);
+  if (go) {
+    connClose();
+    clearTimeout(view.move);
+    view.move = setTimeout(() => connOpen(go.dataset.goto), 280);
+    return;
   }
+  const after = () => refreshConnectionState(view);
+  const card = view.modal.querySelector("#cn-card");
+  const inst = t.closest("[data-pl-install]");
+  if (inst) return installConnectionPlugin({ id: inst.dataset.id, repo: inst.dataset.plInstall, official: Boolean(inst.dataset.official) }, inst);
   const upd = t.closest("[data-pl-update]");
   if (upd) return plUpdate(upd, upd.dataset.plUpdate, after);
   const del = t.closest("[data-pl-del]");
-  if (del) return plRemove(del, del.dataset.plDel, async () => { const svc = CONN.open.startsWith("svc:"); if (!svc) connClose(); await after(); });
+  if (del) return removeConnectionPlugin(del.dataset.plDel, del);
   const save = t.closest("[data-pl-save]");
-  if (save) return plSave(save, save.dataset.plSave, plValues($("#cn-card")), after);
-  const tile = t.closest("[data-item]");
-  if (tile) return connOpen(tile.dataset.item);
-  return serviceClick(t, $("#cn-card"), after, drawConns);
+  if (save) return plSave(save, save.dataset.plSave, plValues(card), after);
+  return serviceClick(t, card, after, drawConns);
 }
 
 async function serviceClick(t, root, redraw, draw) {
@@ -593,15 +619,14 @@ async function serviceClick(t, root, redraw, draw) {
   }
 }
 
-// connChange — переключатели плагинов и файл плагина (select и checkbox ловим на change).
-export async function connChange(e) {
-  if (page !== "connections") return;
+// Переключатель внутри окна плагина.
+async function connChange(e) {
+  if (e.currentTarget !== connectionView?.modal) return;
   const t = e.target;
-  if (t.dataset.plOn) return plEnable(t.dataset.plOn, t.checked, async () => { await reload(); drawConns(); });
-  if (t.id === "pl-file" && t.files?.[0]) {
-    const f = t.files[0];
-    t.value = "";
-    if (!(await connWarn(f.name))) return;
-    await plUpload(f, async (p) => { await reload(); drawConns(); if (p?.id) connOpen("pl:" + (p.official ? p.id : (p.source || "file") + "/" + p.id)); });
-  }
+  if (!t.dataset.plOn) return;
+  const on = t.checked;
+  t.checked = !on;
+  t.disabled = true;
+  try { await setConnectionPluginEnabled(t.dataset.plOn, on); }
+  finally { t.disabled = false; }
 }
