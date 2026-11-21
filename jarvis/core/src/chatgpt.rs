@@ -387,7 +387,16 @@ pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instr
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
             if !defs.iter().any(|d|d["name"]==name){return Err("Модель вызвала необъявленный инструмент".into());}
             let args = c.get("arguments").and_then(Value::as_str).unwrap_or("");
-            let result = tokio::time::timeout(Duration::from_secs(15), tools.call(name, args)).await.unwrap_or_else(|_| "Не успел: инструмент не ответил за 15 с.".into());
+            let limit = if name == "play_music" { 35 } else { 15 };
+            let result = match tokio::time::timeout(Duration::from_secs(limit), tools.call(name, args)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    if name == "play_music" {
+                        tools.cancel_loading_music().await;
+                    }
+                    format!("Не успел: инструмент не ответил за {limit} с.")
+                }
+            };
             log::info!("подписка: {name}({args}) → {result}");
             if full_output.is_none(){input.push(json!({"type": "function_call", "name": c["name"], "arguments": c["arguments"], "call_id": c["call_id"]}));}
             input.push(json!({"type": "function_call_output", "call_id": c["call_id"], "output": result}));

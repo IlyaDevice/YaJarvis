@@ -202,8 +202,8 @@ impl Youtube {
                 } else {
                     tokio::select! {
                         _ = service.wake.notified() => {}
-                        _ = tokio::time::sleep(Duration::from_secs(600)) => {
-                            service.remote.evict_idle(Duration::from_secs(600)).await;
+                        _ = tokio::time::sleep(Duration::from_secs(1800)) => {
+                            service.remote.evict_idle(Duration::from_secs(1800)).await;
                         }
                     }
                 }
@@ -325,11 +325,12 @@ impl Youtube {
             return Ok(vec![Track::from_id(id)]);
         }
         if personal {
-            let headers = self.account.headers(true).await?;
+            let headers = self.account.web_headers();
             if !headers.is_empty() {
-                let results = self.remote.search(query, headers).await?;
-                if !results.is_empty() {
-                    return Ok(results);
+                match self.remote.search(query, headers).await {
+                    Ok(results) if !results.is_empty() => return Ok(results),
+                    Ok(_) => {}
+                    Err(error) => log::debug!("YouTube: персональный поиск не удался: {error}"),
                 }
             }
         }
@@ -587,8 +588,12 @@ impl Youtube {
     }
 
     async fn related(&self, id: &str) -> Result<Vec<Track>, String> {
-        let auth = self.account.headers(true).await.unwrap_or_default();
-        let tracks = self.remote.related(id, auth).await?;
+        let auth = self.account.web_headers();
+        let tracks = match self.remote.related(id, auth.clone()).await {
+            Ok(tracks) => tracks,
+            Err(_) if !auth.is_empty() => self.remote.related(id, HeaderMap::new()).await?,
+            Err(error) => return Err(error),
+        };
         let state = self.state.lock().unwrap();
         Ok(tracks
             .into_iter()
@@ -799,14 +804,22 @@ impl Youtube {
                 .recommendations(headers)
                 .await
                 .unwrap_or_default();
-            let mut candidates = {
+            let (mut candidates, unplayed) = {
                 let state = self.state.lock().unwrap();
-                feed.into_iter()
-                    .filter(|track| {
-                        !state.history.contains_key(&track.id) && interesting(&query, track)
-                    })
-                    .collect::<Vec<_>>()
+                let unplayed: Vec<_> = feed
+                    .into_iter()
+                    .filter(|track| !state.history.contains_key(&track.id))
+                    .collect();
+                let matched: Vec<_> = unplayed
+                    .iter()
+                    .filter(|track| interesting(&query, track))
+                    .cloned()
+                    .collect();
+                (matched, unplayed)
             };
+            if candidates.is_empty() && !unplayed.is_empty() && genre_terms(&query).is_none() {
+                candidates = unplayed;
+            }
             if candidates.is_empty() {
                 candidates = self.search(&query, true).await?;
             }
@@ -913,8 +926,7 @@ impl Youtube {
     }
 }
 
-fn interesting(query: &str, track: &Track) -> bool {
-    let title = format!("{} {}", track.title, track.author).to_lowercase();
+fn genre_terms(query: &str) -> Option<&'static [&'static str]> {
     let query = query.to_lowercase();
     for (want, terms) in [
         (
@@ -935,8 +947,16 @@ fn interesting(query: &str, track: &Track) -> bool {
         ),
     ] {
         if want.iter().any(|word| query.contains(word)) {
-            return terms.iter().any(|term| title.contains(term));
+            return Some(terms);
         }
+    }
+    None
+}
+
+fn interesting(query: &str, track: &Track) -> bool {
+    let title = format!("{} {}", track.title, track.author).to_lowercase();
+    if let Some(terms) = genre_terms(query) {
+        return terms.iter().any(|term| title.contains(term));
     }
     [
         "подкаст",

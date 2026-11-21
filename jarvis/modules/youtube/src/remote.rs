@@ -65,7 +65,8 @@ impl Remote {
     pub async fn evict_idle(&self, idle: Duration) {
         self.scripts.evict_if_idle(idle).await;
     }
-    pub async fn search(&self, query: &str, headers: HeaderMap) -> Result<Vec<Track>, String> {
+    pub async fn search(&self, query: &str, mut headers: HeaderMap) -> Result<Vec<Track>, String> {
+        strip_bearer(&mut headers);
         let mut body = json!({"context":{"client":web()},"query":query});
         let client = self.host.client().await?;
         for filter in [false, true] {
@@ -109,7 +110,8 @@ impl Remote {
         organic(&response["contents"], &mut tracks, &mut HashSet::new(), 0);
         Ok(tracks)
     }
-    pub async fn related(&self, id: &str, headers: HeaderMap) -> Result<Vec<Track>, String> {
+    pub async fn related(&self, id: &str, mut headers: HeaderMap) -> Result<Vec<Track>, String> {
+        strip_bearer(&mut headers);
         let client = self.host.client().await?;
         let data = post(
             &client,
@@ -161,13 +163,13 @@ impl Remote {
         };
         let mut backup = None;
         if auth.is_empty() && !self.scripts.cached() {
-            backup = Some(vr(&client, id, &visitor).await);
-            if backup.as_ref().is_some_and(|r| {
-                r.as_ref().is_ok_and(|(_, stream)| {
-                    (0.0..=45.0).contains(&stream.duration) && stream.duration > 0.0
-                })
-            }) {
-                return backup.unwrap();
+            self.scripts.warm_background(client.clone());
+            match vr(&client, id, &visitor).await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    log::debug!("YouTube: быстрый плеер ANDROID_VR недоступен: {error}");
+                    backup = Some(Err(error));
+                }
             }
         }
         let tv=async{
@@ -226,6 +228,15 @@ async fn vr(client: &Client, id: &str, visitor: &str) -> Result<(Track, Stream),
 }
 fn web() -> Value {
     json!({"clientName":"WEB","clientVersion":WEB_VERSION,"hl":"ru","gl":"RU"})
+}
+fn strip_bearer(headers: &mut HeaderMap) {
+    if headers
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("Bearer "))
+    {
+        headers.remove(reqwest::header::AUTHORIZATION);
+    }
 }
 async fn post(
     client: &Client,
@@ -591,4 +602,27 @@ fn ad_wait(data: &Value) -> Duration {
         }
     }
     Duration::from_millis(total.min(60_000))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_bearer;
+    use reqwest::header::{AUTHORIZATION, COOKIE, HeaderMap, HeaderName, HeaderValue};
+
+    #[test]
+    fn strip_bearer_removes_oauth_and_keeps_cookies() {
+        let mut h = HeaderMap::new();
+        h.insert(AUTHORIZATION, HeaderValue::from_static("Bearer ya29.test-token"));
+        h.insert(HeaderName::from_static("x-test"), HeaderValue::from_static("ok"));
+        strip_bearer(&mut h);
+        assert!(!h.contains_key(AUTHORIZATION));
+        assert_eq!(h.get("x-test").unwrap(), "ok");
+
+        let mut cookies = HeaderMap::new();
+        cookies.insert(AUTHORIZATION, HeaderValue::from_static("SAPISIDHASH 123_abc"));
+        cookies.insert(COOKIE, HeaderValue::from_static("SID=abc; SAPISID=xyz"));
+        strip_bearer(&mut cookies);
+        assert_eq!(cookies.get(AUTHORIZATION).unwrap(), "SAPISIDHASH 123_abc");
+        assert_eq!(cookies.get(COOKIE).unwrap(), "SID=abc; SAPISID=xyz");
+    }
 }

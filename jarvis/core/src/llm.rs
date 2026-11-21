@@ -143,8 +143,16 @@ async fn run_tool(tools: &Tools, defs: &[Value], call: &Call) -> Result<String, 
     if !defs.iter().any(|def| def["name"] == call.name) {
         return Err("Модель вызвала необъявленный инструмент".into());
     }
-    Ok(tokio::time::timeout(Duration::from_secs(15), tools.call(&call.name, &call.arguments))
-        .await.unwrap_or_else(|_| "Инструмент не ответил за 15 с".into()))
+    let limit = if call.name == "play_music" { 35 } else { 15 };
+    Ok(match tokio::time::timeout(Duration::from_secs(limit), tools.call(&call.name, &call.arguments)).await {
+        Ok(result) => result,
+        Err(_) => {
+            if call.name == "play_music" {
+                tools.cancel_loading_music().await;
+            }
+            format!("Инструмент не ответил за {limit} с")
+        }
+    })
 }
 
 async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, history: &[Turn], text: &str, tools: &Tools, defs: &[Value]) -> Result<String, String> {

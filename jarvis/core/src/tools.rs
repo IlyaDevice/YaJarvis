@@ -27,6 +27,8 @@ pub struct Tools {
     pub music_fast:Option<MusicFastFn>,
     /// Добавить в очередь YouTube.
     pub music_queue: Option<MusicFn>,
+    /// Отменить незавершённый запуск музыки (например, по тайм-ауту инструмента).
+    pub music_cancel: Option<Arc<dyn Fn() -> crate::plugins::BoxFut<()> + Send + Sync>>,
     /// Общая память: «вспомни», «забудь/запомни».
     pub memory: Option<Arc<crate::memory::Memory>>,
 }
@@ -49,7 +51,12 @@ fn as_str(v: &Value) -> String {
 
 impl Tools {
     pub fn new(host: Arc<Host>, store: Store) -> Tools {
-        Tools { host, store, music: None, music_ctl: None, music_fast:None, music_queue: None, memory: None }
+        Tools { host, store, music: None, music_ctl: None, music_fast:None, music_queue: None, music_cancel: None, memory: None }
+    }
+    pub async fn cancel_loading_music(&self) {
+        if let Some(cancel) = &self.music_cancel {
+            cancel().await;
+        }
     }
     /// Каталог из контекста определяет доступность инструментов уже в первой реплике.
     pub async fn prepare(&self)->(String,Vec<Value>) {

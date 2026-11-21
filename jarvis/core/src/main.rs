@@ -313,6 +313,13 @@ async fn run(f: Flags, store: settings::Store) {
         })
     });
     tools.music_fast=Some({let (music,host)=(music.clone(),host.clone());Arc::new(move|text|{let (music,host)=(music.clone(),host.clone());Box::pin(async move{music.control(&host,&text).await})})});
+    tools.music_cancel = Some({
+        let (music, host) = (music.clone(), host.clone());
+        Arc::new(move || {
+            let (music, host) = (music.clone(), host.clone());
+            Box::pin(async move { music.cancel_loading(&host).await })
+        })
+    });
     let tools = Arc::new(tools);
     let engine = engine::Engine::new(
         tokio::runtime::Handle::current(),

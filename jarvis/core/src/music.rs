@@ -95,6 +95,17 @@ impl Music {
         });
     }
 
+    pub async fn cancel_loading(&self, host: &Host) {
+        self.cancel.send_modify(|n| *n = n.wrapping_add(1));
+        let should_stop = {
+            let s = self.state.lock().unwrap();
+            !s.playing && !s.paused
+        };
+        if should_stop {
+            let _ = self.call(host, "stop", Value::Null).await;
+        }
+    }
+
     pub async fn alice_started(&self, host: &Host) {
         let from_button = {
             let mut button = self.button.lock().unwrap();
