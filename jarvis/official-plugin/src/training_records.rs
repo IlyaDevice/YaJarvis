@@ -20,7 +20,10 @@ use std::{
 
 const RATE: usize = 16_000;
 const MAX_CLIP: u64 = 6 << 20;
-pub const MAX_LIMIT_MB: i64 = 50;
+pub const MAX_LIMIT_MB: i64 = 100;
+const MIN_FREE_MB: u64 = 5;
+const MIN_FREE_BYTES: u64 = MIN_FREE_MB << 20;
+const SNAPSHOT_CLIPS_LIMIT: usize = 2500;
 const KINDS: [&str; 4] = ["pos", "false", "near", "bg"];
 const CLIPS: &str = "rust-clips";
 const OLD_CLIPS: &str = "clips";
@@ -273,22 +276,38 @@ impl Records {
         let _lock = self.files.lock().unwrap();
         let clips = self.list();
         let counts = KINDS.map(|kind| (kind, clips.iter().filter(|c| c.kind == kind).count()));
-        let used = |storage| {
+        let used_bytes = |storage| {
             clips
                 .iter()
                 .filter(|c| c.storage == storage)
                 .map(|c| c.size)
                 .sum::<u64>()
-                >> 10
         };
+        let used_clips = used_bytes(CLIPS);
+        let max_limit_mb =
+            max_limit_mb_for_disk(used_clips, crate::storage::free_bytes(&self.root));
         let offload = self.offload.lock().unwrap();
-        json!({"mode":mode,"limit_mb":limit.clamp(1,MAX_LIMIT_MB),"prev_model":previous,
-            "used_kb":used(CLIPS),"legacy_kb":used(OLD_CLIPS),"local":clips.len(),
+        json!({"mode":mode,"limit_mb":limit.clamp(1,MAX_LIMIT_MB),"max_limit_mb":max_limit_mb,"prev_model":previous,
+            "used_kb":used_clips >> 10,"legacy_kb":used_bytes(OLD_CLIPS) >> 10,"local":clips.len(),
             "offload":{"connected":self.background.short_upload().is_some(),"running":offload.running,"sent":offload.sent,"error":offload.error},
-            "counts":counts.into_iter().collect::<std::collections::BTreeMap<_,_>>(),"clips":clips.iter().take(400).collect::<Vec<_>>()})
+            "counts":counts.into_iter().collect::<std::collections::BTreeMap<_,_>>(),"clips":clips.iter().take(SNAPSHOT_CLIPS_LIMIT).collect::<Vec<_>>()})
     }
 
     fn save(&self, kind: &str, pcm: &[i16], prob: f32, limit_mb: i64, connected: bool) -> Result<bool, String> {
+        self.save_with_free(kind, pcm, prob, limit_mb, connected, || {
+            crate::storage::free_bytes(&self.root)
+        })
+    }
+
+    fn save_with_free(
+        &self,
+        kind: &str,
+        pcm: &[i16],
+        prob: f32,
+        limit_mb: i64,
+        connected: bool,
+        free_bytes: impl FnOnce() -> Option<u64>,
+    ) -> Result<bool, String> {
         let _lock = self.files.lock().unwrap();
         if self.stopped.load(Ordering::Acquire) {
             return Ok(false);
@@ -300,7 +319,6 @@ impl Records {
         } else {
             wav
         };
-        let limit = (limit_mb.clamp(1, MAX_LIMIT_MB) as u64) << 20;
         let name = format!(
             "{}-{}_p{}.wav",
             jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S"),
@@ -309,17 +327,19 @@ impl Records {
         );
         let path = self.path(CLIPS, kind, &name)?;
         fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        if cfg!(unix) && crate::storage::free_mb(&self.root) < 4 {
-            if connected {
-                return Ok(true);
-            }
-            return Err("на колонке осталось меньше 4 МБ".into());
-        }
         let mut clips = self.list_dir(CLIPS);
         let mut used = clips.iter().map(|clip| clip.size).sum::<u64>();
+        let free = free_bytes();
+        let requested = (limit_mb.clamp(1, MAX_LIMIT_MB) as u64) << 20;
+        let disk_budget =
+            free.map(|bytes| used.saturating_add(bytes).saturating_sub(MIN_FREE_BYTES));
+        let limit = disk_budget.map_or(requested, |budget| requested.min(budget));
+        let data_len = data.len() as u64;
         if connected {
-            let pressure = used + data.len() as u64 > limit;
-            if used + data.len() as u64 <= limit + UPLOAD_CUSHION {
+            let pressure = used.saturating_add(data_len) > limit;
+            let cushion = requested.saturating_add(UPLOAD_CUSHION);
+            let write_cap = disk_budget.map_or(cushion, |budget| cushion.min(budget));
+            if used.saturating_add(data_len) <= write_cap {
                 write_atomic(&path, &data, 0o600).map_err(|error| error.to_string())?;
             }
             return Ok(pressure);
@@ -332,17 +352,20 @@ impl Records {
             )
         });
         for clip in clips {
-            if used + data.len() as u64 <= limit {
+            if used.saturating_add(data_len) <= limit {
                 break;
             }
             if clip.reviewed {
-                return Ok(false);
+                break;
             }
             if fs::remove_file(self.path(CLIPS, &clip.kind, &clip.name)?).is_ok() {
                 used -= clip.size;
             }
         }
-        if used + data.len() as u64 > limit {
+        if used.saturating_add(data_len) > limit {
+            if disk_budget.is_some_and(|budget| used.saturating_add(data_len) > budget) {
+                return Err(format!("на колонке осталось меньше {MIN_FREE_MB} МБ"));
+            }
             return Ok(false);
         }
         write_atomic(&path, &data, 0o600).map_err(|e| e.to_string())?;
@@ -421,8 +444,13 @@ impl Records {
     }
 
     pub fn archive(&self, data_dir: &Path, sensitivity: i64, output: impl Write) -> Result<(), String> {
-        let _lock = self.files.lock().unwrap();
-        let clips = self.list();
+        let model = fs::read(self.root.join("wake.bin.tuned"))
+            .or_else(|_| fs::read(data_dir.join("wake.bin")))
+            .map_err(|e| e.to_string())?;
+        let clips = {
+            let _lock = self.files.lock().unwrap();
+            self.list()
+        };
         let mut zip = zip::ZipWriter::new(ArchiveWriter::new(output));
         zip.set_flush_on_finish_file(true);
         let options = archive_options();
@@ -430,9 +458,6 @@ impl Records {
             zip.start_file(name, options)?;
             Ok(zip.write_all(data)?)
         };
-        let model = fs::read(self.root.join("wake.bin.tuned"))
-            .or_else(|_| fs::read(data_dir.join("wake.bin")))
-            .map_err(|e| e.to_string())?;
         add("wake.bin", &model).map_err(|e| e.to_string())?;
         add(
             "wake.json",
@@ -445,11 +470,32 @@ impl Records {
         )
         .map_err(|e| e.to_string())?;
         for clip in clips {
-            let data = read_clip(&self.path(clip.storage, &clip.kind, &clip.name)?)?;
+            if self.stopped.load(Ordering::Acquire) {
+                return Err("Плагин остановлен".into());
+            }
+            let path = self.path(clip.storage, &clip.kind, &clip.name)?;
+            let data = {
+                let _lock = self.files.lock().unwrap();
+                read_clip_if_present(&path)?
+            };
+            let Some(data) = data else {
+                continue;
+            };
             add(&format!("{}/{}", clip.kind, clip.name), &data).map_err(|e| e.to_string())?;
         }
         let mut writer = zip.finish().map_err(|e| e.to_string())?;
         writer.flush().map_err(|e| e.to_string())
+    }
+}
+
+fn max_limit_mb_for_disk(used: u64, free: Option<u64>) -> i64 {
+    match free {
+        Some(free) => {
+            let budget_mb =
+                (used.saturating_add(free).saturating_sub(MIN_FREE_BYTES) >> 20) as i64;
+            budget_mb.clamp(1, MAX_LIMIT_MB)
+        }
+        None => MAX_LIMIT_MB,
     }
 }
 
@@ -519,21 +565,27 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn read_clip(path: &Path) -> Result<Vec<u8>, String> {
-    if !path
-        .symlink_metadata()
-        .is_ok_and(|m| m.is_file() && m.len() <= MAX_CLIP)
-    {
-        return Err("Запись не найдена".into());
+    read_clip_if_present(path)?.ok_or_else(|| "Запись не найдена".into())
+}
+
+fn read_clip_if_present(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match path.symlink_metadata() {
+        Ok(m) if m.is_file() && m.len() <= MAX_CLIP => {}
+        Ok(_) => return Err("Запись не найдена".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
     }
     let mut bytes = Vec::new();
-    fs::File::open(path)
-        .and_then(|f| f.take(MAX_CLIP + 1).read_to_end(&mut bytes))
-        .map_err(|e| e.to_string())?;
+    match fs::File::open(path).and_then(|f| f.take(MAX_CLIP + 1).read_to_end(&mut bytes)) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
     if bytes.len() as u64 > MAX_CLIP {
         return Err("Запись слишком большая".into());
     }
     if !bytes.starts_with(GZIP) {
-        return Ok(bytes);
+        return Ok(Some(bytes));
     }
     let mut wav = Vec::new();
     GzDecoder::new(bytes.as_slice())
@@ -543,7 +595,7 @@ fn read_clip(path: &Path) -> Result<Vec<u8>, String> {
     if wav.len() as u64 > MAX_CLIP || !wav.starts_with(b"RIFF") {
         return Err("Повреждена сжатая запись".into());
     }
-    Ok(wav)
+    Ok(Some(wav))
 }
 
 fn compress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -632,13 +684,133 @@ mod tests {
         fs::create_dir_all(reviewed.parent().unwrap()).unwrap();
         fs::File::create(&reviewed).unwrap().set_len(5 << 20).unwrap();
 
-        records.save("near", &[241; 16_000], 0.49, 50, false).unwrap();
+        records
+            .save_with_free("near", &[241; 16_000], 0.49, 100, false, || Some(200 << 20))
+            .unwrap();
 
-        let snapshot = records.snapshot(true, 50, false);
-        assert_eq!(snapshot["limit_mb"], 50);
+        let snapshot = records.snapshot(true, 100, false);
+        assert_eq!(snapshot["limit_mb"], 100);
         assert_eq!(snapshot["local"], 2);
         assert!(reviewed.is_file());
-        assert_eq!(records.snapshot(true, 51, false)["limit_mb"], 50);
+        assert_eq!(records.snapshot(true, 101, false)["limit_mb"], 100);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enforces_100_mib_max_and_keeps_5_mib_free_on_disk() {
+        assert_eq!(max_limit_mb_for_disk(10 << 20, Some(45 << 20)), 50);
+        assert_eq!(max_limit_mb_for_disk(0, Some(200 << 20)), 100);
+        assert_eq!(max_limit_mb_for_disk(0, Some(3 << 20)), 1);
+
+        let root = std::env::temp_dir().join(format!("jarvis-training-free-{}", rand_hex(5)));
+        let records = Records::new(root.clone());
+        let near = root.join(CLIPS).join("near");
+        let pos = root.join(CLIPS).join("pos");
+        fs::create_dir_all(&near).unwrap();
+        fs::create_dir_all(&pos).unwrap();
+
+        let old_path = near.join("old.wav");
+        fs::File::create(&old_path).unwrap().set_len(200 << 10).unwrap();
+        records
+            .save_with_free("near", &[241; 16_000], 0.49, 100, false, || Some(5 << 20))
+            .unwrap();
+        assert!(!old_path.exists());
+        assert_eq!(records.list_dir(CLIPS).len(), 1);
+
+        fs::remove_file(near.join(records.list_dir(CLIPS)[0].name.as_str())).unwrap();
+        let keep_path = pos.join("keep_r.wav");
+        fs::File::create(&keep_path).unwrap().set_len(200 << 10).unwrap();
+
+        let err = records
+            .save_with_free("near", &[241; 16_000], 0.49, 100, false, || Some(4 << 20))
+            .unwrap_err();
+        assert!(err.contains("5 МБ"), "unexpected err: {err}");
+        assert!(keep_path.is_file());
+        assert_eq!(records.list_dir(CLIPS).len(), 1);
+
+        let pressure = records
+            .save_with_free("near", &[241; 16_000], 0.49, 100, true, || Some(5 << 20))
+            .unwrap();
+        assert!(pressure);
+        assert_eq!(records.list_dir(CLIPS).len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn archive_does_not_hold_files_lock_while_streaming_and_skips_removed_clips() {
+        use std::sync::mpsc;
+
+        struct BlockingWriter {
+            started: Option<mpsc::Sender<()>>,
+            proceed: Option<mpsc::Receiver<()>>,
+            inner: Vec<u8>,
+        }
+
+        impl Write for BlockingWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if let Some(started) = self.started.take() {
+                    let _ = started.send(());
+                    if let Some(proceed) = self.proceed.take() {
+                        let _ = proceed.recv();
+                    }
+                }
+                self.inner.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        struct SharedWriter(Arc<Mutex<BlockingWriter>>);
+
+        impl Write for SharedWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().write(buf)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("jarvis-archive-lock-{}", rand_hex(5)));
+        let records = Arc::new(Records::new(root.clone()));
+        let pos = root.join(CLIPS).join("pos");
+        fs::create_dir_all(&pos).unwrap();
+        let wav = pcm_wav(&[123; 16_000]);
+        fs::write(pos.join("keep.wav"), &wav).unwrap();
+        fs::write(pos.join("gone.wav"), &wav).unwrap();
+        fs::write(root.join("wake.bin"), b"model").unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        let writer = Arc::new(Mutex::new(BlockingWriter {
+            started: Some(started_tx),
+            proceed: Some(proceed_rx),
+            inner: Vec::new(),
+        }));
+
+        let records_bg = records.clone();
+        let root_bg = root.clone();
+        let writer_bg = writer.clone();
+        let handle = std::thread::spawn(move || {
+            records_bg.archive(&root_bg, 8, SharedWriter(writer_bg))
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(records.snapshot(true, 100, false)["local"], 2);
+        records.move_clip("pos", "gone.wav", "delete").unwrap();
+        let _ = proceed_tx.send(());
+
+        handle.join().unwrap().unwrap();
+        let data = writer.lock().unwrap().inner.clone();
+        let mut zip = zip::ZipArchive::new(Cursor::new(data)).unwrap();
+        assert!(zip.by_name("wake.bin").is_ok());
+        assert!(zip.by_name("pos/keep.wav").is_ok());
+        assert!(zip.by_name("pos/gone.wav").is_err());
+        drop(zip);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -691,7 +863,8 @@ mod tests {
             fs::write(clips.join(format!("clip-{index}.wav")), &wav).unwrap();
         }
         let stored = wav.len() * 9 + compressed.len();
-        let limit = (MAX_LIMIT_MB as usize) << 20;
+        let limit = 50usize << 20;
+        assert!(limit <= (MAX_LIMIT_MB as usize) << 20);
         assert!(((49 << 20)..limit).contains(&stored));
         assert!(wav.len() * 10 > limit);
 

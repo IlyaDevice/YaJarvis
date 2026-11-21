@@ -345,7 +345,7 @@ mod tests {
         s.timezone = "Europe/Minsk".into();
         s.home_via = "alice".into();
         s.password_hash = "secret".into();
-        s.train_limit_mb = 50;
+        s.train_limit_mb = 100;
         s.vpn.insert("chatgpt".into(), true);
         patch_settings(
             &mut s,
@@ -354,7 +354,7 @@ mod tests {
         .unwrap();
         assert_eq!(s.password_hash, "secret");
         assert_eq!(s.volume, 100);
-        assert_eq!(s.train_limit_mb, 50);
+        assert_eq!(s.train_limit_mb, 100);
         assert!(s.radio_off);
         assert!(!s.wake_reply_enabled);
         assert!(s.wake_enabled);

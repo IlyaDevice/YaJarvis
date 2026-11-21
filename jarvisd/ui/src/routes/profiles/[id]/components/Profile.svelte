@@ -120,7 +120,7 @@
       if (signal.aborted) return;
       clearDirty();
       toast("Удалено");
-      await goto("/");
+      await goto("/", { replaceState: true });
     });
   }
 </script>

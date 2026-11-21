@@ -28,20 +28,31 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-pub fn free_mb(path: &Path) -> u64 {
+pub fn free_bytes(path: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
-        if let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
-            let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-            if unsafe { libc::statvfs(path.as_ptr(), status.as_mut_ptr()) } == 0 {
-                let status = unsafe { status.assume_init() };
-                return (status.f_bavail as u64 * status.f_frsize as u64) >> 20;
+        for candidate in path.ancestors() {
+            if let Ok(path) = std::ffi::CString::new(candidate.as_os_str().as_bytes()) {
+                let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+                if unsafe { libc::statvfs(path.as_ptr(), status.as_mut_ptr()) } == 0 {
+                    let status = unsafe { status.assume_init() };
+                    return Some((status.f_bavail as u64).saturating_mul(status.f_frsize as u64));
+                }
             }
         }
+        None
     }
-    let _ = path;
-    0
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[allow(dead_code)]
+pub fn free_mb(path: &Path) -> u64 {
+    free_bytes(path).map_or(0, |bytes| bytes >> 20)
 }
 
 pub fn user_agent() -> String {

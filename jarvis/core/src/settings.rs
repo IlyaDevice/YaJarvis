@@ -15,7 +15,7 @@ use std::{
     },
 };
 
-pub const MAX_TRAIN_LIMIT_MB: i64 = 50;
+pub const MAX_TRAIN_LIMIT_MB: i64 = 100;
 
 /// Go пишет пустой список как null: читаем его как пустой.
 pub fn nd<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {

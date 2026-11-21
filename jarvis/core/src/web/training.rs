@@ -154,17 +154,17 @@ async fn archive(app: App, sensitivity: i64) -> Result<(Body, Option<u64>), Stri
     if let Ok((socket, listener)) = training_io::ArchiveSocket::bind() {
         let mut params = params;
         params["socket"] = json!(socket.path());
-        let mut request = tokio::spawn(async move {
+        let mut request = AbortOnDrop::new(tokio::spawn(async move {
             training_io::call(&app.plugins, "training.archive", params, ARCHIVE_TIMEOUT).await
-        });
+        }));
         return tokio::select! {
             biased;
             accepted = listener.accept() => {
                 let (stream, _) = accepted.map_err(|error| error.to_string())?;
-                let body = download_stream(stream, async move {
-                    request.await.map_err(io::Error::other)?.map_err(io::Error::other)?;
-                    Ok(())
-                });
+                drop(listener);
+                drop(socket);
+                drop(transfer);
+                let body = start_stream(stream, request).await?;
                 Ok((body, None))
             }
             result = &mut request => {
@@ -175,6 +175,74 @@ async fn archive(app: App, sensitivity: i64) -> Result<(Body, Option<u64>), Stri
     }
     training_io::call(&app.plugins, "training.archive", params, ARCHIVE_TIMEOUT).await?;
     archive_file(transfer).await
+}
+
+#[cfg(any(unix, test))]
+struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
+
+#[cfg(any(unix, test))]
+impl<T> AbortOnDrop<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self(Some(handle))
+    }
+}
+
+#[cfg(any(unix, test))]
+impl<T> Future for AbortOnDrop<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let ready =
+            std::pin::Pin::new(self.0.as_mut().expect("polled after completion")).poll(cx);
+        if ready.is_ready() {
+            self.0 = None;
+        }
+        ready
+    }
+}
+
+#[cfg(any(unix, test))]
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
+#[cfg(any(unix, test))]
+async fn start_stream(
+    mut stream: impl AsyncRead + Send + Unpin + 'static,
+    mut request: AbortOnDrop<Result<Value, String>>,
+) -> Result<Body, String> {
+    let mut first = vec![0; 64 * 1024];
+    let (len, pending) = tokio::select! {
+        biased;
+        read = stream.read(&mut first) => {
+            (read.map_err(|error| error.to_string())?, Some(request))
+        }
+        result = &mut request => {
+            result.map_err(|error| error.to_string())??;
+            let len = stream.read(&mut first).await.map_err(|error| error.to_string())?;
+            (len, None)
+        }
+    };
+    if len == 0 {
+        if let Some(request) = pending {
+            request.await.map_err(|error| error.to_string())??;
+        }
+        return Err("Пустой архив".into());
+    }
+    first.truncate(len);
+    Ok(download_stream_from(Some(Bytes::from(first)), stream, async move {
+        if let Some(request) = pending {
+            request.await.map_err(io::Error::other)?.map_err(io::Error::other)?;
+        }
+        Ok(())
+    }))
 }
 
 async fn archive_file(transfer: Transfer) -> Result<(Body, Option<u64>), String> {
@@ -193,17 +261,31 @@ fn download_stream(
     reader: impl AsyncRead + Send + Unpin + 'static,
     finish: impl Future<Output = io::Result<()>> + Send + 'static,
 ) -> Body {
-    Body::from_stream(try_unfold((reader, finish), |(mut reader, finish)| async move {
-        let mut chunk = vec![0; 64 * 1024];
-        let len = reader.read(&mut chunk).await?;
-        if len == 0 {
-            drop(reader);
-            finish.await?;
-            return Ok::<_, io::Error>(None);
-        }
-        chunk.truncate(len);
-        Ok(Some((Bytes::from(chunk), (reader, finish))))
-    }))
+    download_stream_from(None, reader, finish)
+}
+
+fn download_stream_from(
+    first: Option<Bytes>,
+    reader: impl AsyncRead + Send + Unpin + 'static,
+    finish: impl Future<Output = io::Result<()>> + Send + 'static,
+) -> Body {
+    Body::from_stream(try_unfold(
+        (first, reader, finish),
+        |(mut first, mut reader, finish)| async move {
+            if let Some(chunk) = first.take() {
+                return Ok(Some((chunk, (None, reader, finish))));
+            }
+            let mut chunk = vec![0; 64 * 1024];
+            let len = reader.read(&mut chunk).await?;
+            if len == 0 {
+                drop(reader);
+                finish.await?;
+                return Ok::<_, io::Error>(None);
+            }
+            chunk.truncate(len);
+            Ok(Some((Bytes::from(chunk), (None, reader, finish))))
+        },
+    ))
 }
 
 async fn background(State(app): State<App>) -> Response {
@@ -287,5 +369,68 @@ mod tests {
         assert!(chunk.len() < data.len());
         drop(chunks);
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn start_stream_returns_producer_error_before_sending_body() {
+        let (client, server) = tokio::io::duplex(64);
+        let request = AbortOnDrop::new(tokio::spawn(async move {
+            drop(server);
+            Err::<Value, String>("missing wake.bin".into())
+        }));
+        let Err(error) = start_stream(client, request).await else {
+            panic!("expected producer error");
+        };
+        assert_eq!(error, "missing wake.bin");
+    }
+
+    #[tokio::test]
+    async fn start_stream_succeeds_when_producer_finishes_before_first_read() {
+        use tokio::io::AsyncWriteExt;
+
+        let (client, mut server) = tokio::io::duplex(64);
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let request = AbortOnDrop::new(tokio::spawn(async move {
+            server.write_all(b"tiny zip").await.unwrap();
+            drop(server);
+            let _ = done_tx.send(());
+            Ok::<Value, String>(Value::Null)
+        }));
+        done_rx.await.unwrap();
+        tokio::task::yield_now().await;
+
+        let body = start_stream(client, request).await.unwrap();
+        let mut chunks = body.into_data_stream();
+        let mut collected = Vec::new();
+        while let Some(chunk) = chunks.next().await {
+            collected.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(&collected, b"tiny zip");
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_cancels_spawned_task() {
+        struct Notify(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Notify {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let guard = AbortOnDrop::new(tokio::spawn(async move {
+            let _notify = Notify(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        started_rx.await.unwrap();
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(2), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

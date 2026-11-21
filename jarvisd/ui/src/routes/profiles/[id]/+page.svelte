@@ -9,7 +9,7 @@
   let base = $derived(S.profiles.find((profile) => profile.id === id));
 
   $effect(() => {
-    if (!isNew && !base) void goto("/", { replace: true });
+    if (!isNew && !base) void goto("/", { replaceState: true });
   });
 </script>
 

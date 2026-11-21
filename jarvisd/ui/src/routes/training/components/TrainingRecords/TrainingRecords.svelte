@@ -1,6 +1,6 @@
 <script module>
   const pageSize = 40;
-  const storageLimits = [1, 2, 3, 4, 5, 10, 20, 30, 40, 50];
+  const storageLimits = [1, 2, 3, 4, 5, 10, 20, 30, 40, 50, 75, 100];
   let archiveView = { filter: "all", limit: pageSize, skipped: new Set() };
 </script>
 
@@ -44,9 +44,13 @@
     ["todo", "Не проверено", clips.filter(needsReview).length],
   ]);
   let busy = $derived(pending || Boolean(error));
-  let limitOptions = $derived(data && !storageLimits.includes(data.limit_mb)
-    ? [...storageLimits, data.limit_mb].sort((a, b) => a - b)
-    : storageLimits);
+  let maxLimit = $derived(data?.max_limit_mb ?? 100);
+  let limitOptions = $derived.by(() => {
+    const options = storageLimits.filter((megabytes) => megabytes <= maxLimit);
+    if (maxLimit >= 1 && !options.includes(maxLimit)) options.push(maxLimit);
+    if (data && !options.includes(data.limit_mb)) options.push(data.limit_mb);
+    return options.sort((a, b) => a - b);
+  });
 
   onMount(() => {
     void run(refresh);
@@ -185,6 +189,9 @@
           {/each}
         </select>
       </div>
+      {#if data.max_limit_mb && data.max_limit_mb < 100}
+        <p class="note">Доступно до {data.max_limit_mb} МБ из 100 МБ — минимум 5 МБ всегда остаётся свободно на диске.</p>
+      {/if}
       <p class="note">
         {hasCloud
           ? "Когда лимит заполнен, 10 самых старых непроверенных записей отправляются в подключённое облако одним ZIP."

@@ -1,9 +1,10 @@
 <script>
   import { onMount } from "svelte";
-  import { afterNavigate, beforeNavigate } from "$app/navigation";
+  import { afterNavigate, beforeNavigate, goto } from "$app/navigation";
   import { page } from "$app/state";
   import Shell from "#components/Shell/Shell.svelte";
   import { api, dirty, setDirty, toast } from "#helpers/core.js";
+  import { legacyHashPath } from "#helpers/paths.js";
   import { setPanel } from "#state/panelContext.js";
   import { S, access, readJournal, readOrb, readSidebar, reload, routeRequests, showGate, speaker } from "#state/panelState.js";
   import { musicData, refreshVolume } from "#state/player.js";
@@ -32,6 +33,8 @@
   afterNavigate(() => setDirty(false));
 
   onMount(() => {
+    const legacyPath = location.pathname === "/" ? legacyHashPath(location.hash) : "";
+    if (legacyPath) void goto(legacyPath, { replaceState: true });
     const unsubscribeRoutes = routeRequests.subscribe(() => setDirty(false));
     const unsubscribeAccess = access.subscribe(({ status }) => {
       stopPolling();
