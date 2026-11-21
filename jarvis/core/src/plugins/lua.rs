@@ -26,10 +26,22 @@ pub struct Script {
     tools: Vec<Value>,
     commands: bool,
     chat: bool,
+    stt: bool,
+    tts: bool,
+    tts_voices: bool,
     status: Arc<Mutex<String>>,
     stopped: Arc<AtomicBool>,
     /// Закрывается, когда поток плагина завершился: после stop() таймеры уже ничего не пишут.
     exited: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+struct Capabilities {
+    tools: Vec<Value>,
+    commands: bool,
+    chat: bool,
+    stt: bool,
+    tts: bool,
+    tts_voices: bool,
 }
 
 struct Vm {
@@ -50,7 +62,7 @@ impl Vm {
         status: Arc<Mutex<String>>,
         stopped: Arc<AtomicBool>,
         runtime: tokio::runtime::Handle,
-    ) -> mlua::Result<(Self, Vec<Value>, bool, bool)> {
+    ) -> mlua::Result<(Self, Capabilities)> {
         let root = dir.canonicalize().map_err(mlua::Error::external)?;
         let main = dir
             .join(&m.main)
@@ -67,7 +79,7 @@ impl Vm {
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
             LuaOptions::default(),
         )?;
-        lua.set_memory_limit(8 * 1024 * 1024)?;
+        lua.set_memory_limit(12 * 1024 * 1024)?;
         // Нет загрузки файлов/байткода, package, os, io, debug и корутин, обходящих hook.
         for name in ["dofile", "loadfile", "load", "collectgarbage"] {
             lua.globals().set(name, mlua::Value::Nil)?;
@@ -201,6 +213,15 @@ impl Vm {
         if chat != m.provides("llm") {
             return Err(mlua::Error::external("Для текстового провайдера нужны provides: [\"llm\"] и функция chat"));
         }
+        let stt = exports.get::<Option<Function>>("transcribe")?.is_some();
+        if stt != m.provides("stt") {
+            return Err(mlua::Error::external("Для провайдера распознавания нужны provides: [\"stt\"] и функция transcribe"));
+        }
+        let tts = exports.get::<Option<Function>>("speak")?.is_some();
+        if tts != m.provides("tts") {
+            return Err(mlua::Error::external("Для провайдера озвучки нужны provides: [\"tts\"] и функция speak"));
+        }
+        let tts_voices = tts && exports.get::<Option<Function>>("voices")?.is_some();
         let vm = Self {
             lua,
             exports,
@@ -210,11 +231,24 @@ impl Vm {
             timers,
         };
         vm.lifecycle("init")?;
-        Ok((vm, defs, commands, chat))
+        Ok((
+            vm,
+            Capabilities {
+                tools: defs,
+                commands,
+                chat,
+                stt,
+                tts,
+                tts_voices,
+            },
+        ))
+    }
+    fn budget_for(&self, wall_secs: u64) {
+        *self.deadline.lock().unwrap() = Instant::now() + Duration::from_secs(2);
+        *self.wall.lock().unwrap() = Instant::now() + Duration::from_secs(wall_secs);
     }
     fn budget(&self) {
-        *self.deadline.lock().unwrap() = Instant::now() + Duration::from_secs(2);
-        *self.wall.lock().unwrap() = Instant::now() + Duration::from_secs(20);
+        self.budget_for(20);
     }
     fn tick(&self) {
         for (id, function) in api::due(&self.timers) {
@@ -233,16 +267,34 @@ impl Vm {
         Ok(())
     }
     fn call(&self, name: &str, args: Value) -> mlua::Result<Value> {
-        self.budget();
-        let f = if name == "command" {
-            self.exports.get::<Function>("command")?
-        } else if name == "llm.chat" {
-            self.exports.get::<Function>("chat")?
-        } else {
-            self.handlers
-                .get(name)
-                .ok_or_else(|| mlua::Error::external("нет инструмента"))?
-                .clone()
+        let f = match name {
+            "stt.transcribe" => {
+                self.budget_for(30);
+                self.exports.get::<Function>("transcribe")?
+            }
+            "tts.speak" => {
+                self.budget_for(30);
+                self.exports.get::<Function>("speak")?
+            }
+            "tts.voices" => {
+                self.budget_for(20);
+                self.exports.get::<Function>("voices")?
+            }
+            "command" => {
+                self.budget();
+                self.exports.get::<Function>("command")?
+            }
+            "llm.chat" => {
+                self.budget();
+                self.exports.get::<Function>("chat")?
+            }
+            _ => {
+                self.budget();
+                self.handlers
+                    .get(name)
+                    .ok_or_else(|| mlua::Error::external("нет инструмента"))?
+                    .clone()
+            }
         };
         let result: mlua::Value = f.call(self.lua.to_value(&args)?)?;
         self.lua.from_value(result)
@@ -278,7 +330,7 @@ impl Script {
             .name(format!("lua-{}", m.id))
             .spawn(move || {
                 let _exit = exit_tx; // уходит последним, после vm: тогда stop() знает, что поток закончил
-                let (vm, defs, commands, chat) = match Vm::open(
+                let (vm, caps) = match Vm::open(
                     host,
                     &m,
                     dir,
@@ -293,7 +345,7 @@ impl Script {
                         return;
                     }
                 };
-                if ready.send(Ok((defs, commands, chat))).is_err() {
+                if ready.send(Ok(caps)).is_err() {
                     return;
                 }
                 while !stop.load(Ordering::Relaxed) {
@@ -325,12 +377,15 @@ impl Script {
                 drop(vm); // таймеры и хранилище закрываются до сигнала о выходе
             })
             .map_err(|e| e.to_string())?;
-        let (tools, commands, chat) = wait.await.map_err(|e| e.to_string())??;
+        let caps = wait.await.map_err(|e| e.to_string())??;
         Ok(Arc::new(Self {
             tx,
-            tools,
-            commands,
-            chat,
+            tools: caps.tools,
+            commands: caps.commands,
+            chat: caps.chat,
+            stt: caps.stt,
+            tts: caps.tts,
+            tts_voices: caps.tts_voices,
             status,
             stopped,
             exited: Mutex::new(Some(exited)),
@@ -344,6 +399,9 @@ impl Script {
         }
     }
     async fn request(&self, name: &str, args: Value) -> Result<Value, String> {
+        self.request_timeout(name, args, Duration::from_secs(21)).await
+    }
+    async fn request_timeout(&self, name: &str, args: Value, timeout: Duration) -> Result<Value, String> {
         if self.stopped.load(Ordering::Relaxed) {
             return Err("плагин остановлен".into());
         }
@@ -351,7 +409,7 @@ impl Script {
         self.tx
             .try_send(Request::Call(name.into(), args, tx))
             .map_err(|e| e.to_string())?;
-        tokio::time::timeout(Duration::from_secs(21), rx)
+        tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| "Lua: время ожидания истекло".to_string())?
             .map_err(|e| e.to_string())?
@@ -361,11 +419,47 @@ impl Script {
         self.chat && !self.stopped.load(Ordering::Relaxed)
     }
 
+    pub fn supports_stt(&self) -> bool {
+        self.stt && !self.stopped.load(Ordering::Relaxed)
+    }
+
+    pub fn supports_tts(&self) -> bool {
+        self.tts && !self.stopped.load(Ordering::Relaxed)
+    }
+
+    pub fn supports_tts_voices(&self) -> bool {
+        self.tts_voices && !self.stopped.load(Ordering::Relaxed)
+    }
+
     pub async fn chat(&self, args: Value) -> Result<Value, String> {
         if !self.supports_chat() {
             return Err("Текстовый плагин отключён".into());
         }
         self.request("llm.chat", args).await
+    }
+
+    pub async fn transcribe(&self, args: Value) -> Result<Value, String> {
+        if !self.supports_stt() {
+            return Err("Плагин распознавания отключён".into());
+        }
+        self.request_timeout("stt.transcribe", args, Duration::from_secs(32)).await
+    }
+
+    pub async fn speak(&self, args: Value) -> Result<Value, String> {
+        if !self.supports_tts() {
+            return Err("Плагин озвучки отключён".into());
+        }
+        self.request_timeout("tts.speak", args, Duration::from_secs(32)).await
+    }
+
+    pub async fn voices(&self) -> Result<Value, String> {
+        if !self.supports_tts() {
+            return Err("Плагин озвучки отключён".into());
+        }
+        if !self.supports_tts_voices() {
+            return Ok(json!([]));
+        }
+        self.request("tts.voices", Value::Null).await
     }
     pub async fn call_tool(&self, name: &str, args: &str) -> Option<String> {
         if !self.tools.iter().any(|t| t["name"] == name) {
@@ -712,6 +806,100 @@ mod tests {
                 .unwrap()
                 .starts_with("Выпало ")
         );
+        host.stop_all().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fetch_supports_multipart_and_base64_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut tmp).await.unwrap();
+                if n == 0 { break; }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(hdr_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let hdr = String::from_utf8_lossy(&buf[..hdr_end]).to_ascii_lowercase();
+                    let cl = hdr.lines().find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+                    if buf.len() >= hdr_end + 4 + cl {
+                        break;
+                    }
+                }
+            }
+            let text = String::from_utf8_lossy(&buf);
+            assert!(text.contains("multipart/form-data; boundary=jarvis-"));
+            assert!(text.contains("name=\"model\""));
+            assert!(text.contains("whisper-1"));
+            assert!(text.contains("name=\"file\"; filename=\"a.wav\""));
+            assert!(text.contains("Content-Type: audio/wav"));
+            assert!(text.contains("RIFF"));
+            let reply = b"\x01\x02\x03\x04";
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len());
+            socket.write_all(resp.as_bytes()).await.unwrap();
+            socket.write_all(reply).await.unwrap();
+        });
+        let source = format!(
+            r#"return {{tools={{{{name='bin',description='x',parameters={{}},handler=function()
+                return jarvis.fetch('http://127.0.0.1:{port}/upload', {{
+                    method = 'POST',
+                    multipart = {{
+                        {{ name = 'model', value = 'whisper-1' }},
+                        {{ name = 'file', filename = 'a.wav', content_type = 'audio/wav', data_base64 = 'UklGRg==' }}
+                    }},
+                    response_encoding = 'base64'
+                }})
+            end}}}}}}"#
+        );
+        let (host, dir) = fixture(&source, vec!["tools", "network"]).await;
+        let out: Value = serde_json::from_str(&host.call_tool("bin", "{}").await.unwrap()).unwrap();
+        assert_eq!(out["status"], 200);
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["body_base64"], "AQIDBA==");
+        server.await.unwrap();
+        host.stop_all().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stt_and_tts_lua_plugins_work_and_validate_provides() {
+        let dir = std::env::temp_dir().join(format!("jarvis-lua-st-{}", crate::settings::rand_hex(6)));
+        let bad = dir.join("plugins/bad-stt");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(bad.join("plugin.json"), json!({
+            "id":"bad-stt","name":"Bad","version":"1","kind":"lua","category":"assistant","main":"main.lua","provides":["stt"]
+        }).to_string()).unwrap();
+        std::fs::write(bad.join("main.lua"), "return {}").unwrap();
+
+        let good = dir.join("plugins/custom-av");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(good.join("plugin.json"), json!({
+            "id":"custom-av","name":"Custom AV","version":"1","kind":"lua","category":"assistant","main":"main.lua","provides":["stt","tts"]
+        }).to_string()).unwrap();
+        std::fs::write(good.join("main.lua"), r#"return {
+            transcribe = function(req) return { text = 'привет ' .. (req.model or '') } end,
+            speak = function(req) return { audio = req.voice .. ':' .. req.text, rate = 16000 } end,
+            voices = function() return { { id = 'v1', name = 'Voice 1', note = 'test' } } end
+        }"#).unwrap();
+
+        let host = Host::new(dir.clone(), Hooks::default());
+        host.load().await;
+        let list = host.list();
+        assert_eq!(list.iter().find(|p| p["id"] == "bad-stt").unwrap()["running"], false);
+        assert_eq!(host.stt_plugins(), vec![json!({"id": "custom-av", "name": "Custom AV"})]);
+        assert_eq!(host.tts_plugins(), vec![json!({"id": "custom-av", "name": "Custom AV"})]);
+        let stt = host.plugin_stt("custom-av", json!({"model": "m1"})).await.unwrap();
+        assert_eq!(stt["text"], "привет m1");
+        let tts = host.plugin_tts("custom-av", json!({"voice": "v1", "text": "ок"})).await.unwrap();
+        assert_eq!(tts["audio"], "v1:ок");
+        assert_eq!(tts["rate"], 16000);
+        let voices = host.plugin_tts_voices("custom-av").await.unwrap();
+        assert_eq!(voices[0]["id"], "v1");
         host.stop_all().await;
         std::fs::remove_dir_all(dir).unwrap();
     }

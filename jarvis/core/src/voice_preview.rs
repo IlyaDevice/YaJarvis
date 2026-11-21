@@ -1,5 +1,5 @@
 use super::{
-    Engine, INTERRUPTED, Journal, Mode, Profile, Session, Settings, chatgpt, key_missing, peak,
+    Engine, INTERRUPTED, Journal, Mode, Profile, Session, Settings, chatgpt, peak,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -33,7 +33,11 @@ pub(super) struct Previews {
 
 #[derive(Deserialize)]
 pub(crate) struct Request {
+    #[serde(default)]
+    mode: String,
     engine: String,
+    #[serde(default)]
+    tts_engine: String,
     voice: String,
     #[serde(default)]
     tts_model: String,
@@ -43,11 +47,56 @@ pub(crate) struct Request {
 
 impl Request {
     fn profile(self) -> Result<Profile, String> {
+        let model_ok = |s: &str| {
+            s.len() <= 160 && !s.chars().any(|c| c.is_control() || c.is_whitespace())
+        };
+        if !model_ok(&self.tts_model) || !model_ok(&self.live_model) {
+            return Err("Некорректный голос или модель".into());
+        }
+        let is_classic = self.mode == "classic"
+            || self.engine == "classic"
+            || self.engine == "elevenlabs"
+            || !self.tts_engine.is_empty();
+        if is_classic {
+            let tts_engine = if !self.tts_engine.is_empty() {
+                self.tts_engine
+            } else if self.engine == "openai" {
+                "openai".into()
+            } else {
+                "elevenlabs".into()
+            };
+            if !crate::plugins::valid_id(&tts_engine) {
+                return Err("Неверный идентификатор плагина озвучки".into());
+            }
+            let builtin = matches!(tts_engine.as_str(), "openai" | "elevenlabs");
+            let voice_ok = self.voice.len() <= 128
+                && if builtin {
+                    !self.voice.is_empty()
+                        && self
+                            .voice
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                } else {
+                    !self.voice.chars().any(|c| c.is_control() || c.is_whitespace())
+                };
+            if !voice_ok {
+                return Err("Некорректный голос или модель".into());
+            }
+            return Ok(Profile {
+                mode: "classic".into(),
+                engine: "classic".into(),
+                tts_engine,
+                tts_voice: self.voice.clone(),
+                tts_model: self.tts_model,
+                live_model: self.live_model,
+                web_search: false,
+                voice: self.voice,
+                ..Default::default()
+            });
+        }
         let engine = match self.engine.as_str() {
             "live" => "openai".into(),
-            "openai" | "chatgpt" | "gemini" | "grok" | "elevenlabs" | "eleven_realtime" => {
-                self.engine
-            }
+            "openai" | "chatgpt" | "gemini" | "grok" | "eleven_realtime" => self.engine,
             _ => return Err("Выберите голосовой движок".into()),
         };
         let id = |s: &str| {
@@ -55,11 +104,7 @@ impl Request {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         };
-        if self.voice.is_empty()
-            || !id(&self.voice)
-            || !id(&self.tts_model)
-            || !id(&self.live_model)
-        {
+        if self.voice.is_empty() || !id(&self.voice) {
             return Err("Некорректный голос или модель".into());
         }
         let voice = if engine == "chatgpt" {
@@ -68,12 +113,7 @@ impl Request {
             self.voice
         };
         Ok(Profile {
-            mode: if engine == "elevenlabs" {
-                "classic"
-            } else {
-                "live"
-            }
-            .into(),
+            mode: "live".into(),
             tts_voice: voice.clone(),
             tts_model: self.tts_model,
             live_model: self.live_model,
@@ -187,7 +227,7 @@ impl Engine {
             Some(sample) => sample,
             None => {
                 let settings = self.store.get();
-                let missing = key_missing(&self.host, &settings, &profile.engine);
+                let missing = crate::engine::tts_missing(&self.host, &settings, &profile);
                 if !missing.is_empty() {
                     return Err(missing);
                 }
@@ -212,6 +252,18 @@ impl Engine {
 
     pub(super) fn preview_session(&self, settings: Settings, profile: Profile) -> Arc<dyn Session> {
         let journal = Arc::new(Journal::default());
+        if profile.is_classic() {
+            return crate::classic_voice::Classic::open(
+                &self.rt,
+                self.host.clone(),
+                self.tools.clone(),
+                journal,
+                settings,
+                profile,
+                INSTRUCTIONS.into(),
+                "Джарвис".into(),
+            );
+        }
         match profile.engine.as_str() {
             "chatgpt" => chatgpt::ChatGptSession::open(
                 &self.rt,
@@ -224,16 +276,6 @@ impl Engine {
                     journal,
                     memory: None,
                 },
-            ),
-            "elevenlabs" => crate::classic_voice::Classic::open(
-                &self.rt,
-                self.host.clone(),
-                self.tools.clone(),
-                journal,
-                settings,
-                profile,
-                INSTRUCTIONS.into(),
-                "Джарвис".into(),
             ),
             _ => crate::cloud_voice::Voice::open(
                 &self.rt,
@@ -362,14 +404,33 @@ fn cache_name(profile: &Profile) -> String {
 }
 
 pub(super) fn sample_name(profile: &Profile, phrase: &str) -> String {
-    let live_model = if profile.engine == "chatgpt" {
+    let (engine, voice): (&str, &str) = if profile.is_classic() {
+        (
+            profile.effective_tts_engine(),
+            if !profile.tts_voice.is_empty() {
+                &profile.tts_voice
+            } else {
+                &profile.voice
+            },
+        )
+    } else {
+        (
+            &profile.engine,
+            if profile.engine == "eleven_realtime" && !profile.tts_voice.is_empty() {
+                &profile.tts_voice
+            } else {
+                &profile.voice
+            },
+        )
+    };
+    let live_model = if engine == "chatgpt" {
         "gpt-live-1.1-codex"
     } else {
         &profile.live_model
     };
     let identity = (
-        &profile.engine,
-        &profile.voice,
+        engine,
+        voice,
         &profile.tts_model,
         live_model,
         crate::version(),

@@ -358,6 +358,28 @@ impl Runtime {
         }
     }
 
+    fn supports_stt(&self) -> bool {
+        match self {
+            Runtime::Process(n) => n.supports_stt(),
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.supports_stt(),
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.supports_stt(),
+            _ => false,
+        }
+    }
+
+    fn supports_tts(&self) -> bool {
+        match self {
+            Runtime::Process(n) => n.supports_tts(),
+            #[cfg(feature = "lua")]
+            Runtime::Lua(n) => n.supports_tts(),
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(n) => n.supports_tts(),
+            _ => false,
+        }
+    }
+
     fn running(&self) -> bool {
         match self {
             Runtime::Process(n) => n.running(),
@@ -550,7 +572,7 @@ impl Host {
                 let custom = native_addon::entries().find(|(manifest, _)| manifest.id == id).map(|(_, entry)| entry);
                 #[cfg(feature = "native-plugins")]
                 if let Some(entry) = custom {
-                    native_addon::Native::start(entry, self, id, dir, settings).map(|n| Runtime::Native(Arc::new(n)))
+                    native_addon::Native::start(entry, &m, self, id, dir, settings).map(|n| Runtime::Native(Arc::new(n)))
                 } else {
                     Err("?????????? ????? ?? ???????????? ????????".into())
                 }
@@ -607,9 +629,39 @@ impl Host {
             })
     }
 
+    pub fn supports_chat(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().plugins.get(id)
+            .and_then(|plugin| plugin.rt.as_ref())
+            .is_some_and(Runtime::supports_chat)
+    }
+
+    pub fn supports_stt(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().plugins.get(id)
+            .and_then(|plugin| plugin.rt.as_ref())
+            .is_some_and(Runtime::supports_stt)
+    }
+
+    pub fn supports_tts(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().plugins.get(id)
+            .and_then(|plugin| plugin.rt.as_ref())
+            .is_some_and(Runtime::supports_tts)
+    }
+
     pub fn text_plugins(&self) -> Vec<Value> {
         let installed = self.inner.lock().unwrap();
         installed.plugins.values().filter(|plugin| plugin.rt.as_ref().is_some_and(Runtime::supports_chat))
+            .map(|plugin| json!({"id": plugin.manifest.id, "name": plugin.manifest.name})).collect()
+    }
+
+    pub fn stt_plugins(&self) -> Vec<Value> {
+        let installed = self.inner.lock().unwrap();
+        installed.plugins.values().filter(|plugin| plugin.rt.as_ref().is_some_and(Runtime::supports_stt))
+            .map(|plugin| json!({"id": plugin.manifest.id, "name": plugin.manifest.name})).collect()
+    }
+
+    pub fn tts_plugins(&self) -> Vec<Value> {
+        let installed = self.inner.lock().unwrap();
+        installed.plugins.values().filter(|plugin| plugin.rt.as_ref().is_some_and(Runtime::supports_tts))
             .map(|plugin| json!({"id": plugin.manifest.id, "name": plugin.manifest.name})).collect()
     }
 
@@ -629,6 +681,72 @@ impl Host {
             _ => return Err("Плагин не поддерживает текстовые запросы".into()),
         };
         result.map_err(|error| clip(&error, 300))
+    }
+
+    pub async fn plugin_stt(&self, id: &str, request: Value) -> Result<Value, String> {
+        let runtime = {
+            let installed = self.inner.lock().unwrap();
+            installed.plugins.get(id).and_then(|plugin| plugin.rt.as_ref())
+                .filter(|runtime| runtime.supports_stt()).cloned()
+                .ok_or_else(|| format!("Включите плагин распознавания «{id}» в «Подключениях»"))?
+        };
+        let result = match runtime {
+            Runtime::Process(plugin) => plugin.request("stt.transcribe", request, Duration::from_secs(45)).await,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(script) => script.transcribe(request).await,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(plugin) => plugin.request("stt.transcribe", request, Duration::from_secs(45)).await,
+            _ => return Err("Плагин не поддерживает распознавание речи".into()),
+        };
+        result.map_err(|error| clip(&error, 300))
+    }
+
+    pub async fn plugin_tts(&self, id: &str, request: Value) -> Result<Value, String> {
+        let runtime = {
+            let installed = self.inner.lock().unwrap();
+            installed.plugins.get(id).and_then(|plugin| plugin.rt.as_ref())
+                .filter(|runtime| runtime.supports_tts()).cloned()
+                .ok_or_else(|| format!("Включите плагин озвучки «{id}» в «Подключениях»"))?
+        };
+        let result = match runtime {
+            Runtime::Process(plugin) => plugin.request("tts.speak", request, Duration::from_secs(60)).await,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(script) => script.speak(request).await,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(plugin) => plugin.request("tts.speak", request, Duration::from_secs(60)).await,
+            _ => return Err("Плагин не поддерживает озвучку".into()),
+        };
+        result.map_err(|error| clip(&error, 300))
+    }
+
+    pub async fn plugin_tts_voices(&self, id: &str) -> Result<Value, String> {
+        let runtime = {
+            let installed = self.inner.lock().unwrap();
+            installed.plugins.get(id).and_then(|plugin| plugin.rt.as_ref())
+                .filter(|runtime| runtime.supports_tts()).cloned()
+                .ok_or_else(|| format!("Включите плагин озвучки «{id}» в «Подключениях»"))?
+        };
+        let result = match runtime {
+            Runtime::Process(plugin) => plugin.request("tts.voices", Value::Null, Duration::from_secs(20)).await,
+            #[cfg(feature = "lua")]
+            Runtime::Lua(script) => script.voices().await,
+            #[cfg(feature = "native-plugins")]
+            Runtime::Native(plugin) => plugin.request("tts.voices", Value::Null, Duration::from_secs(20)).await,
+            _ => return Ok(json!([])),
+        };
+        match result {
+            Ok(Value::Array(items)) => Ok(Value::Array(items)),
+            Ok(v) if v["voices"].is_array() => Ok(v["voices"].clone()),
+            Ok(_) => Ok(json!([])),
+            Err(error) => {
+                let lower = error.to_ascii_lowercase();
+                if lower.contains("не поддерживает") || lower.contains("unsupported") || lower.contains("unknown method") {
+                    Ok(json!([]))
+                } else {
+                    Err(clip(&error, 300))
+                }
+            }
+        }
     }
 
     pub fn tools(&self) -> Vec<Value> {

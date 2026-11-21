@@ -1,7 +1,7 @@
 <script module>
-  const elevenEngines = ["elevenlabs", "eleven_realtime"];
   const defaultVoices = { openai: "cedar", gemini: "Charon", chatgpt: "cove", grok: "rex" };
   const groupKeys = { gemini: "gemini_voice_groups", chatgpt: "chatgpt_voice_groups", grok: "grok_voice_groups" };
+  const manualPreview = Symbol();
 
   function voiceGroups(state, engine) {
     return state[groupKeys[engine] || "voice_groups"] || [];
@@ -10,6 +10,7 @@
 
 <script>
   import { onMount, untrack } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import { api, icon, tip, toast } from "../../js/core.js";
   import { reload, S } from "../../js/main.js";
   import styles from "./ProfileVoice.module.css";
@@ -17,23 +18,30 @@
   let { initial, onedit, previewModels } = $props();
   const controller = new AbortController();
   const { signal } = controller;
-  let draft = $state({ ...untrack(() => initial) });
+  const initialProfile = untrack(() => initial);
+  let draft = $state({ ...initialProfile });
+  const ttsSelections = new Map([[initialProfile.ttsProvider, initialProfile.ttsVoice || ""]]);
+  const pluginVoices = new SvelteMap();
   let engine = $state("");
+  let ttsProvider = $state("");
   let ready = $state(false);
   let hasOptions = $state(false);
   let customVoices = $state.raw(S.live_voices);
   let elevenVoices = $state.raw(null);
   let elevenLoading = $state(false);
   let elevenError = $state("");
-  let previewVoice = $state("");
+  let previewVoice = $state(null);
   let previewRequest;
   let name = $state("");
   let prompt = $state("");
   let savingVoice = $state(false);
 
-  let eleven = $derived(elevenEngines.includes(engine));
-  let selected = $derived(eleven ? draft.ttsVoice : draft.voice);
-  let groups = $derived(voiceGroups(S, engine).map((group) => ({
+  let classic = $derived(engine === "classic");
+  let eleven = $derived(ttsProvider === "elevenlabs");
+  let pluginTts = $derived(classic && !eleven && ttsProvider !== "openai");
+  let pluginVoicesState = $derived(pluginVoices.get(ttsProvider));
+  let selected = $derived(classic || eleven ? draft.ttsVoice : draft.voice);
+  let groups = $derived(voiceGroups(S, classic ? ttsProvider : engine).map((group) => ({
     name: group.name,
     items: group.voices.map((item) => ({ id: item.ID, name: item.name || item.ID, note: item.Note })),
   })));
@@ -44,17 +52,25 @@
     previewRequest?.abort();
   });
 
-  export function configure(nextEngine, available, optionsExist) {
-    if (engine !== nextEngine || !available) {
+  export function configure(nextEngine, provider, available, optionsExist) {
+    if (engine !== nextEngine || ttsProvider !== provider || !available) {
       previewRequest?.abort();
-      previewVoice = "";
+      previewVoice = null;
     }
     engine = nextEngine;
+    ttsProvider = provider;
     ready = available;
     hasOptions = optionsExist;
     if (!available) return;
-    if (elevenEngines.includes(nextEngine)) {
+    if (nextEngine === "classic" || nextEngine === "eleven_realtime") {
+      choose(ttsSelections.get(provider) || "", false);
+    }
+    if (provider === "elevenlabs") {
       if (elevenVoices === null && !elevenError) void refreshEleven();
+      return;
+    }
+    if (nextEngine === "classic" && provider !== "openai") {
+      void loadPluginVoices(provider);
       return;
     }
     selectDefaultVoice(false);
@@ -62,13 +78,14 @@
 
   function selectDefaultVoice(dirty) {
     if (engine === "openai" && customVoices.some((item) => item.id === draft.voice)) return;
-    const current = String(draft.voice || "").toLowerCase();
-    const match = voiceGroups(S, engine).flatMap((group) => group.voices).find((item) => item.ID.toLowerCase() === current);
-    choose(match?.ID || defaultVoices[engine] || "cedar", dirty);
+    const current = String(selected || "").toLowerCase();
+    const match = voiceGroups(S, classic ? ttsProvider : engine).flatMap((group) => group.voices)
+      .find((item) => item.ID.toLowerCase() === current);
+    choose(match?.ID || (classic ? "alloy" : defaultVoices[engine] || "cedar"), dirty);
   }
 
   export async function refreshEleven() {
-    if (!ready || !elevenEngines.includes(engine) || elevenLoading) return;
+    if (!ready || ttsProvider !== "elevenlabs" || elevenLoading) return;
     elevenLoading = true;
     elevenError = "";
     try {
@@ -85,8 +102,25 @@
     }
   }
 
+  async function loadPluginVoices(provider) {
+    if (pluginVoices.has(provider)) return;
+    pluginVoices.set(provider, { loading: true, items: [] });
+    try {
+      const { voices } = await api("GET", "/api/tts/voices?provider=" + encodeURIComponent(provider), undefined, { signal });
+      const items = new Map();
+      for (const item of voices || []) {
+        const id = item.id || item.voice_id || item.ID;
+        if (id) items.set(id, { id, name: item.name || id, note: item.note || item.Note });
+      }
+      pluginVoices.set(provider, { items: [...items.values()] });
+    } catch (error) {
+      if (!signal.aborted) pluginVoices.set(provider, { error: error.message });
+    }
+  }
+
   function choose(id, dirty = true) {
-    if (elevenEngines.includes(engine)) {
+    if (engine === "classic" || engine === "eleven_realtime") {
+      ttsSelections.set(ttsProvider, id);
       if (draft.ttsVoice === id) return;
       draft.ttsVoice = id;
       onedit({ tts_voice: id }, dirty);
@@ -97,11 +131,11 @@
     }
   }
 
-  async function preview(id) {
+  async function preview(id, trigger = id) {
     previewRequest?.abort();
     const request = new AbortController();
     previewRequest = request;
-    previewVoice = id;
+    previewVoice = trigger;
     try {
       const response = await api("POST", "/api/preview", { voice: id, engine, ...previewModels(engine) }, { signal: request.signal });
       if (!response.interrupted) toast("Образец прозвучал на колонке");
@@ -110,7 +144,7 @@
     } finally {
       if (previewRequest === request) {
         previewRequest = undefined;
-        previewVoice = "";
+        previewVoice = null;
       }
     }
   }
@@ -208,6 +242,16 @@
         {:else}
           <p class="note">В аккаунте нет доступных голосов.</p>
         {/if}
+      {:else if pluginTts}
+        {#if !pluginVoicesState || pluginVoicesState.loading}
+          <p class="note" role="status">Загружаю голоса плагина…</p>
+        {:else if pluginVoicesState.error}
+          <p class="err" role="status">{pluginVoicesState.error}</p>
+        {:else if pluginVoicesState.items.length}
+          {@render options(pluginVoicesState.items)}
+        {:else}
+          <p class="note">Плагин не передал список голосов. Введите ID голоса ниже или оставьте пустым.</p>
+        {/if}
       {:else}
         {#if engine === "openai" && customItems.length}
           <div class="vgroup"><div class="gh">Мои голоса</div>{@render options(customItems)}</div>
@@ -217,6 +261,18 @@
         {/each}
       {/if}
     </div>
+    {#if ready && pluginTts}
+      <div id="p-tts-voice-box" class="row">
+        <div class="f half">
+          <label for="p-tts-voice-custom">ID голоса (или оставьте пустым по умолчанию)</label>
+          <input id="p-tts-voice-custom" type="text" maxlength="128" value={draft.ttsVoice}
+            placeholder="Например, голос из плагина" autocomplete="off"
+            oninput={(event) => choose(event.currentTarget.value.trim())}>
+        </div>
+        <button class="btn" id="p-tts-voice-test" type="button" disabled={previewVoice === manualPreview}
+          onclick={() => preview(draft.ttsVoice, manualPreview)}>Послушать</button>
+      </div>
+    {/if}
     <details id="v-custom" class:hidden={!ready || engine !== "openai"}>
       <summary>Создать свой голос по описанию</summary>
       <form class="inner" onsubmit={createVoice}>

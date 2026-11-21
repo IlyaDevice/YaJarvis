@@ -1,4 +1,5 @@
 use super::*;
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::{collections::BTreeMap, io::Read};
 pub struct Timer {
     at: Instant,
@@ -29,6 +30,75 @@ pub fn due(timers: &Timers) -> Vec<(u64, Function)> {
 }
 fn fail(error: impl std::fmt::Display) -> mlua::Error {
     mlua::Error::external(error.to_string())
+}
+fn bad_header_val(s: &str) -> bool {
+    s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+}
+fn encode_multipart(boundary: &str, parts: &[Value]) -> mlua::Result<Vec<u8>> {
+    const MAX_MULTIPART: usize = 4 * 1024 * 1024;
+    let mut out = Vec::new();
+    for part in parts {
+        let obj = part
+            .as_object()
+            .ok_or_else(|| fail("элемент multipart должен быть объектом"))?;
+        let name = obj
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && !bad_header_val(s) && !s.contains('"'))
+            .ok_or_else(|| fail("неверное имя поля multipart"))?;
+        out.extend_from_slice(b"--");
+        out.extend_from_slice(boundary.as_bytes());
+        out.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
+        out.extend_from_slice(name.as_bytes());
+        out.push(b'"');
+        if let Some(filename) = obj.get("filename").and_then(Value::as_str) {
+            if bad_header_val(filename) || filename.contains('"') {
+                return Err(fail("неверное filename в multipart"));
+            }
+            out.extend_from_slice(b"; filename=\"");
+            out.extend_from_slice(filename.as_bytes());
+            out.push(b'"');
+        }
+        out.extend_from_slice(b"\r\n");
+        if let Some(val) = obj.get("value").filter(|v| !v.is_null()) {
+            let text = val
+                .as_str()
+                .ok_or_else(|| fail("значение поля multipart должно быть строкой"))?;
+            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(text.as_bytes());
+        } else if let Some(b64) = obj.get("data_base64").filter(|v| !v.is_null()) {
+            let b64 = b64
+                .as_str()
+                .ok_or_else(|| fail("data_base64 в multipart должен быть строкой"))?;
+            let ct = obj
+                .get("content_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream");
+            if ct.is_empty() || bad_header_val(ct) {
+                return Err(fail("неверный content_type в multipart"));
+            }
+            let bytes = B64
+                .decode(b64)
+                .map_err(|_| fail("неверный data_base64 в multipart"))?;
+            out.extend_from_slice(b"Content-Type: ");
+            out.extend_from_slice(ct.as_bytes());
+            out.extend_from_slice(b"\r\n\r\n");
+            out.extend_from_slice(&bytes);
+        } else {
+            return Err(fail("в части multipart нужен value или data_base64"));
+        }
+        out.extend_from_slice(b"\r\n");
+        if out.len() > MAX_MULTIPART {
+            return Err(fail("multipart тело больше 4 МБ"));
+        }
+    }
+    out.extend_from_slice(b"--");
+    out.extend_from_slice(boundary.as_bytes());
+    out.extend_from_slice(b"--\r\n");
+    if out.len() > MAX_MULTIPART {
+        return Err(fail("multipart тело больше 4 МБ"));
+    }
+    Ok(out)
 }
 fn permitted(url: &reqwest::Url, allowed: &[String]) -> bool {
     if !matches!(url.scheme(), "http" | "https")
@@ -159,13 +229,36 @@ pub fn install(
             if !permitted(&url,&allowed){return Err(fail("домен не разрешён в network_allow"));}
             let options=options.map(|t|lua.from_value::<Value>(mlua::Value::Table(t))).transpose()?.unwrap_or(json!({}));
             let method=options["method"].as_str().unwrap_or("GET");let method=reqwest::Method::from_bytes(method.as_bytes()).map_err(|_|fail("неверный HTTP метод"))?;
-            let body=options["body"].as_str().unwrap_or("").to_string();if body.len()>1024*1024{return Err(fail("HTTP body больше 1 МБ"));}
+            let body_opt=options.get("body").filter(|v|!v.is_null());
+            let body_b64_opt=options.get("body_base64").filter(|v|!v.is_null());
+            let multipart_opt=options.get("multipart").filter(|v|!v.is_null());
+            if [body_opt.is_some(),body_b64_opt.is_some(),multipart_opt.is_some()].into_iter().filter(|&x|x).count()>1{
+                return Err(fail("укажите только один тип тела запроса"));
+            }
+            let mut auto_content_type: Option<String> = None;
+            let raw_body: Vec<u8> = if let Some(b) = body_opt {
+                let s=b.as_str().ok_or_else(||fail("HTTP body должен быть строкой"))?;
+                if s.len()>1024*1024{return Err(fail("HTTP body больше 1 МБ"));}
+                s.as_bytes().to_vec()
+            } else if let Some(b) = body_b64_opt {
+                let s=b.as_str().ok_or_else(||fail("body_base64 должен быть строкой"))?;
+                let bytes=B64.decode(s).map_err(|_|fail("неверный body_base64"))?;
+                if bytes.len()>3*1024*1024{return Err(fail("body_base64 больше 3 МБ"));}
+                bytes
+            } else if let Some(parts) = multipart_opt {
+                let parts=parts.as_array().ok_or_else(||fail("multipart должен быть массивом"))?;
+                let boundary=format!("jarvis-{}",crate::settings::rand_hex(12));
+                auto_content_type=Some(format!("multipart/form-data; boundary={boundary}"));
+                encode_multipart(&boundary,parts)?
+            } else { Vec::new() };
+            let resp_enc=options.get("response_encoding").and_then(Value::as_str).unwrap_or("utf8");
+            if !matches!(resp_enc,"utf8"|"base64"){return Err(fail("неверный response_encoding"));}
             let headers: BTreeMap<String,String>=options.get("headers").filter(|v|!v.is_null()).map(|v|serde_json::from_value(v.clone())).transpose().map_err(fail)?.unwrap_or_default();
             let route=(host.upgrade().ok_or_else(||fail("хост завершился"))?.hooks.network)();
             let result=runtime.block_on(async {
                 let operation=async {
                     if let Some(error)=route["error"].as_str(){return Err(fail(error));}
-                    let mut builder=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(15));
+                    let mut builder=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(25));
                     if let Some(socks)=route["socks"].as_str() {
                         let address:std::net::SocketAddr=socks.parse().map_err(|_|fail("неверный SOCKS VPN"))?;
                         if !address.ip().is_loopback() || address.port()==0{return Err(fail("неверный SOCKS VPN"));}
@@ -174,7 +267,10 @@ pub fn install(
                     let client=builder.build().map_err(fail)?;
                     for redirect in 0..=5 {
                         if !permitted(&url,&allowed){return Err(fail("переход на запрещённый домен"));}
-                        let mut request=client.request(method.clone(),url.clone()).body(body.clone());
+                        let mut request=client.request(method.clone(),url.clone()).body(raw_body.clone());
+                        if let Some(ct)=&auto_content_type && !headers.keys().any(|k|k.eq_ignore_ascii_case("content-type")){
+                            request=request.header("Content-Type",ct);
+                        }
                         for (key,value) in &headers {request=request.header(key,value);}
                         let mut response=request.send().await.map_err(|e|fail(crate::net::short(&e)))?;
                         if response.status().is_redirection() {
@@ -187,8 +283,12 @@ pub fn install(
                             url=next;continue;
                         }
                         let status=response.status().as_u16();let mut bytes=Vec::new();
+                        let limit=if resp_enc=="base64" {4*1024*1024}else{1024*1024};
                         while let Some(chunk)=response.chunk().await.map_err(|e|fail(crate::net::short(&e)))? {
-                            if bytes.len()+chunk.len()>1024*1024{return Err(fail("HTTP ответ больше 1 МБ"));}bytes.extend_from_slice(&chunk);
+                            if bytes.len()+chunk.len()>limit{return Err(fail(if resp_enc=="base64"{"HTTP ответ больше 4 МБ"}else{"HTTP ответ больше 1 МБ"}));}bytes.extend_from_slice(&chunk);
+                        }
+                        if resp_enc=="base64" {
+                            return Ok(json!({"status":status,"ok":(200..300).contains(&status),"body_base64":B64.encode(&bytes)}));
                         }
                         return Ok(json!({"status":status,"ok":(200..300).contains(&status),"body":String::from_utf8(bytes).map_err(fail)?}));
                     }

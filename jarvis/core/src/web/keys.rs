@@ -52,6 +52,22 @@ pub async fn eleven_voices(State(app):State<App>)->Response{
         Err(e)=>bad(e),
     }
 }
+pub async fn tts_voices(
+    State(app): State<App>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let provider = query.get("provider").map(String::as_str).unwrap_or("elevenlabs").trim();
+    if provider == "elevenlabs" {
+        return eleven_voices(State(app)).await;
+    }
+    if !crate::plugins::valid_id(provider) {
+        return bad("Неверный идентификатор плагина озвучки");
+    }
+    match app.plugins.plugin_tts_voices(provider).await {
+        Ok(voices) => super::reply(axum::http::StatusCode::OK, json!({"voices": voices})),
+        Err(e) => bad(e),
+    }
+}
 fn pool(app:&App,service:&str,v:Value)->Response{
     let Some(object)=v.as_object().filter(|o|o.len()==1)else{return bad("Нужна одна операция с ключом");};
     let (op,value)=object.iter().next().unwrap();

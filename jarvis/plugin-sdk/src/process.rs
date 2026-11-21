@@ -5,7 +5,7 @@ use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const API: u64 = 1;
-const MAX_FRAME: usize = 1 << 20;
+const MAX_FRAME: usize = 4 << 20;
 
 pub async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Value> {
     let bytes = reader.read_u32_le().await? as usize;

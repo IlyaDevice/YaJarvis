@@ -353,13 +353,21 @@ pub fn effort(model: &str, effort: &str) -> String {
 
 /// Текстовый запрос к модели подписки через плагин (Codex) с инструментами колонки.
 /// defs — инструменты (список готовит вызывающий: заодно с контекстом, параллельно).
-pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str, text: &str, tools: Option<&Tools>, mut defs: Vec<Value>) -> Result<String, String> {
-    let model = if p.backend_model.is_empty() { BACKEND_MODELS[0].to_string() } else { p.backend_model.clone() };
+pub async fn ask_codex(host: &Host, auth: Value, p: &Profile, instructions: &str, text: &str, tools: Option<&Tools>, defs: Vec<Value>) -> Result<String, String> {
+    ask_codex_with_history(host, auth, p, instructions, &[], text, tools, defs).await
+}
+
+pub async fn ask_codex_with_history(host: &Host, auth: Value, p: &Profile, instructions: &str, history: &[crate::llm::Turn], text: &str, tools: Option<&Tools>, mut defs: Vec<Value>) -> Result<String, String> {
+    let model = if p.effective_llm_model().is_empty() { BACKEND_MODELS[0].to_string() } else { p.effective_llm_model().to_string() };
     let effort = effort(&model, &p.effort);
     if p.web_search {
         defs.push(json!({"type": "web_search"}));
     }
-    let mut input = vec![json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]})];
+    let mut input: Vec<Value> = history.iter().map(|turn| {
+        let part_type = if turn.role == "assistant" { "output_text" } else { "input_text" };
+        json!({"type": "message", "role": turn.role, "content": [{"type": part_type, "text": turn.content}]})
+    }).collect();
+    input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}));
     let session = new_id();
     for _ in 0..5 {
         let n = host.provider("chatgpt")?;
