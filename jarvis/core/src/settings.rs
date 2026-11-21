@@ -185,12 +185,13 @@ impl Profile {
         if self.llm_model.is_empty() {
             self.llm_model = self.backend_model.clone();
         }
-        let llm = self.effective_llm_engine();
-        if self.llm_model.is_empty() && matches!(llm, "" | "openai" | "chatgpt") {
-            self.llm_model = BACKEND_MODELS[0].into();
-        }
-        if matches!(llm, "" | "openai" | "chatgpt") && !self.llm_model.is_empty() {
-            self.backend_model = self.llm_model.clone();
+        if matches!(self.effective_llm_engine(), "" | "openai" | "chatgpt") {
+            if self.llm_model.is_empty() {
+                self.llm_model = BACKEND_MODELS[0].into();
+            }
+            if !self.llm_model.is_empty() {
+                self.backend_model = self.llm_model.clone();
+            }
         }
         if self.tts_model.is_empty() {
             self.tts_model = match self.effective_tts_engine() {
