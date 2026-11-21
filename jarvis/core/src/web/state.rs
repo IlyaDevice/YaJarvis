@@ -200,6 +200,8 @@ pub async fn state(State(app): State<App>) -> Json<Value> {
         "plugins": app.plugins.summary(),
         "providers": app.plugins.service_providers(),
         "text_plugins": app.plugins.text_plugins(),
+        "stt_plugins": app.plugins.stt_plugins(),
+        "tts_plugins": app.plugins.tts_plugins(),
         "repo": crate::DEFAULT_REPO,
         "security": security_checks(),
     });

@@ -99,9 +99,13 @@ pub struct Profile {
     pub prompt: String,
     pub llm_model: String,
     #[serde(skip_serializing_if = "String::is_empty")]
+    pub llm_engine: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub llm_plugin: String,
     pub tts_voice: String,
     pub tts_model: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tts_engine: String,
     pub stt_engine: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub stt_model: String,
@@ -119,22 +123,82 @@ pub const ELEVEN_DEFAULT_MODEL: &str = "eleven_flash_v2_5";
 
 impl Profile {
     pub fn is_classic(&self) -> bool {
-        self.engine != "eleven_realtime" && (self.mode == "classic" || self.engine == "elevenlabs")
+        self.engine != "eleven_realtime"
+            && (self.mode == "classic" || self.engine == "elevenlabs" || self.engine == "classic")
+    }
+
+    pub fn effective_stt_engine(&self) -> &str {
+        if self.stt_engine.is_empty() {
+            "elevenlabs"
+        } else {
+            &self.stt_engine
+        }
+    }
+
+    pub fn effective_tts_engine(&self) -> &str {
+        if !self.tts_engine.is_empty() {
+            &self.tts_engine
+        } else if self.engine == "openai" {
+            "openai"
+        } else {
+            "elevenlabs"
+        }
+    }
+
+    pub fn effective_llm_engine(&self) -> &str {
+        if !self.llm_engine.is_empty() {
+            &self.llm_engine
+        } else if !self.llm_plugin.is_empty() {
+            &self.llm_plugin
+        } else {
+            ""
+        }
+    }
+
+    pub fn effective_llm_model(&self) -> &str {
+        if !self.llm_model.is_empty() {
+            &self.llm_model
+        } else {
+            &self.backend_model
+        }
     }
 
     fn classic_defaults(&mut self) {
         self.mode = "classic".into();
-        self.engine = "elevenlabs".into();
-        self.stt_engine = "elevenlabs".into();
+        if self.tts_engine.is_empty() {
+            self.tts_engine = if self.engine == "openai" {
+                "openai"
+            } else {
+                "elevenlabs"
+            }
+            .into();
+        }
+        if self.engine.is_empty() || self.engine == "live" {
+            self.engine = "classic".into();
+        }
+        if self.stt_engine.is_empty() {
+            self.stt_engine = "elevenlabs".into();
+        }
+        if self.llm_engine.is_empty() && !self.llm_plugin.is_empty() {
+            self.llm_engine = self.llm_plugin.clone();
+        }
         if self.llm_model.is_empty() {
             self.llm_model = self.backend_model.clone();
         }
-        if self.llm_model.is_empty() {
-            self.llm_model = BACKEND_MODELS[0].into();
+        if matches!(self.effective_llm_engine(), "" | "openai" | "chatgpt") {
+            if self.llm_model.is_empty() {
+                self.llm_model = BACKEND_MODELS[0].into();
+            }
+            if !self.llm_model.is_empty() {
+                self.backend_model = self.llm_model.clone();
+            }
         }
-        self.backend_model = self.llm_model.clone();
         if self.tts_model.is_empty() {
-            self.tts_model = ELEVEN_DEFAULT_MODEL.into();
+            self.tts_model = match self.effective_tts_engine() {
+                "elevenlabs" => ELEVEN_DEFAULT_MODEL.into(),
+                "openai" => "gpt-4o-mini-tts".into(),
+                _ => String::new(),
+            };
         }
     }
 
@@ -732,5 +796,34 @@ mod tests {
     fn night_window() {
         assert_eq!(hhmm("23:05"), Some(23 * 60 + 5));
         assert_eq!(hhmm("24:00"), None);
+    }
+
+    #[test]
+    fn classic_profile_migration_and_custom_pipeline_preservation() {
+        let mut legacy: Settings = serde_json::from_str(
+            r#"{"profiles":[{"id":"p1","mode":"classic","engine":"elevenlabs","backend_model":"gpt-6-sol","llm_plugin":"openrouter-lua"}]}"#,
+        )
+        .unwrap();
+        migrate(&mut legacy);
+        let lp = &legacy.profiles[0];
+        assert!(lp.is_classic());
+        assert_eq!(lp.effective_stt_engine(), "elevenlabs");
+        assert_eq!(lp.effective_tts_engine(), "elevenlabs");
+        assert_eq!(lp.effective_llm_engine(), "openrouter-lua");
+        assert_eq!(lp.effective_llm_model(), "gpt-6-sol");
+        assert_eq!(lp.tts_model, ELEVEN_DEFAULT_MODEL);
+
+        let mut custom: Settings = serde_json::from_str(
+            r#"{"profiles":[{"id":"p2","mode":"classic","engine":"classic","stt_engine":"openai","llm_engine":"gemini","llm_model":"gemini-3.8-flash","tts_engine":"my-tts","tts_model":""}]}"#,
+        )
+        .unwrap();
+        migrate(&mut custom);
+        let cp = &custom.profiles[0];
+        assert!(cp.is_classic());
+        assert_eq!(cp.effective_stt_engine(), "openai");
+        assert_eq!(cp.effective_llm_engine(), "gemini");
+        assert_eq!(cp.effective_llm_model(), "gemini-3.8-flash");
+        assert_eq!(cp.effective_tts_engine(), "my-tts");
+        assert_eq!(cp.tts_model, "");
     }
 }

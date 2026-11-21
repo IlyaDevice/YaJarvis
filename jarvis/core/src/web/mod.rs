@@ -130,6 +130,7 @@ pub fn router(app: App) -> Router {
         .route("/api/gemini-keys", put(keys::gemini_pool))
         .route("/api/eleven-keys", put(keys::eleven_pool))
         .route("/api/elevenlabs/voices", get(keys::eleven_voices))
+        .route("/api/tts/voices", get(keys::tts_voices))
         .route("/api/profile", put(config::profile).delete(config::delete_profile))
         .route("/api/active", post(config::active))
         .route("/api/profiles/order", post(config::order))

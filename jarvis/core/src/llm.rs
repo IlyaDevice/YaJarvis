@@ -42,30 +42,69 @@ pub fn memory_model<'a>(settings: &'a Settings, provider: &str) -> &'a str {
         crate::settings::BACKEND_MODELS[0]
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn {
+    pub role: &'static str,
+    pub content: String,
+}
+
 pub async fn ask(host:&Host,s:&Settings,p:&Profile,instructions:&str,text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
-    if !p.llm_plugin.is_empty() {
-        return ask_plugin(host, &p.llm_plugin, instructions, text, tools, &defs).await;
+    ask_with_history(host, s, p, instructions, &[], text, tools, defs).await
+}
+
+pub async fn ask_with_history(host:&Host,s:&Settings,p:&Profile,instructions:&str,history:&[Turn],text:&str,tools:&Tools,defs:Vec<Value>)->Result<String,String>{
+    let explicit = p.effective_llm_engine();
+    if !explicit.is_empty() && !matches!(explicit, "openai" | "live" | "chatgpt" | "gemini" | "grok") {
+        return ask_plugin(host, explicit, p.effective_llm_model(), instructions, history, text, tools, &defs).await;
     }
-    let preferred=if ["openai","live",""].contains(&p.engine.as_str()){"openai"}else{p.engine.as_str()};
-    if preferred=="chatgpt" && crate::chatgpt::signed_in(&s.chatgpt){
-        let auth=host.provider("chatgpt")?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
-        return crate::chatgpt::ask_codex(host,auth,p,instructions,text,Some(tools),defs).await;
-    }
-    let id=if !configured(s,preferred).is_empty(){preferred}else{["openai","gemini","grok"].into_iter().find(|id|!configured(s,id).is_empty()).unwrap_or("chatgpt")};
-    if id=="chatgpt" {
-        if !crate::chatgpt::signed_in(&s.chatgpt){return Err("Добавьте API-ключ или войдите в ChatGPT в «Подключениях»".into());}
-        let auth=host.provider(id)?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
-        return crate::chatgpt::ask_codex(host,auth,p,instructions,text,Some(tools),defs).await;
-    }
-    let provider=host.provider(id)?;let key=configured(s,id);
-    let model=match id {
-        "gemini"=>if p.backend_model.starts_with("gemini-"){p.backend_model.as_str()}else{GEMINI_TEXT_MODEL},
-        "grok"=>if p.backend_model.starts_with("grok-"){p.backend_model.as_str()}else{"grok-4-1-fast-non-reasoning"},
-        _=>if p.backend_model.is_empty(){crate::settings::BACKEND_MODELS[0]}else{p.backend_model.as_str()},
+    let id = if !explicit.is_empty() {
+        let id = if explicit == "live" { "openai" } else { explicit };
+        if id == "chatgpt" {
+            if !crate::chatgpt::signed_in(&s.chatgpt) {
+                return Err("Войдите в ChatGPT в «Подключениях»".into());
+            }
+            let auth = host.provider("chatgpt")?.request("auth.token", Value::Null, Duration::from_secs(20)).await?;
+            return crate::chatgpt::ask_codex_with_history(host, auth, p, instructions, history, text, Some(tools), defs).await;
+        }
+        if configured(s, id).is_empty() {
+            return Err(match id {
+                "openai" => "Добавьте ключ OpenAI в «Подключениях»",
+                "gemini" => "Добавьте ключ Gemini в «Подключениях»",
+                "grok" => "Добавьте ключ Grok в «Подключениях»",
+                _ => "Добавьте API-ключ в «Подключениях»",
+            }.into());
+        }
+        id
+    } else {
+        let preferred=if ["openai","live",""].contains(&p.engine.as_str()){"openai"}else{p.engine.as_str()};
+        if preferred=="chatgpt" && crate::chatgpt::signed_in(&s.chatgpt){
+            let auth=host.provider("chatgpt")?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
+            return crate::chatgpt::ask_codex_with_history(host,auth,p,instructions,history,text,Some(tools),defs).await;
+        }
+        let id=if !configured(s,preferred).is_empty(){preferred}else{["openai","gemini","grok"].into_iter().find(|id|!configured(s,id).is_empty()).unwrap_or("chatgpt")};
+        if id=="chatgpt" {
+            if !crate::chatgpt::signed_in(&s.chatgpt){return Err("Добавьте API-ключ или войдите в ChatGPT в «Подключениях»".into());}
+            let auth=host.provider(id)?.request("auth.token",Value::Null,Duration::from_secs(20)).await?;
+            return crate::chatgpt::ask_codex_with_history(host,auth,p,instructions,history,text,Some(tools),defs).await;
+        }
+        id
     };
-    let mut input=vec![json!({"role":"user","content":text})];
-    let mut contents=vec![json!({"role":"user","parts":[{"text":text}]})];
-    let mut messages=vec![json!({"role":"system","content":instructions}),json!({"role":"user","content":text})];
+    let provider=host.provider(id)?;let key=configured(s,id);
+    let requested = p.effective_llm_model();
+    let model=match id {
+        "gemini"=>if requested.starts_with("gemini-"){requested}else{GEMINI_TEXT_MODEL},
+        "grok"=>if requested.starts_with("grok-"){requested}else{"grok-4-1-fast-non-reasoning"},
+        _=>if requested.is_empty(){crate::settings::BACKEND_MODELS[0]}else{requested},
+    };
+    let mut input:Vec<Value>=history.iter().map(|t|json!({"role":t.role,"content":t.content})).collect();
+    input.push(json!({"role":"user","content":text}));
+    let mut contents:Vec<Value>=history.iter().map(|t|json!({"role":if t.role=="assistant"{"model"}else{"user"},"parts":[{"text":t.content}]})).collect();
+    contents.push(json!({"role":"user","parts":[{"text":text}]}));
+    let mut messages=vec![json!({"role":"system","content":instructions})];
+    for turn in history {
+        messages.push(json!({"role":turn.role,"content":turn.content}));
+    }
+    messages.push(json!({"role":"user","content":text}));
     for _ in 0..5 {
         let body=match id {
             "gemini"=>{
@@ -108,13 +147,22 @@ async fn run_tool(tools: &Tools, defs: &[Value], call: &Call) -> Result<String, 
         .await.unwrap_or_else(|_| "Инструмент не ответил за 15 с".into()))
 }
 
-async fn ask_plugin(host: &Host, id: &str, instructions: &str, text: &str, tools: &Tools, defs: &[Value]) -> Result<String, String> {
-    let mut messages = vec![json!({"role":"system","content":instructions}), json!({"role":"user","content":text})];
+async fn ask_plugin(host: &Host, id: &str, model: &str, instructions: &str, history: &[Turn], text: &str, tools: &Tools, defs: &[Value]) -> Result<String, String> {
+    let mut messages = Vec::with_capacity(history.len() + 2);
+    messages.push(json!({"role":"system","content":instructions}));
+    for turn in history {
+        messages.push(json!({"role":turn.role,"content":turn.content}));
+    }
+    messages.push(json!({"role":"user","content":text}));
     let schemas: Vec<_> = defs.iter().filter(|def| def["type"] == "function").map(|def| {
         json!({"type":"function","function":{"name":def["name"],"description":def["description"],"parameters":def["parameters"]}})
     }).collect();
     for _ in 0..5 {
-        let response = host.plugin_chat(id, json!({"messages":messages,"tools":schemas})).await?;
+        let mut payload = json!({"messages":messages,"tools":schemas});
+        if !model.is_empty() {
+            payload["model"] = json!(model);
+        }
+        let response = host.plugin_chat(id, payload).await?;
         let answer = response.as_str().or_else(|| response["text"].as_str()).unwrap_or_default().trim();
         let Some(calls) = response.get("tool_calls").and_then(Value::as_array).filter(|calls| !calls.is_empty()) else {
             if answer.is_empty() || answer.len() > 32 * 1024 {
@@ -202,6 +250,64 @@ fn decode(id:&str,response:&Value)->Result<(String,Vec<Call>),String>{
         host.set_enabled("example-llm", false).await.unwrap();
         assert!(host.text_plugins().is_empty());
         assert!(ask(&host, &Settings::default(), &profile, "system text", "test", &tools, vec![]).await.is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature = "lua")]
+    #[tokio::test]
+    async fn lua_openrouter_example_forwards_model_and_history_with_tools() {
+        let dir = std::env::temp_dir().join(format!("jarvis-openrouter-{}", crate::settings::rand_hex(6)));
+        let plugin = dir.join("plugins/lua-openrouter");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("plugin.json"),
+            include_str!("../../../plugins/examples/lua-openrouter/plugin.json"),
+        ).unwrap();
+        let src = format!(
+            r#"
+            jarvis.settings = {{ api_key = 'sk-or-test', model = 'default/model' }}
+            jarvis.fetch = function(url, opts)
+                local req = jarvis.json.decode(opts.body)
+                assert(url == 'https://openrouter.ai/api/v1/chat/completions')
+                assert(req.model == 'qwen/qwen3-235b')
+                assert(req.messages[2].role == 'user' and req.messages[2].content == 'prev q')
+                assert(req.messages[3].role == 'assistant' and req.messages[3].content == 'prev a')
+                local last = req.messages[#req.messages]
+                if last.role == 'tool' then
+                    return {{ ok = true, status = 200, body = jarvis.json.encode({{ choices = {{ {{ message = {{ content = 'got:' .. last.content }} }} }} }}) }}
+                end
+                return {{ ok = true, status = 200, body = jarvis.json.encode({{ choices = {{ {{ message = {{ content = '', tool_calls = {{ {{ id = 'c1', ["function"] = {{ name = 'probe', arguments = '{{"x":"ok"}}' }} }} }} }} }} }} }}) }}
+            end
+            local mod = (function()
+            {}
+            end)()
+            mod.tools = {{ {{ name = 'probe', description = 'Test', parameters = {{type = 'object'}}, handler = function(a) return a.x end }} }}
+            return mod
+            "#,
+            include_str!("../../../plugins/examples/lua-openrouter/main.lua")
+        );
+        // Add "tools" permission just for the mocked test tool in the same plugin.
+        let mut manifest: Value = serde_json::from_str(include_str!("../../../plugins/examples/lua-openrouter/plugin.json")).unwrap();
+        manifest["permissions"] = json!(["network", "tools"]);
+        std::fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+        std::fs::write(plugin.join("main.lua"), src).unwrap();
+
+        let host = Host::new(dir.clone(), crate::plugins::Hooks::default());
+        host.load().await;
+        let store = crate::settings::Store::open(dir.join("settings.json")).unwrap();
+        let tools = Tools::new(host.clone(), store);
+        let profile = Profile {
+            llm_engine: "lua-openrouter".into(),
+            llm_model: "qwen/qwen3-235b".into(),
+            ..Default::default()
+        };
+        let history = [
+            Turn { role: "user", content: "prev q".into() },
+            Turn { role: "assistant", content: "prev a".into() },
+        ];
+        let reply = ask_with_history(&host, &Settings::default(), &profile, "sys", &history, "now", &tools, host.tools()).await;
+        assert_eq!(reply.as_deref(), Ok("got:ok"));
+        host.stop_all().await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

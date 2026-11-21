@@ -172,13 +172,44 @@ pub async fn profile(State(app): State<App>, Json(mut p): Json<Profile>) -> Resp
         }
     }
     p.engine = p.engine.trim().into();
-    if !p.llm_plugin.is_empty() && !crate::plugins::valid_id(&p.llm_plugin) {
-        return bad("Неверный идентификатор текстового плагина");
+    p.stt_engine = p.stt_engine.trim().into();
+    p.llm_engine = p.llm_engine.trim().into();
+    p.tts_engine = p.tts_engine.trim().into();
+    p.llm_plugin = p.llm_plugin.trim().into();
+    p.stt_model = p.stt_model.trim().into();
+    p.llm_model = p.llm_model.trim().into();
+    p.tts_model = p.tts_model.trim().into();
+    for (id, msg) in [
+        (&p.stt_engine, "Неверный идентификатор плагина распознавания"),
+        (&p.llm_engine, "Неверный идентификатор текстового провайдера"),
+        (&p.tts_engine, "Неверный идентификатор плагина озвучки"),
+        (&p.llm_plugin, "Неверный идентификатор текстового плагина"),
+    ] {
+        if !id.is_empty() && !crate::plugins::valid_id(id) {
+            return bad(msg);
+        }
+    }
+    for m in [&p.stt_model, &p.llm_model, &p.tts_model] {
+        if m.len() > 160 || m.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return bad("Некорректное имя модели");
+        }
     }
     if p.mode != "classic" {
         p.mode = "live".into();
+    } else {
+        if p.llm_engine.is_empty() && !p.llm_plugin.is_empty() {
+            p.llm_engine = p.llm_plugin.clone();
+        }
+        if matches!(p.llm_engine.as_str(), "" | "openai" | "chatgpt" | "gemini" | "grok") {
+            p.llm_plugin.clear();
+        } else {
+            p.llm_plugin = p.llm_engine.clone();
+        }
+        if p.engine.is_empty() || p.engine == "live" {
+            p.engine = "classic".into();
+        }
     }
-    if p.engine == "chatgpt" {
+    if !p.is_classic() && p.engine == "chatgpt" {
         let Some(voice) = crate::chatgpt::voice(&p.voice) else { return bad("Этот голос недоступен для подписки ChatGPT") };
         p.voice = voice;
     }

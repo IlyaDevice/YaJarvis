@@ -125,14 +125,34 @@ export const avatar = (p, big = false) => `<span class="av c${p.color || 1}${big
 export const voiceName = (id) => (S.live_voices.find((v) => v.id === id)?.name) || id || "cedar";
 export const voicePlugin = (engine) => ({ live: "openai", eleven_realtime: "elevenlabs" })[engine] || engine;
 export const voiceEnabled = (engine) => !!engine && !!S.plugins?.enabled?.includes(voicePlugin(engine));
-export const engineName = (p) => !p.engine ? "Голос не настроен" : !voiceEnabled(p.engine) ? "Голосовой плагин выключен" :
-  ({ openai: "GPT-Live", live: "GPT-Live", gemini: "Gemini Live", chatgpt: "GPT-Live по подписке", grok: "Grok Voice", elevenlabs: "ElevenLabs", eleven_realtime: "ElevenLabs Live" })[p.engine] || "Голосовой плагин";
+export const isClassicProfile = (p) => !!p && p.engine !== "eleven_realtime" && (p.mode === "classic" || p.engine === "elevenlabs" || p.engine === "classic");
+export const sttReady = (id) => ["openai", "elevenlabs"].includes(id) ? voiceEnabled(id) : (S.stt_plugins || []).some((x) => x.id === id);
+export const ttsReady = (id) => ["openai", "elevenlabs"].includes(id) ? voiceEnabled(id) : (S.tts_plugins || []).some((x) => x.id === id);
+export const classicEnabled = () =>
+  (voiceEnabled("openai") || voiceEnabled("elevenlabs") || (S.stt_plugins || []).length > 0)
+  && (voiceEnabled("openai") || voiceEnabled("elevenlabs") || (S.tts_plugins || []).length > 0);
+export const engineName = (p) => {
+  if (isClassicProfile(p)) {
+    const stt = p.stt_engine || "elevenlabs";
+    const tts = p.tts_engine || (p.engine === "openai" ? "openai" : "elevenlabs");
+    if (!sttReady(stt) || !ttsReady(tts)) return "Плагин пайплайна выключен";
+    return stt === "elevenlabs" && tts === "elevenlabs" ? "ElevenLabs" : "Пайплайн";
+  }
+  if (!p.engine) return "Голос не настроен";
+  if (!voiceEnabled(p.engine)) return "Голосовой плагин выключен";
+  return ({ openai: "GPT-Live", live: "GPT-Live", gemini: "Gemini Live", chatgpt: "GPT-Live по подписке", grok: "Grok Voice", elevenlabs: "ElevenLabs", eleven_realtime: "ElevenLabs Live" })[p.engine] || "Голосовой плагин";
+};
 
 export function renderSide() {
   $("#upd-dot")?.classList.toggle("hidden", !S.update_available);
-  $("#profiles").innerHTML = S.profiles.map((p) => `<div class="prof${page === "p:" + p.id ? " on" : ""}" draggable="true" data-id="${esc(p.id)}">
-    ${avatar(p)}<div class="meta"><div class="n">${esc(p.name)}</div><div class="s">${engineName(p)}${voiceEnabled(p.engine) && p.voice ? ` · ${esc(voiceName(p.voice))}` : ""}</div></div>
-    ${p.id === S.active ? `<span class="act" title="Активный профиль"></span>` : ""}</div>`).join("");
+  $("#profiles").innerHTML = S.profiles.map((p) => {
+    const classic = isClassicProfile(p);
+    const tts = p.tts_engine || (p.engine === "openai" ? "openai" : "elevenlabs");
+    const sideVoice = classic ? (ttsReady(tts) && tts === "openai" && p.voice ? voiceName(p.voice) : "") : (voiceEnabled(p.engine) && p.voice ? voiceName(p.voice) : "");
+    return `<div class="prof${page === "p:" + p.id ? " on" : ""}" draggable="true" data-id="${esc(p.id)}">
+    ${avatar(p)}<div class="meta"><div class="n">${esc(p.name)}</div><div class="s">${engineName(p)}${sideVoice ? ` · ${esc(sideVoice)}` : ""}</div></div>
+    ${p.id === S.active ? `<span class="act" title="Активный профиль"></span>` : ""}</div>`;
+  }).join("");
   $$("#profiles .prof").forEach((el) => {
     el.addEventListener("click", () => go("#p/" + el.dataset.id));
     el.addEventListener("dragstart", (e) => { el.classList.add("drag"); e.dataTransfer.setData("text/plain", el.dataset.id); });

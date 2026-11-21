@@ -200,6 +200,88 @@ pub fn key_missing(host: &Host, s: &Settings, engine: &str) -> String {
     }
 }
 
+pub fn stt_missing(host: &Host, s: &Settings, p: &Profile) -> String {
+    if !p.is_classic() {
+        return key_missing(host, s, &p.engine);
+    }
+    match p.effective_stt_engine() {
+        "openai" => key_missing(host, s, "openai"),
+        "elevenlabs" => key_missing(host, s, "elevenlabs"),
+        id => {
+            if host.supports_stt(id) {
+                String::new()
+            } else {
+                format!("Установите и включите плагин распознавания «{id}» в «Подключениях»")
+            }
+        }
+    }
+}
+
+pub fn tts_missing(host: &Host, s: &Settings, p: &Profile) -> String {
+    if !p.is_classic() {
+        return key_missing(host, s, &p.engine);
+    }
+    match p.effective_tts_engine() {
+        "openai" => key_missing(host, s, "openai"),
+        "elevenlabs" => key_missing(host, s, "elevenlabs"),
+        id => {
+            if host.supports_tts(id) {
+                String::new()
+            } else {
+                format!("Установите и включите плагин озвучки «{id}» в «Подключениях»")
+            }
+        }
+    }
+}
+
+pub fn llm_missing(host: &Host, s: &Settings, p: &Profile) -> String {
+    if !p.is_classic() {
+        return key_missing(host, s, &p.engine);
+    }
+    match p.effective_llm_engine() {
+        "" => {
+            let any = (host.provider("openai").is_ok() && !s.openai_key.is_empty())
+                || (host.provider("gemini").is_ok() && !s.gemini_key.is_empty())
+                || (host.provider("grok").is_ok() && !s.grok_key.is_empty())
+                || (host.provider("chatgpt").is_ok() && chatgpt::signed_in(&s.chatgpt));
+            if any {
+                String::new()
+            } else {
+                "Добавьте API-ключ или войдите в ChatGPT в «Подключениях»".into()
+            }
+        }
+        "chatgpt" => {
+            if host.provider("chatgpt").is_err() {
+                "Установите и включите плагин «chatgpt» в «Подключениях»".into()
+            } else if !chatgpt::signed_in(&s.chatgpt) {
+                "не выполнен вход в ChatGPT — войдите в «Подключениях»".into()
+            } else {
+                String::new()
+            }
+        }
+        id @ ("openai" | "live" | "gemini" | "grok") => key_missing(host, s, id),
+        id => {
+            if host.supports_chat(id) {
+                String::new()
+            } else {
+                format!("Включите текстовый плагин «{id}» в «Подключениях»")
+            }
+        }
+    }
+}
+
+pub fn profile_missing(host: &Host, s: &Settings, p: &Profile) -> String {
+    if !p.is_classic() {
+        return key_missing(host, s, &p.engine);
+    }
+    for msg in [stt_missing(host, s, p), llm_missing(host, s, p), tts_missing(host, s, p)] {
+        if !msg.is_empty() {
+            return msg;
+        }
+    }
+    String::new()
+}
+
 pub struct WakeRecording(Arc<Engine>);
 
 impl Drop for WakeRecording {
@@ -635,7 +717,7 @@ impl Engine {
     fn converse(self: &Arc<Self>, by_word: bool, sure: bool, preroll: Vec<i16>, clip: Vec<i16>) {
         let s = self.store.get();
         let p = s.active_profile();
-        let missing = key_missing(&self.host, &s, &p.engine);
+        let missing = profile_missing(&self.host, &s, &p);
         if !missing.is_empty() {
             self.journal.fail(&missing);
             return;
@@ -950,23 +1032,36 @@ impl Engine {
         let epoch = self.speech_epoch.load(Ordering::SeqCst);
         let s = self.store.get();
         let p = s.active_profile();
-        let missing = key_missing(&self.host, &s, &p.engine);
+        let missing = tts_missing(&self.host, &s, &p);
         if !missing.is_empty() {
             return Err(missing);
         }
         let t0 = Instant::now();
-        let sess: Arc<dyn Session> = chatgpt::ChatGptSession::open(
-            &self.rt,
-            chatgpt::Open {
-                host: self.host.clone(),
-                voice: p.voice.clone(),
-                thread: self.chat_thread().into(),
-                instructions: "Ты озвучиваешь готовый текст. Произнеси ровно то, что тебе дали, ничего не добавляя, и замолчи.".into(),
-                brain: None,
-                journal: Arc::new(Journal::default()),
-                memory: None,
-            },
-        );
+        let sess: Arc<dyn Session> = if p.is_classic() {
+            crate::classic_voice::Classic::open(
+                &self.rt,
+                self.host.clone(),
+                self.tools.clone(),
+                Arc::new(Journal::default()),
+                s.clone(),
+                p.clone(),
+                "Ты озвучиваешь готовый текст. Произнеси ровно то, что тебе дали, ничего не добавляя, и замолчи.".into(),
+                self.listener.phrase(),
+            )
+        } else {
+            chatgpt::ChatGptSession::open(
+                &self.rt,
+                chatgpt::Open {
+                    host: self.host.clone(),
+                    voice: p.voice.clone(),
+                    thread: self.chat_thread().into(),
+                    instructions: "Ты озвучиваешь готовый текст. Произнеси ровно то, что тебе дали, ничего не добавляя, и замолчи.".into(),
+                    brain: None,
+                    journal: Arc::new(Journal::default()),
+                    memory: None,
+                },
+            )
+        };
         let res = self.play_said(&*sess, text, limit, t0, epoch);
         sess.close();
         res
@@ -1145,5 +1240,43 @@ mod tests {
         echo.stopped(now + ms(300));
         assert!(echo.muted(now + ms(749)));
         assert!(!echo.muted(now + ms(751)));
+    }
+
+    #[cfg(feature = "lua")]
+    #[tokio::test]
+    async fn profile_missing_checks_classic_stages_independently() {
+        let dir = std::env::temp_dir().join(format!("jarvis-pm-{}", crate::settings::rand_hex(6)));
+        for (id, provides, src) in [
+            ("stt-p", "stt", "return {transcribe=function() return {text=''} end}"),
+            ("llm-p", "llm", "return {chat=function() return 'ok' end}"),
+            ("tts-p", "tts", "return {speak=function() return {audio='',rate=24000} end}"),
+        ] {
+            let p = dir.join("plugins").join(id);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("plugin.json"), serde_json::json!({"id":id,"name":id,"version":"1","kind":"lua","category":"assistant","main":"main.lua","provides":[provides]}).to_string()).unwrap();
+            std::fs::write(p.join("main.lua"), src).unwrap();
+        }
+        let host = super::Host::new(dir.clone(), crate::plugins::Hooks::default());
+        host.load().await;
+        let s = super::Settings::default();
+        let mut p = super::Profile {
+            mode: "classic".into(),
+            engine: "classic".into(),
+            stt_engine: "stt-p".into(),
+            llm_engine: "llm-p".into(),
+            tts_engine: "tts-p".into(),
+            ..Default::default()
+        };
+        assert_eq!(super::profile_missing(&host, &s, &p), "");
+        p.tts_engine = "missing-tts".into();
+        assert!(super::profile_missing(&host, &s, &p).contains("missing-tts"));
+        p.tts_engine = "tts-p".into();
+        p.llm_engine = "missing-llm".into();
+        assert!(super::profile_missing(&host, &s, &p).contains("missing-llm"));
+        p.llm_engine = "llm-p".into();
+        p.stt_engine = "missing-stt".into();
+        assert!(super::profile_missing(&host, &s, &p).contains("missing-stt"));
+        host.stop_all().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
