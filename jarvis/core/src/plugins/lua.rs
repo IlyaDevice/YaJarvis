@@ -29,6 +29,7 @@ pub struct Script {
     stt: bool,
     tts: bool,
     tts_voices: bool,
+    service: bool,
     status: Arc<Mutex<String>>,
     stopped: Arc<AtomicBool>,
     /// Закрывается, когда поток плагина завершился: после stop() таймеры уже ничего не пишут.
@@ -42,6 +43,7 @@ struct Capabilities {
     stt: bool,
     tts: bool,
     tts_voices: bool,
+    service: bool,
 }
 
 struct Vm {
@@ -222,6 +224,14 @@ impl Vm {
             return Err(mlua::Error::external("Для провайдера озвучки нужны provides: [\"tts\"] и функция speak"));
         }
         let tts_voices = tts && exports.get::<Option<Function>>("voices")?.is_some();
+        let service = exports.get::<Option<Function>>("service")?.is_some();
+        if service
+            && !(super::modules::official_lua_service(&m.id)
+                && m.provides == [m.id.clone()]
+                && host.upgrade().is_some_and(|h| h.official(&m.id)))
+        {
+            return Err(mlua::Error::external("Недостаточно прав для сервисного провайдера"));
+        }
         let vm = Self {
             lua,
             exports,
@@ -240,6 +250,7 @@ impl Vm {
                 stt,
                 tts,
                 tts_voices,
+                service,
             },
         ))
     }
@@ -287,6 +298,10 @@ impl Vm {
             "llm.chat" => {
                 self.budget();
                 self.exports.get::<Function>("chat")?
+            }
+            "service" => {
+                self.budget_for(25);
+                self.exports.get::<Function>("service")?
             }
             _ => {
                 self.budget();
@@ -394,10 +409,23 @@ impl Script {
             stt: caps.stt,
             tts: caps.tts,
             tts_voices: caps.tts_voices,
+            service: caps.service,
             status,
             stopped,
             exited: Mutex::new(Some(exited)),
         }))
+    }
+    pub fn running(&self) -> bool {
+        !self.stopped.load(Ordering::Relaxed)
+    }
+    pub fn supports_service(&self) -> bool {
+        self.service && self.running()
+    }
+    pub async fn service(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
+        if !self.supports_service() {
+            return Err("Плагин отключён".into());
+        }
+        self.request_timeout("service", json!({"method": method, "params": params}), timeout).await
     }
     pub fn tools(&self) -> Vec<Value> {
         if self.stopped.load(Ordering::Relaxed) {
@@ -909,6 +937,250 @@ mod tests {
         let voices = host.plugin_tts_voices("custom-av").await.unwrap();
         assert_eq!(voices[0]["id"], "v1");
         host.stop_all().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn yandexhome_lua_matches_rust_behavior() {
+        use axum::{
+            Json, Router,
+            body::Bytes,
+            extract::{Path, State as AxumState},
+            http::{HeaderMap, StatusCode},
+            response::{IntoResponse, Response},
+            routing::{get, post},
+        };
+        use std::sync::atomic::{AtomicU8, AtomicUsize};
+
+        #[derive(Clone)]
+        struct Fake {
+            catalog: Arc<Mutex<Value>>,
+            posts: Arc<Mutex<Vec<(String, Value)>>>,
+            gets: Arc<AtomicUsize>,
+            mode: Arc<AtomicU8>,
+        }
+        fn authorized(h: &HeaderMap) -> bool {
+            h.get("authorization").is_some_and(|s| s == "Bearer test-token")
+        }
+        async fn info(AxumState(s): AxumState<Fake>, h: HeaderMap) -> Response {
+            s.gets.fetch_add(1, Ordering::Relaxed);
+            if !authorized(&h) {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            Json(s.catalog.lock().unwrap().clone()).into_response()
+        }
+        fn ack(id: &str, actions: &[Value]) -> Value {
+            json!({"id": id, "capabilities": actions.iter().map(|a| json!({
+                "type": a["type"], "state": {"instance": a["state"]["instance"], "action_result": {"status": "DONE"}}
+            })).collect::<Vec<_>>()})
+        }
+        async fn action(AxumState(s): AxumState<Fake>, Path(path): Path<String>, h: HeaderMap, body: Bytes) -> Response {
+            if !authorized(&h) {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            let body: Value = if body.is_empty() { Value::Null } else { serde_json::from_slice(&body).unwrap() };
+            s.posts.lock().unwrap().push((path.clone(), body.clone()));
+            let mode = s.mode.load(Ordering::Relaxed);
+            if mode == 7 { return StatusCode::INTERNAL_SERVER_ERROR.into_response(); }
+            if mode == 8 { return "not-json".into_response(); }
+            if path.starts_with("scenarios/") {
+                return Json(json!({"status": if mode == 0 { "ok" } else { "error" }})).into_response();
+            }
+            let mut devices: Vec<Value> = if path == "devices/actions" {
+                body["devices"].as_array().unwrap().iter()
+                    .map(|d| ack(d["id"].as_str().unwrap(), d["actions"].as_array().unwrap()))
+                    .collect()
+            } else {
+                let c = s.catalog.lock().unwrap();
+                let group = c["groups"].as_array().unwrap().iter()
+                    .find(|g| path == format!("groups/{}/actions", g["id"].as_str().unwrap())).unwrap();
+                group["devices"].as_array().unwrap().iter()
+                    .map(|id| ack(id.as_str().unwrap(), body["actions"].as_array().unwrap()))
+                    .collect()
+            };
+            match mode {
+                1 => { devices.pop(); }
+                2 => { if let Some(d) = devices.first_mut() { d["capabilities"].as_array_mut().unwrap().remove(0); } }
+                3 => { devices[0]["capabilities"][0]["state"]["action_result"]["status"] = "ERROR".into(); }
+                4 => { devices[0]["id"] = "unknown-id".into(); }
+                5 => { devices.push(devices[0].clone()); }
+                _ => {}
+            }
+            Json(json!({"status": if mode == 6 { "error" } else { "ok" }, "devices": devices})).into_response()
+        }
+
+        let catalog_json: Value = serde_json::from_str(include_str!("../../../../jarvis/modules/yandexhome/src/catalog-test.json")).unwrap();
+        let fake = Fake {
+            catalog: Arc::new(Mutex::new(catalog_json)),
+            posts: Arc::default(),
+            gets: Arc::default(),
+            mode: Arc::default(),
+        };
+        let app = Router::new()
+            .route("/v1.0/user/info", get(info))
+            .route("/v1.0/{*path}", post(action))
+            .with_state(fake.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1.0/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+
+        // Reject unofficial upload claiming yandexhome.
+        let dir = std::env::temp_dir().join(format!("jarvis-lua-yh-{}", crate::settings::rand_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let host_unoff = Host::new(dir.clone(), Hooks::default());
+        let mut zip_bytes = Vec::new();
+        {
+            use std::io::Write;
+            let mut z = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            z.start_file("plugin.json", zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(include_bytes!("../../../../plugins/yandexhome/plugin.json")).unwrap();
+            z.start_file("main.lua", zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(include_bytes!("../../../../plugins/yandexhome/main.lua")).unwrap();
+            z.finish().unwrap();
+        }
+        assert!(host_unoff.install(&zip_bytes, "file", false).await.is_err());
+
+        // Start official Lua yandexhome with test server URL + configurable network policy.
+        let net_route = Arc::new(Mutex::new(json!({})));
+        let net_ref = net_route.clone();
+        let hooks = Hooks {
+            request: Box::new(move |_id, method, _params| {
+                let route = net_ref.lock().unwrap().clone();
+                Box::pin(async move {
+                    if method == "network" { Ok(route) } else { Err("unknown".into()) }
+                })
+            }),
+            ..Default::default()
+        };
+        let mut manifest: Value = serde_json::from_str(include_str!("../../../../plugins/yandexhome/plugin.json")).unwrap();
+        manifest["network_allow"] = json!(["127.0.0.1"]);
+        let src = format!(
+            "jarvis.yandex_api = '{}'\n{}",
+            url,
+            include_str!("../../../../plugins/yandexhome/main.lua")
+        );
+        let pdir = dir.join("plugins/yandexhome");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(pdir.join("plugin.json"), manifest.to_string()).unwrap();
+        std::fs::write(pdir.join("main.lua"), src).unwrap();
+        let mut st_map = BTreeMap::new();
+        st_map.insert("yandexhome", super::super::PluginState {
+            official: true,
+            source: crate::DEFAULT_REPO.into(),
+            ..Default::default()
+        });
+        std::fs::write(dir.join("plugins.json"), serde_json::to_vec(&st_map).unwrap()).unwrap();
+
+        let host = Host::new(dir.clone(), hooks);
+        host.load().await;
+        let rt = host.provider("yandexhome").unwrap();
+        let call = |op: &str, args: Value, alice: bool| {
+            let rt = rt.clone();
+            async move {
+                rt.request(
+                    "yandexhome",
+                    json!({"op": op, "args": args, "token": "test-token", "room": "Зал", "alice": alice}),
+                    Duration::from_secs(10),
+                ).await
+            }
+        };
+
+        assert_eq!(call("has-catalog", Value::Null, false).await.unwrap(), false);
+        assert_eq!(call("fast", "Джарвис, выключи свет!".into(), false).await.unwrap()["answer"], "Готово.");
+        assert_eq!(fake.posts.lock().unwrap()[0].0, "devices/actions");
+        assert_eq!(fake.posts.lock().unwrap()[0].1["devices"][0]["id"], "l1");
+
+        for (text, want) in [
+            ("включи свет на кухне", "l3"),
+            ("Выключи стол", "l2"),
+            ("включи ленту в спальне", "l4"),
+            ("выключи розетку", "s1"),
+            ("запусти пылесос", "v1"),
+            ("выключи кондей", "ac"),
+            ("включи подсветку кровати", "l4"),
+        ] {
+            let ans = call("fast", text.into(), false).await.unwrap();
+            assert_eq!(ans["answer"], "Готово.", "{text}");
+            let posts = fake.posts.lock().unwrap();
+            assert_eq!(posts.last().unwrap().1["devices"][0]["id"], want, "{text}");
+        }
+
+        let ans = call("fast", "Джарвис, выключи весь свет".into(), false).await.unwrap();
+        assert_eq!(ans["answer"], "Готово.");
+        assert_eq!(fake.posts.lock().unwrap().last().unwrap().1["devices"].as_array().unwrap().len(), 4);
+
+        let ans = call("fast", "Я вернулся".into(), false).await.unwrap();
+        assert_eq!(ans["answer"], "Готово.");
+        assert_eq!(fake.posts.lock().unwrap().last().unwrap().0, "scenarios/sc1/actions");
+
+        let ans = call("fast", "Джарвис, сделай ленту красной".into(), false).await.unwrap();
+        assert_eq!(ans["answer"], "Готово.");
+        {
+            let posts = fake.posts.lock().unwrap();
+            assert_eq!(posts.last().unwrap().1["devices"][0]["actions"][1]["state"]["value"], 0xFF0000);
+        }
+
+        let ctx = call("context", Value::Null, false).await.unwrap();
+        let ctx_s = ctx.as_str().unwrap();
+        assert!(ctx_s.contains("Колонка стоит в комнате «Зал»"), "{ctx_s}");
+        assert!(!ctx_s.contains("Станция"), "{ctx_s}");
+        assert_eq!(call("has-catalog", Value::Null, false).await.unwrap(), true);
+        assert_eq!(call("scenario-match", "Не запускать".into(), false).await.unwrap(), false);
+        assert_eq!(call("fast", "Расскажи как включить свет".into(), false).await.unwrap()["handled"], false);
+
+        // Confirmation failures + no POST retry.
+        for mode in 1..=8u8 {
+            fake.mode.store(mode, Ordering::Relaxed);
+            let before = fake.posts.lock().unwrap().len();
+            let res = call("control", json!({"device_ids":["l4"],"color":"#00ff00"}).to_string().into(), false).await.unwrap();
+            assert_ne!(res, "Готово.", "mode {mode}");
+            assert_eq!(fake.posts.lock().unwrap().len(), before + 1);
+        }
+        for mode in [0u8, 1, 3, 5] {
+            fake.mode.store(mode, Ordering::Relaxed);
+            let res = call("control", json!({"device_ids":["g1"],"on":true}).to_string().into(), false).await.unwrap();
+            assert_eq!(res == "Готово.", mode == 0, "group mode {mode}: {res}");
+        }
+        fake.mode.store(0, Ordering::Relaxed);
+
+        // Invalid & unknown inputs + partial result + null fields handling.
+        for a in [
+            json!({"scenario_id":"disabled"}),
+            json!({"scenario_id":"../unknown"}),
+            json!({"device_ids":["unknown"],"on":true}),
+            json!({"device_ids":["ac"],"modes":{"thermostat":"bad"}}),
+            json!({"device_ids":["l1"],"color":"invalid"}),
+        ] {
+            assert_ne!(call("control", a.to_string().into(), false).await.unwrap(), "Готово.");
+        }
+        let partial = call("control", json!({"device_ids":["l1","unknown"],"on":true}).to_string().into(), false).await.unwrap();
+        assert!(partial.as_str().unwrap().contains("Часть действий"));
+
+        // Blocked / invalid VPN route never falls back to direct.
+        call("prewarm", Value::Null, false).await.unwrap();
+        let gets_before = fake.gets.load(Ordering::Relaxed);
+        for bad_route in [
+            json!({"error":"VPN недоступен"}),
+            json!({"socks":"192.0.2.1:1080","user":"x","pass":"x"}),
+            json!({"socks":null}),
+            Value::Null,
+        ] {
+            *net_route.lock().unwrap() = bad_route.clone();
+            assert!(call("control", json!({"device_ids":["l1"],"on":true}).to_string().into(), false).await.is_err(), "{bad_route:?}");
+        }
+        assert_eq!(fake.gets.load(Ordering::Relaxed), gets_before);
+        *net_route.lock().unwrap() = json!({"error":"blocked"});
+        let fb = call("context", Value::Null, true).await.unwrap();
+        assert!(fb.as_str().unwrap().contains("alice_command"));
+        *net_route.lock().unwrap() = json!({});
+
+        // Null fields in catalog are tolerated.
+        *fake.catalog.lock().unwrap() = json!({"status":"ok","rooms":null,"groups":null,"devices":[{"id":"x","room":null,"capabilities":null}],"scenarios":null});
+        call("invalidate", Value::Null, false).await.unwrap();
+        assert!(call("context", Value::Null, false).await.unwrap().as_str().unwrap().contains("- x"));
+
+        host.stop_all().await;
+        server.abort();
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

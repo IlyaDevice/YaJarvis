@@ -81,7 +81,9 @@ def lifecycle(data, ids):
     assert request("/api/setup", "POST", {"password": "test setup password"})["ok"]
     state = request("/api/state")
     assert not state["settings"]["onboarded"] and not state["settings"]["wake_training"]
-    assert not request("/api/plugins")["installed"]
+    plugins_summary = request("/api/plugins")
+    assert not plugins_summary["installed"]
+    assert set(state["plugins"].get("builtin", [])) == {"chatgpt", "openai", "gemini", "grok", "elevenlabs"}, state["plugins"]
     profile, = state["profiles"]
     assert profile["engine"] == "" and profile["voice"] == ""
     assert request("/api/profile", "PUT", {**profile, "name": "Jarvis"})["ok"]
@@ -94,7 +96,7 @@ def lifecycle(data, ids):
         assert len(plugins["installed"]) == 1 and plugins["installed"][0]["running"], plugins
         root = data / "plugins" / plugin_id
         assert (root / row["main"]).is_file()
-        if plugin_id == "chatgpt":
+        if plugin_id == "vpn":
             try:
                 request("/api/plugins/install", "POST", {"id": plugin_id, "update": True, "expected_version": "100.0.0"})
             except urllib.error.HTTPError as error:

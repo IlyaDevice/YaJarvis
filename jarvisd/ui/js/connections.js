@@ -94,7 +94,7 @@ export function connDefs() {
   const k = S.keys, v = S.vless, cg = S.chatgpt, lg = cg.login || {}, yt = S.youtube || {}, ya = yt.account || {};
   const keyBody = (id, place, how, label, helpTitle) => `<div class="f"><label for="k-${id}">${label ? label[0] : k[id] ? "Новый ключ" : "Ключ"}</label><div class="row"><input type="password" id="k-${id}" placeholder="${place}" autocomplete="off"><button class="btn primary" data-key="${id}">${label ? label[1] : k[id] ? "Заменить" : "Сохранить"}</button></div></div>
     ${how ? `<details${k[id] ? "" : " open"}><summary>${helpTitle || "Где его взять"}</summary><ol class="how">${how}</ol></details>` : ""}`;
-  const key = (id, o) => ({ id, group: o.group, plugin: o.plugin || id, mono: o.mono, name: o.name, about: o.about, more: o.more,
+  const key = (id, o) => ({ id, group: o.group, plugin: o.plugin ?? id, mono: o.mono, name: o.name, about: o.about, more: o.more,
     on: !!k[id], need: !k[id] && !o.optional, state: k[id] ? `ключ ${String(k[id]).replace(/^задан,?\s*/, "")}` : o.optional ? "не подключено" : "нужен ключ",
     body: (o.top || "") + keyBody(id, o.place, o.how, o.label, o.helpTitle) + (o.vpn ? vpnRow(o.vpn) : ""), drop: k[id] ? `<button class="btn ghost danger" data-clear="${id}">${o.dropText || "Убрать ключ"}</button>` : "" });
   return [
@@ -108,7 +108,7 @@ export function connDefs() {
         <h3>Уборка по комнатам</h3><p class="note">Выберите готовый сценарий уборки либо действие Xiaomi с номерами зон. Без соответствия Джарвис попросит настроить комнату.</p>
         <div id="ha-rooms">${(S.home_assistant?.rooms || []).map(haRoomRow).join("")}</div><div class="row"><button class="btn" id="ha-discover-rooms">Найти комнаты пылесоса</button><button class="btn" id="ha-add-room">Добавить комнату</button></div>`,
       drop:S.home_assistant?.configured?`<button class="btn ghost danger" id="ha-disconnect">Отключить</button>`:"" },
-    { id: "chatgpt", plugin: "chatgpt", group: "voice", mono: "GP", name: "Подписка ChatGPT", about: "Голос Джарвиса за счёт подписки Plus или Pro — без оплаты API за минуты",
+    { id: "chatgpt", plugin: "", group: "voice", mono: "GP", name: "Подписка ChatGPT", about: "Голос Джарвиса за счёт подписки Plus или Pro — без оплаты API за минуты",
       more: "Включается у ассистента: движок «GPT-Live по подписке».",
       on: !!cg.signed_in, state: cg.signed_in ? ["вход выполнен", cg.plan].filter(Boolean).join(" · ") : lg.code ? "ждёт код" : "не подключено",
       wait: !cg.signed_in && !!lg.code,
@@ -120,16 +120,16 @@ export function connDefs() {
           <p class="note">Колонка получит свой вход, пароль она не видит. Способ неофициальный, как у Codex: OpenAI может его изменить.</p>`
         + vpnRow("chatgpt"),
       drop: cg.signed_in ? `<button class="btn ghost danger" id="cg-out">Выйти</button>` : "" },
-    key("openai", { plugin: "openai", vpn: "openai", group: "voice", mono: "AI", name: "OpenAI", place: "sk-…", about: "Голос и «мозг» Джарвиса. Живой разговор — примерно 5 центов в минуту",
+    key("openai", { plugin: "", vpn: "openai", group: "voice", mono: "AI", name: "OpenAI", place: "sk-…", about: "Голос и «мозг» Джарвиса. Живой разговор — примерно 5 центов в минуту",
       how: "<li>Откройте platform.openai.com и войдите.</li><li>Слева — API keys → Create new secret key.</li><li>Скопируйте ключ (начинается с sk-) и вставьте сюда.</li><li>Пополните баланс в разделе Billing — от 5 $.</li>" }),
-    key("gemini", { plugin: "gemini", vpn: "gemini", top: geminiKeysHtml(), label: k.gemini ? ["Ещё ключ — в запас", "Добавить"] : null,
+    key("gemini", { plugin: "", vpn: "gemini", top: geminiKeysHtml(), label: k.gemini ? ["Ещё ключ — в запас", "Добавить"] : null,
       dropText: (S.gemini_keys || []).length > 1 ? "Убрать все ключи" : "Убрать ключ", group: "voice", mono: "Ge", name: "Google Gemini", place: "AIza…", optional: true, about: "Gemini Live — примерно вдвое дешевле GPT-Live, есть бесплатный уровень. Можно добавить несколько ключей: у каждого свой бесплатный лимит",
       more: "Какой движок отвечает, выбирается у ассистента.",
       how: "<li>Откройте aistudio.google.com и войдите в аккаунт Google (из России и Беларуси — через VPN).</li><li>Нажмите Get API key → Create API key.</li><li>Скопируйте ключ и вставьте сюда.</li>" }),
-    key("grok", { plugin: "grok", vpn: "grok", group: "voice", mono: "xA", name: "xAI Grok", place: "xai-…", optional: true, about: "Grok Voice — сам ищет в интернете",
+    key("grok", { plugin: "", vpn: "grok", group: "voice", mono: "xA", name: "xAI Grok", place: "xai-…", optional: true, about: "Grok Voice — сам ищет в интернете",
       more: "Какой движок отвечает, выбирается у ассистента.",
       how: "<li>Откройте console.x.ai и войдите.</li><li>Пополните баланс (Billing → Credits) — без кредитов ключ не работает.</li><li>API Keys → Create API key, скопируйте ключ (начинается с xai-) и вставьте сюда.</li>" }),
-    key("elevenlabs", { plugin: "elevenlabs", vpn: "elevenlabs", top: elevenKeysHtml(), label: k.elevenlabs ? ["Ещё ключ — в запас", "Добавить"] : null,
+    key("elevenlabs", { plugin: "", vpn: "elevenlabs", top: elevenKeysHtml(), label: k.elevenlabs ? ["Ещё ключ — в запас", "Добавить"] : null,
       dropText: (S.eleven_keys || []).length > 1 ? "Убрать все ключи" : "Убрать ключ", group: "voice", mono: "11", name: "ElevenLabs", place: "sk_…", optional: true, about: "Распознавание речи и голоса классического режима. Выбирается в настройках ассистента → Мозг" }),
     key("yandex", { vpn: "yandex", group: "home", plugin: servicePlugin("yandex"), mono: "Я", name: "Яндекс Умный дом", place: "y0_…", about: "Джарвис сам управляет светом, пылесосом и сценариями",
       more: "В режиме «через Алису» можно обойтись без него.",

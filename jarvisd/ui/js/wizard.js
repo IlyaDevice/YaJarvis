@@ -84,21 +84,28 @@ function options() {
 }
 
 function configuration() {
-  const services = new Map(connDefs().map((service) => [service.id, service.on]));
-  const have = [...installed().values()].filter((p) => p.official && (services.has(serviceIds[p.id] || p.id) || p.id === "training"));
-  have.sort((a, b) => Number(b.id === "vpn") - Number(a.id === "vpn"));
+  const defs = connDefs();
+  const services = new Map(defs.map((service) => [service.id, service.on]));
+  const builtin = defs
+    .filter((service) => !service.plugin && service.group === "voice")
+    .map((service) => ({ id: service.id, name: service.name, icon: "bolt", description: service.about, running: true, official: true }));
+  const installedList = [...installed().values()]
+    .filter((p) => p.official && !builtin.some((b) => b.id === p.id) && (services.has(serviceIds[p.id] || p.id) || p.id === "training"));
+  const have = [...builtin, ...installedList];
+  have.sort((a, b) => Number(b.id === "vpn") - Number(a.id === "vpn")
+    || Number(voiceIds.includes(b.id)) - Number(voiceIds.includes(a.id)));
   const ready = (p) => p.running && (p.id === "training" ? !!S.settings.wake_profile : services.get(serviceIds[p.id] || p.id));
   const configured = have.filter((p) => voiceIds.includes(p.id) && ready(p));
   const current = S.profiles?.find((p) => p.id === S.active)?.engine;
   const selected = configured.find((p) => p.id === voicePlugin(current))?.id || configured[0]?.id;
-  return `<h1>Настройте подключения</h1><p>Откройте нужный плагин и следуйте инструкции в его настройках. Если потребуется VPN, начните с него.</p>
+  return `<h1>Настройте подключения</h1><p>Откройте нужный сервис и следуйте инструкции в его настройках. Если потребуется VPN, начните с него.</p>
     ${have.length ? `<div class="wz-list">${have.map((p) => {
       const on = ready(p);
       return `<div class="wz-ai wz-connection${on ? " on" : ""}">${plIcon(p.icon)}
-        <div><b>${esc(p.name)}</b><span>${esc(plDescription(p))}</span>${on ? '<span class="st ok">Настроено</span>' : ""}</div>
+        <div><b>${esc(p.name)}</b><span>${esc(p.description || plDescription(p))}</span>${on ? '<span class="st ok">Настроено</span>' : ""}</div>
         <button class="btn sm" type="button" data-wz-conn="${esc(p.id)}">${on ? "Открыть" : "Настроить"}</button></div>`;
     }).join("")}</div>`
-      : '<p class="muted">Подключения можно добавить позже. Чтобы Джарвис отвечал голосом, выберите и настройте голосового ассистента.</p>'}
+      : '<p class="muted">Подключения можно добавить позже. Чтобы Джарвис отвечал голосом, настройте один из голосовых движков.</p>'}
     ${configured.length ? `<div class="f"><label for="wz-voice">Кто будет отвечать</label><select id="wz-voice">${configured.map((p) => {
       const engine = p.id === "elevenlabs" && current !== "elevenlabs" ? "eleven_realtime" : p.id;
       return `<option value="${esc(engine)}"${p.id === selected ? " selected" : ""}>${esc(p.name)}</option>`;
@@ -116,11 +123,11 @@ function draw() {
   }
   const view = [
     () => `<div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Привет! Я Джарвис</h1>
-      <p>Сейчас на колонке только базовые функции. Выберите, чем будете пользоваться: голосом, музыкой, умным домом или своими командами.</p></div>`,
-    () => `<h1>Выберите плагины</h1><p>Поставьте один голосовой плагин, если хотите разговаривать с Джарвисом. Всё остальное можно добавить или удалить позже в «Подключениях».</p>${options()}`,
+      <p>Голосовые движки (ChatGPT, Gemini, OpenAI, Grok, ElevenLabs) уже в ядре. Ниже при желании можно добавить музыку, умный дом, VPN или свои команды.</p></div>`,
+    () => `<h1>Выберите плагины</h1><p>Выберите нужные дополнения (умный дом, YouTube, VPN, обучение слова). Голосовые движки уже встроены, а плагины всегда можно добавить или удалить в «Подключениях».</p>${options()}`,
     configuration,
     () => `<div class="wz-hero"><span class="orb big" data-s="idle"><i></i></span><h1>Готово</h1>
-      <p>Если настроили голосовой плагин, скажите <b>«Джарвис, привет»</b>. Добавить и удалить плагины можно в «Подключениях».</p>
+      <p>Если настроили голосовой движок, скажите <b>«Джарвис, привет»</b>. Добавить и удалить плагины можно в «Подключениях».</p>
       <a class="btn" href="https://github.com/newfpv/YaJavis" target="_blank" rel="noopener noreferrer">${icon("ext")}Поставить звезду на GitHub</a>
       <p class="muted">Мастер можно открыть снова в разделе «Безопасность».</p></div>`,
   ];

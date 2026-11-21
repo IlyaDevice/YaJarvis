@@ -139,6 +139,10 @@ pub fn install(
         lua.create_function(|_, s: String| Ok(super::super::command_text(&s)))?,
     )?;
     api.set(
+        "norm",
+        lua.create_function(|_, s: String| Ok(crate::fastcmd::norm_text(&s)))?,
+    )?;
+    api.set(
         "random",
         lua.create_function(|_, (min, max): (i64, i64)| {
             let span = u64::try_from(max as i128 - min as i128 + 1)
@@ -226,6 +230,9 @@ pub fn install(
     if m.permissions.iter().any(|p| p == "network") {
         let allowed = m.network_allow.clone();
         let stop = stopped.clone();
+        let plugin_id = m.id.clone();
+        let is_service = super::super::modules::official_lua_service(&m.id)
+            && host.upgrade().is_some_and(|h| h.official(&m.id));
         let cached_client: Arc<Mutex<Option<(Value, reqwest::Client)>>> = Arc::new(Mutex::new(None));
         api.set("fetch",lua.create_function(move |lua,(url,options):(String,Option<Table>)|{
             let started=Instant::now();let until=*wall.lock().unwrap();
@@ -233,6 +240,10 @@ pub fn install(
             if !permitted(&url,&allowed){return Err(fail("домен не разрешён в network_allow"));}
             let options=options.map(|t|lua.from_value::<Value>(mlua::Value::Table(t))).transpose()?.unwrap_or(json!({}));
             let method=options["method"].as_str().unwrap_or("GET");let method=reqwest::Method::from_bytes(method.as_bytes()).map_err(|_|fail("неверный HTTP метод"))?;
+            let req_timeout = options
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .map(|ms| Duration::from_millis(ms.clamp(1000, 25_000)));
             let body_opt=options.get("body").filter(|v|!v.is_null());
             let body_b64_opt=options.get("body_base64").filter(|v|!v.is_null());
             let multipart_opt=options.get("multipart").filter(|v|!v.is_null());
@@ -258,18 +269,41 @@ pub fn install(
             let resp_enc=options.get("response_encoding").and_then(Value::as_str).unwrap_or("utf8");
             if !matches!(resp_enc,"utf8"|"base64"){return Err(fail("неверный response_encoding"));}
             let headers: BTreeMap<String,String>=options.get("headers").filter(|v|!v.is_null()).map(|v|serde_json::from_value(v.clone())).transpose().map_err(fail)?.unwrap_or_default();
-            let route=(host.upgrade().ok_or_else(||fail("хост завершился"))?.hooks.network)();
-            if let Some(error)=route["error"].as_str(){return Err(fail(error));}
+            let host_arc = host.upgrade().ok_or_else(|| fail("хост завершился"))?;
+            let route = if is_service {
+                runtime
+                    .block_on((host_arc.hooks.request)(plugin_id.clone(), "network".into(), Value::Null))
+                    .map_err(fail)?
+            } else {
+                (host_arc.hooks.network)()
+            };
+            if is_service && !route.is_object() {
+                return Err(fail("Хост не предоставил сетевой маршрут"));
+            }
+            if let Some(error)=route["error"].as_str().filter(|s|!s.is_empty()){return Err(fail(error));}
             let client = {
                 let mut g = cached_client.lock().unwrap();
                 if let Some((prev, client)) = &*g && *prev == route {
                     client.clone()
                 } else {
-                    let mut builder=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(25));
+                    let mut builder=reqwest::Client::builder()
+                        .no_proxy()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .connect_timeout(Duration::from_secs(if is_service { 5 } else { 8 }))
+                        .timeout(Duration::from_secs(if is_service { 10 } else { 25 }));
                     if let Some(socks)=route["socks"].as_str() {
                         let address:std::net::SocketAddr=socks.parse().map_err(|_|fail("неверный SOCKS VPN"))?;
-                        if !address.ip().is_loopback() || address.port()==0{return Err(fail("неверный SOCKS VPN"));}
-                        builder=builder.proxy(reqwest::Proxy::all(format!("socks5h://{socks}")).map_err(fail)?.basic_auth(route["user"].as_str().unwrap_or(""),route["pass"].as_str().unwrap_or("")));
+                        let user=route["user"].as_str().unwrap_or("");
+                        let pass=route["pass"].as_str().unwrap_or("");
+                        if !address.ip().is_loopback()
+                            || address.port()==0
+                            || (is_service && (user.is_empty() || user.len() > 255 || pass.is_empty() || pass.len() > 255))
+                        {
+                            return Err(fail("неверный SOCKS VPN"));
+                        }
+                        builder=builder.proxy(reqwest::Proxy::all(format!("socks5h://{socks}")).map_err(fail)?.basic_auth(user,pass));
+                    } else if is_service && (route.get("socks").is_some() || route.get("user").is_some() || route.get("pass").is_some()) {
+                        return Err(fail("неверный SOCKS VPN"));
                     }
                     let client=builder.build().map_err(fail)?;
                     *g = Some((route.clone(), client.clone()));
@@ -281,6 +315,9 @@ pub fn install(
                     for redirect in 0..=5 {
                         if !permitted(&url,&allowed){return Err(fail("переход на запрещённый домен"));}
                         let mut request=client.request(method.clone(),url.clone()).body(raw_body.clone());
+                        if let Some(t) = req_timeout {
+                            request = request.timeout(t);
+                        }
                         if let Some(ct)=&auto_content_type && !headers.keys().any(|k|k.eq_ignore_ascii_case("content-type")){
                             request=request.header("Content-Type",ct);
                         }
@@ -296,9 +333,9 @@ pub fn install(
                             url=next;continue;
                         }
                         let status=response.status().as_u16();let mut bytes=Vec::new();
-                        let limit=if resp_enc=="base64" {4*1024*1024}else{1024*1024};
+                        let limit=if resp_enc=="base64" || is_service {4*1024*1024}else{1024*1024};
                         while let Some(chunk)=response.chunk().await.map_err(|e|fail(crate::net::short(&e)))? {
-                            if bytes.len()+chunk.len()>limit{return Err(fail(if resp_enc=="base64"{"HTTP ответ больше 4 МБ"}else{"HTTP ответ больше 1 МБ"}));}bytes.extend_from_slice(&chunk);
+                            if bytes.len()+chunk.len()>limit{return Err(fail(if limit>1024*1024{"HTTP ответ больше 4 МБ"}else{"HTTP ответ больше 1 МБ"}));}bytes.extend_from_slice(&chunk);
                         }
                         if resp_enc=="base64" {
                             return Ok(json!({"status":status,"ok":(200..300).contains(&status),"body_base64":B64.encode(&bytes)}));

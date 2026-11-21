@@ -30,56 +30,6 @@
       "description": "Подбросить монетку, бросить кубик, случайное число. Пример простого плагина."
     },
     {
-      "id": "chatgpt",
-      "kind": "rust",
-      "category": "assistant",
-      "name": "ChatGPT по подписке",
-      "version": "0.2.5",
-      "icon": "bolt",
-      "description": "Вход в ChatGPT по подписке и голосовой разговор. Можно подключить VPN.",
-      "min_core": "0.10.0"
-    },
-    {
-      "id": "openai",
-      "kind": "rust",
-      "category": "assistant",
-      "name": "OpenAI",
-      "version": "0.1.1",
-      "icon": "bolt",
-      "description": "Текстовые запросы, живой голос, распознавание и синтез речи через OpenAI.",
-      "min_core": "0.10.0"
-    },
-    {
-      "id": "gemini",
-      "kind": "rust",
-      "category": "assistant",
-      "name": "Gemini",
-      "version": "0.1.2",
-      "icon": "bolt",
-      "description": "Текстовые запросы и живой голос через Gemini API.",
-      "min_core": "0.10.0"
-    },
-    {
-      "id": "grok",
-      "kind": "rust",
-      "category": "assistant",
-      "name": "Grok",
-      "version": "0.1.1",
-      "icon": "bolt",
-      "description": "Текстовые запросы и живой голос через xAI.",
-      "min_core": "0.10.0"
-    },
-    {
-      "id": "elevenlabs",
-      "kind": "rust",
-      "category": "assistant",
-      "name": "ElevenLabs",
-      "version": "0.1.1",
-      "icon": "bolt",
-      "description": "Голоса, распознавание и синтез речи через ElevenLabs.",
-      "min_core": "0.10.0"
-    },
-    {
       "id": "homeassistant",
       "kind": "rust",
       "category": "home",
@@ -91,10 +41,10 @@
     },
     {
       "id": "yandexhome",
-      "kind": "rust",
+      "kind": "lua",
       "category": "home",
       "name": "Яндекс Умный дом",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "icon": "home",
       "description": "Управление устройствами, группами и сценариями Яндекс Умного дома.",
       "min_core": "0.10.0"

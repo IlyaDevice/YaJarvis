@@ -17,8 +17,11 @@ path = "src/main.rs"
 
 [dependencies]
 jarvis-plugin-sdk = { path = "../plugin-sdk", features = ["process"] }
+jarvis-chatgpt = { path = "../modules/chatgpt" }
+jarvis-cloud = { path = "../modules/cloud", features = ["openai", "gemini", "grok", "elevenlabs"] }
 jarvis-native-plugins = { path = "../native-plugins", optional = true }
 jarvis-station = { path = "../station-runtime" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 mlua = { version = "0.11.4", optional = true, features = ["lua54", "vendored", "serialize", "send"] }
 jarvis-dsp = { path = "../dsp" }
 serde.workspace = true
