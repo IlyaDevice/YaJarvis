@@ -19,7 +19,7 @@
     ["Europe/Berlin", "Берлин"],
   ];
 
-  let { api, selectedSpeaker, onBack, onStarted } = $props();
+  let { api, upload, selectedSpeaker, onBack, onStarted } = $props();
   let adbAddress = $derived($selectedSpeaker?.adb_address ?? $selectedSpeaker?.ip);
   let updating = $derived(Boolean($selectedSpeaker?.installed));
   let password = $state("");
@@ -27,6 +27,8 @@
   let timezone = $state("UTC");
   let error = $state("");
   let submitting = $state(false);
+  let backup = $state(null);
+  let checkingBackup = $state(false);
 
   $effect(() => {
     if (!adbAddress) return;
@@ -35,15 +37,44 @@
     confirmation = "";
     timezone = updating ? "" : "UTC";
     error = "";
+    backup = null;
   });
+
+  async function pickBackup(event) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || checkingBackup || submitting) return;
+    error = "";
+    checkingBackup = true;
+    try {
+      backup = await upload("/api/backup/inspect", file);
+      if (!password && !updating) {
+        timezone = "";
+      }
+    } catch (failure) {
+      error = failure.message;
+    } finally {
+      checkingBackup = false;
+    }
+  }
+
+  function clearBackup() {
+    backup = null;
+    if (!updating && !timezone) timezone = "UTC";
+  }
 
   async function install(event) {
     event.preventDefault();
-    if (submitting || !adbAddress) return;
+    if (submitting || checkingBackup || !adbAddress) return;
 
     error = "";
-    if (!updating && password.length < 6) {
+    if (!updating && !backup && password.length < 6) {
       error = "Придумайте пароль — минимум 6 символов";
+      return;
+    }
+    if (password && password.length < 6) {
+      error = "Пароль должен быть от 6 символов";
       return;
     }
     if (password && password !== confirmation) {
@@ -53,7 +84,12 @@
 
     submitting = true;
     try {
-      await api("POST", "/api/install", { ip: adbAddress, password, timezone });
+      await api("POST", "/api/install", {
+        ip: adbAddress,
+        password,
+        timezone,
+        backup_id: backup?.id ?? "",
+      });
       password = "";
       confirmation = "";
       onStarted();
@@ -77,7 +113,7 @@
         id="pw"
         type="password"
         autocomplete="new-password"
-        placeholder={updating ? "Не менять" : "Пароль"}
+        placeholder={backup ? "Из бэкапа (или новый)" : updating ? "Не менять" : "Пароль"}
         bind:value={password}
         disabled={submitting}
       >
@@ -96,13 +132,28 @@
   <div class={styles.field}>
     <label for="tz">Часовой пояс</label>
     <select id="tz" bind:value={timezone} disabled={submitting}>
-      {#if updating}
-        <option id="tz-keep" value="">Оставить как есть</option>
+      {#if updating || backup}
+        <option id="tz-keep" value="">{backup ? "Оставить из бэкапа" : "Оставить как есть"}</option>
       {/if}
       {#each timeZones as [value, label] (value)}
         <option {value}>{label}</option>
       {/each}
     </select>
+  </div>
+
+  <div class={styles.field}>
+    <label for="backup-file">Восстановить из бэкапа (необязательно)</label>
+    {#if backup}
+      <div class={styles.backupBox}>
+        <span>Бэкап v{backup.app_version || "?"} · {backup.files} файлов</span>
+        <button class="btn ghost" type="button" onclick={clearBackup} disabled={submitting}>Убрать</button>
+      </div>
+    {:else}
+      <label class={["btn", styles.backupBtn]}>
+        {checkingBackup ? "Проверяю файл…" : "Выбрать файл бэкапа (.zip)…"}
+        <input id="backup-file" type="file" accept=".zip,application/zip" disabled={submitting || checkingBackup} onchange={pickBackup}>
+      </label>
+    {/if}
   </div>
 
   <p class="hint">После установки панель предложит выбрать и настроить плагины.</p>

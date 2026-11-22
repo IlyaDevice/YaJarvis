@@ -12,7 +12,7 @@
   const selectedSpeaker = writable(null);
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-  let { api, version } = $props();
+  let { api, upload, version } = $props();
   let currentStep = $state(1);
   let operation = $state("install");
   let wizard = $state();
@@ -86,15 +86,18 @@
       <section id="s2" class={styles.card} hidden={currentStep !== 2}>
         <DeviceCheck
           {api}
+          {upload}
           {selectedSpeaker}
           onBack={() => (currentStep = 1)}
           onContinue={() => (currentStep = 3)}
+          onRestored={() => showProgress("restore")}
           onUninstalled={() => showProgress("uninstall")}
         />
       </section>
       <section id="s3" class={styles.card} hidden={currentStep !== 3}>
         <InstallSettings
           {api}
+          {upload}
           {selectedSpeaker}
           onBack={() => (currentStep = 2)}
           onStarted={() => showProgress("install")}

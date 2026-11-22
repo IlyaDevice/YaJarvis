@@ -8,6 +8,7 @@
 //!   - строгий CSP, запрет встраивания во фреймы.
 
 mod auth;
+mod backup;
 mod chatgpt;
 mod config;
 mod diagnostics;
@@ -162,6 +163,8 @@ pub fn router(app: App) -> Router {
         .route("/api/say", post(talk::say))
         .route("/api/chatgpt/login", post(chatgpt::login))
         .route("/api/chatgpt", delete(chatgpt::logout))
+        .route("/api/backup", get(backup::download))
+        .route("/api/backup/restore", post(backup::restore).layer(DefaultBodyLimit::max(jarvis_station::backup::MAX_ZIP + 1)))
         .route("/api/stop", post(talk::stop))
         .route("/api/journal", get(talk::journal))
         .route("/api/speaker/volume", post(talk::volume))
@@ -178,7 +181,15 @@ pub fn router(app: App) -> Router {
         .route("/api/chatgpt/newchat", post(memory::new_chat))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
     Router::new()
-        .route("/healthz", get(|| async {Json(json!({"ready":true,"version":crate::version(),"modules":crate::plugins::compiled_modules(),"boot_id":crate::plugins::install::boot_id()}))}))
+        .route("/healthz", get(|State(app): State<App>| async move {
+            Json(json!({
+                "ready": true,
+                "version": crate::version(),
+                "mic": app.engine.mic.online(),
+                "modules": crate::plugins::compiled_modules(),
+                "boot_id": crate::plugins::install::boot_id(),
+            }))
+        }))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/setup", post(auth::setup))

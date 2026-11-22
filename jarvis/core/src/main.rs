@@ -240,6 +240,7 @@ async fn run(f: Flags, store: settings::Store) {
                 host.load().await;
             }
             tokio::spawn(proxy.run(host.clone()));
+            host.clone().restore_pending_plugins().await;
         });
     }
     {

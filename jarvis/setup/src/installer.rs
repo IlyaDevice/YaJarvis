@@ -1,11 +1,15 @@
 use axum::{
     Json, Router,
-    body::Body,
-    extract::{Request, State, rejection::JsonRejection},
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, Request, State, rejection::JsonRejection},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
+};
+use jarvis_station::backup::{
+    BackupManifest, DATA_PREFIX, MANIFEST_NAME, MAX_SINGLE_FILE, MAX_UNPACKED, MAX_ZIP,
+    RESTORE_PLUGINS_FILE, pending_rust_plugins, validate_manifest, verify_and_prepare_file,
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, json};
@@ -34,6 +38,7 @@ const VERSION: &str = match option_env!("JARVIS_VERSION") {
 };
 const STAGE: &str = "/tmp/jarvis-setup-stage";
 const AUTOSTART_MANUAL: &str = "jarvis-autostart-manual";
+const TAP_CHANGED: &str = "jarvis-tap-changed";
 const MAX_PAYLOAD: usize = 40 << 20;
 const INSTALL_RESERVE_KIB: u64 = 1024;
 const DEFAULT_ADB_PORT: u16 = 5555;
@@ -53,11 +58,19 @@ const REQUIRED: &[&str] = &[
 ];
 type App = Arc<Setup>;
 
+#[derive(Clone)]
+struct StagedBackup {
+    id: String,
+    manifest: BackupManifest,
+    files: Vec<(String, Vec<u8>)>,
+}
+
 struct Setup {
     token: String,
     address: SocketAddr,
     skip_panel_check: bool,
     job: Mutex<Job>,
+    staged_backup: Mutex<Option<StagedBackup>>,
     adb: tokio::sync::OnceCell<PathBuf>,
     scanning: tokio::sync::Mutex<()>,
 }
@@ -70,6 +83,9 @@ struct Job {
     warning: String,
     url: String,
     panel_check_skipped: bool,
+    reboot_needed: bool,
+    reboot_reason: String,
+    adb_address: String,
     #[serde(skip)]
     busy: bool,
 }
@@ -155,6 +171,15 @@ struct Install {
     password: String,
     #[serde(default)]
     timezone: String,
+    #[serde(default)]
+    backup_id: String,
+}
+
+#[derive(Deserialize)]
+struct Restore {
+    #[serde(rename = "ip", deserialize_with = "deserialize_adb_address")]
+    adb_address: SocketAddrV4,
+    backup_id: String,
 }
 
 fn deserialize_adb_address<'de, D: Deserializer<'de>>(
@@ -198,6 +223,7 @@ pub async fn run(skip_panel_check: bool) -> Result<(), Box<dyn std::error::Error
         address,
         skip_panel_check,
         job: Mutex::default(),
+        staged_backup: Mutex::default(),
         adb: tokio::sync::OnceCell::new(),
         scanning: tokio::sync::Mutex::new(()),
     });
@@ -206,6 +232,12 @@ pub async fn run(skip_panel_check: bool) -> Result<(), Box<dyn std::error::Error
         .route("/api/check", post(check))
         .route("/api/job", get(job))
         .route("/api/install", post(install))
+        .route("/api/restore", post(restore))
+        .route("/api/reboot", post(reboot))
+        .route(
+            "/api/backup/inspect",
+            post(inspect_backup).layer(DefaultBodyLimit::max(MAX_ZIP + 1)),
+        )
         .route("/api/uninstall", post(uninstall))
         .route_layer(middleware::from_fn_with_state(app.clone(), authorize));
     let router = Router::new()
@@ -557,6 +589,161 @@ async fn uninstall(State(app): State<App>, Json(input): Json<Address>) -> Respon
     })
 }
 
+async fn inspect_backup(State(app): State<App>, body: Bytes) -> Response {
+    let parsed = tokio::task::spawn_blocking(move || parse_and_verify_backup(&body))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+    let (manifest, files) = match parsed {
+        Ok(v) => v,
+        Err(error) => return bad(error),
+    };
+    let id = match token() {
+        Ok(id) => id,
+        Err(error) => return bad(error),
+    };
+    let summary = json!({
+        "id": id,
+        "app_version": manifest.app_version,
+        "schema_version": manifest.schema_version,
+        "created_at": manifest.created_at,
+        "model": manifest.model,
+        "files": files.len(),
+        "plugins": manifest.plugins.len(),
+    });
+    *app.staged_backup.lock().unwrap() = Some(StagedBackup {
+        id,
+        manifest,
+        files,
+    });
+    reply(StatusCode::OK, summary)
+}
+
+async fn restore(
+    State(app): State<App>,
+    input: Result<Json<Restore>, JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return bad(INVALID_ADB_ADDRESS);
+    };
+    let backup = match get_staged_backup(&app, &input.backup_id) {
+        Ok(b) => b,
+        Err(error) => return bad(error),
+    };
+    let work = app.clone();
+    app.start(async move { restore_on(&work, input.adb_address, backup).await })
+}
+
+async fn reboot(
+    State(app): State<App>,
+    input: Result<Json<Address>, JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return bad(INVALID_ADB_ADDRESS);
+    };
+    if !input.adb_address.ip().is_private() {
+        return bad("Нужен IP вашей колонки в домашней сети");
+    }
+    if let Err(error) = app.adb(&["connect", &input.adb_address.to_string()], 10).await {
+        return bad(error);
+    }
+    match app
+        .shell(
+            input.adb_address,
+            "start-stop-daemon -S -b -x /bin/sh -- -c 'sync; sleep 1; reboot'",
+        )
+        .await
+    {
+        Ok(_) => reply(StatusCode::OK, json!({"ok": true})),
+        Err(error) => bad(error),
+    }
+}
+
+fn get_staged_backup(app: &Setup, id: &str) -> Result<StagedBackup, String> {
+    if id.is_empty() {
+        return Err("Не выбран файл бэкапа".into());
+    }
+    let guard = app.staged_backup.lock().unwrap();
+    let Some(staged) = guard.as_ref().filter(|b| b.id == id) else {
+        return Err("Выбранный бэкап больше не загружен — выберите файл заново".into());
+    };
+    Ok(staged.clone())
+}
+
+fn parse_and_verify_backup(
+    raw: &[u8],
+) -> Result<(BackupManifest, Vec<(String, Vec<u8>)>), String> {
+    if raw.len() > MAX_ZIP {
+        return Err(format!("Архив бэкапа больше {} МБ", MAX_ZIP >> 20));
+    }
+    let mut zr =
+        zip::ZipArchive::new(Cursor::new(raw)).map_err(|_| "Это не zip-архив бэкапа".to_string())?;
+    let mut manifest_idx = None;
+    let mut data_entries = BTreeMap::new();
+    for i in 0..zr.len() {
+        let f = zr.by_index(i).map_err(|e| e.to_string())?;
+        let name = f.name().replace('\\', "/");
+        if f.is_dir() {
+            continue;
+        }
+        if f.is_symlink() || !f.is_file() {
+            return Err(format!("В бэкапе недопустимый файл: {name}"));
+        }
+        if name == MANIFEST_NAME {
+            if manifest_idx.is_some() {
+                return Err("В бэкапе несколько backup.json".into());
+            }
+            manifest_idx = Some(i);
+            continue;
+        }
+        if let Some(rel) = name.strip_prefix(DATA_PREFIX)
+            && data_entries.insert(rel.to_string(), i).is_some()
+        {
+            return Err(format!("Повторяющийся файл в архиве: {name}"));
+        }
+    }
+    let manifest_idx = manifest_idx.ok_or_else(|| "В архиве отсутствует backup.json".to_string())?;
+    let mut mf_bytes = Vec::new();
+    {
+        let mut mf = zr.by_index(manifest_idx).map_err(|e| e.to_string())?;
+        mf.by_ref()
+            .take((1 << 20) + 1)
+            .read_to_end(&mut mf_bytes)
+            .map_err(|e| e.to_string())?;
+    }
+    if mf_bytes.len() > (1 << 20) {
+        return Err("Манифест бэкапа слишком большой".into());
+    }
+    let manifest: BackupManifest =
+        serde_json::from_slice(&mf_bytes).map_err(|_| "Неверный формат backup.json".to_string())?;
+    validate_manifest(&manifest)?;
+
+    let mut total = 0usize;
+    let mut verified = Vec::with_capacity(manifest.files.len());
+    for entry in &manifest.files {
+        let Some(&idx) = data_entries.get(&entry.path) else {
+            return Err(format!("В архиве отсутствует файл {}", entry.path));
+        };
+        let mut raw_file = Vec::new();
+        {
+            let mut zf = zr.by_index(idx).map_err(|e| e.to_string())?;
+            zf.by_ref()
+                .take((MAX_SINGLE_FILE + 1) as u64)
+                .read_to_end(&mut raw_file)
+                .map_err(|e| e.to_string())?;
+        }
+        total = total
+            .checked_add(raw_file.len())
+            .ok_or_else(|| "Превышен размер распакованного бэкапа".to_string())?;
+        if total > MAX_UNPACKED {
+            return Err("Распакованный бэкап превышает допустимый размер".into());
+        }
+        let processed = verify_and_prepare_file(entry, &raw_file, &manifest)?;
+        verified.push((entry.path.clone(), processed));
+    }
+    Ok((manifest, verified))
+}
+
 fn verify_payload(bytes: &[u8], sums: &str, name: &str) -> Result<(), String> {
     let wanted = jarvis_station::checksum(sums, name)
         .ok_or_else(|| format!("В SHA256SUMS нет контрольной суммы для {name}"))?;
@@ -819,12 +1006,24 @@ fn unpack(bytes: Vec<u8>, dir: &Path) -> Result<BTreeMap<String, String>, String
 
 async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
     let target = input.adb_address;
+    let backup = if input.backup_id.is_empty() {
+        None
+    } else {
+        Some(get_staged_backup(app, &input.backup_id)?)
+    };
     app.log("Подключаюсь к выбранной колонке…");
     let mut sp = app.inspect(target).await?;
     if !sp.problems.is_empty() {
         return Err(sp.problems.join(". "));
     }
-    if (sp.installed.is_empty() || !input.password.is_empty())
+    if backup.is_none()
+        && (sp.installed.is_empty() || !input.password.is_empty())
+        && !(6..=72).contains(&input.password.len())
+    {
+        return Err("Пароль панели должен содержать от 6 до 72 байт".into());
+    }
+    if backup.is_some()
+        && !input.password.is_empty()
         && !(6..=72).contains(&input.password.len())
     {
         return Err("Пароль панели должен содержать от 6 до 72 байт".into());
@@ -840,9 +1039,129 @@ async fn install_on(app: &Setup, input: Install) -> Result<String, String> {
     let sums = unpack(bytes, &temp.0)?;
     let stage = format!("{STAGE}-{}", token()?);
     app.shell(target, &format!("umask 077; mkdir {stage}")).await?;
-    let result = stage_install(app, input, &sp, &stage, &temp.0, &sums).await;
+    let result = stage_install(app, input, &sp, &stage, &temp.0, &sums, backup.as_ref()).await;
     let _ = app.shell(target, &format!("rm -rf {stage}")).await;
     result
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+async fn stage_backup_files(
+    app: &Setup,
+    target: SocketAddrV4,
+    stage: &str,
+    temp: &Path,
+    backup: &StagedBackup,
+) -> Result<(), String> {
+    app.log(&format!(
+        "Переношу бэкап ({} файлов, от версии {})…",
+        backup.files.len(),
+        backup.manifest.app_version
+    ));
+    let local_root = temp.join("backup");
+    std::fs::create_dir_all(&local_root).map_err(|e| e.to_string())?;
+    let mut dirs = BTreeSet::new();
+    let mut files_to_push: Vec<(String, PathBuf)> = Vec::with_capacity(backup.files.len() + 1);
+    for (rel, data) in &backup.files {
+        let local = local_root.join(rel);
+        if let Some(parent) = local.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&local, data).map_err(|e| e.to_string())?;
+        if let Some((parent_rel, _)) = rel.rsplit_once('/') {
+            dirs.insert(format!("{stage}/backup/{parent_rel}"));
+        }
+        files_to_push.push((format!("{stage}/backup/{rel}"), local));
+    }
+    let pending = pending_rust_plugins(&backup.manifest);
+    if !pending.is_empty() {
+        let data = serde_json::to_vec_pretty(&pending).map_err(|e| e.to_string())?;
+        let local = local_root.join(RESTORE_PLUGINS_FILE);
+        std::fs::write(&local, data).map_err(|e| e.to_string())?;
+        files_to_push.push((format!("{stage}/backup/{RESTORE_PLUGINS_FILE}"), local));
+    }
+
+    let mut mkdir_cmd = format!("umask 077; mkdir -p {}", sh_quote(&format!("{stage}/backup")));
+    for dir in dirs {
+        mkdir_cmd.push(' ');
+        mkdir_cmd.push_str(&sh_quote(&dir));
+    }
+    app.shell(target, &mkdir_cmd).await?;
+
+    for (remote, local) in files_to_push {
+        app.push(target, &local, &remote).await?;
+    }
+    Ok(())
+}
+
+async fn restore_on(
+    app: &Setup,
+    target: SocketAddrV4,
+    backup: StagedBackup,
+) -> Result<String, String> {
+    app.log("Подключаюсь к выбранной колонке…");
+    let speaker = app.inspect(target).await?;
+    if !speaker.root {
+        return Err("На выбранной колонке нужны разрешённый ADB и root".into());
+    }
+    if speaker.installed.is_empty() {
+        return Err("Сначала установите Джарвиса на колонку".into());
+    }
+    let temp = Scratch::new()?;
+    let stage = format!("{STAGE}-{}", token()?);
+    app.shell(target, &format!("umask 077; mkdir {stage}")).await?;
+    let result = stage_restore(app, target, &stage, &temp.0, &backup).await;
+    let _ = app.shell(target, &format!("rm -rf {stage}")).await;
+    result
+}
+
+async fn stage_restore(
+    app: &Setup,
+    target: SocketAddrV4,
+    stage: &str,
+    temp: &Path,
+    backup: &StagedBackup,
+) -> Result<String, String> {
+    stage_backup_files(app, target, stage, temp, backup).await?;
+    app.log("Применяю данные на колонке…");
+    let script = format!(
+        r#"set -eu
+d=/data/opt/jarvisd; s={stage}
+if [ -x "$d/jarvisd.sh" ]; then "$d/jarvisd.sh" stop; sleep 1; fi
+cp -rf "$s/backup/." "$d/"
+chmod 600 "$d/settings.json" "$d/plugins.json" "$d/restore-plugins.json" 2>/dev/null || true
+chmod 600 "$d"/plugins-data/*.json "$d"/plugins/*/data.json 2>/dev/null || true
+sync
+"$d/jarvisd.sh" start"#
+    );
+    app.shell(target, &script).await?;
+    let url = format!("http://{}:8080/", target.ip());
+    if app.skip_panel_check {
+        app.job.lock().unwrap().panel_check_skipped = true;
+        app.log("Готово. Бэкап применён (проверка по HTTP пропущена)");
+        return Ok(String::new());
+    }
+    app.log("Проверяю запуск панели…");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    for _ in 0..25 {
+        if let Ok(response) = client.get(format!("{url}healthz")).send().await
+            && response
+                .json::<Value>()
+                .await
+                .is_ok_and(|status| status["ready"] == true)
+        {
+            app.log("Готово. Бэкап восстановлен");
+            return Ok(url);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err("Панель не ответила после восстановления бэкапа".into())
 }
 
 async fn stage_install(
@@ -852,6 +1171,7 @@ async fn stage_install(
     stage: &str,
     temp: &Path,
     sums: &BTreeMap<String, String>,
+    backup: Option<&StagedBackup>,
 ) -> Result<String, String> {
     let target = input.adb_address;
     for (name, digest) in sums {
@@ -916,6 +1236,9 @@ async fn stage_install(
     let seed = temp.join("seed.json");
     jarvis_station::atomic(&seed, json!({"password_hash":password_hash,"timezone":input.timezone}).to_string().as_bytes()).map_err(|e| e.to_string())?;
     app.push(target, &seed, &format!("{stage}/seed.json")).await?;
+    if let Some(backup) = backup {
+        stage_backup_files(app, target, stage, temp, backup).await?;
+    }
     app.shell(
         target,
         &format!(
@@ -927,10 +1250,11 @@ async fn stage_install(
     let output = app
         .shell(
             target,
-            &install_script(stage, &sp.userland, &sums["jarvisd"], &image.version)?,
+            &install_script(stage, &sp.userland, &sums["jarvisd"], &image.version, backup.is_some())?,
         )
         .await?;
     let manual_autostart = output.lines().any(|line| line.trim() == AUTOSTART_MANUAL);
+    let tap_changed = output.lines().any(|line| line.trim() == TAP_CHANGED);
     if manual_autostart {
         app.log("Скрипт для ручной настройки автозапуска сохранён в /data/opt/jarvisd/S98jarvisd");
     }
@@ -949,9 +1273,11 @@ async fn stage_install(
         )
     };
     for _ in 0..35 {
+        let mut mic_online = None;
         let panel_ready = match &client {
             Some(client) => match client.get(format!("{url}healthz")).send().await {
                 Ok(response) => response.json::<Value>().await.is_ok_and(|status| {
+                    mic_online = status["mic"].as_bool();
                     status["version"] == image.version && status["ready"] == true
                 }),
                 Err(_) => false,
@@ -970,6 +1296,29 @@ async fn stage_install(
                 .await
                 .is_ok()
         {
+            if let Some(client) = &client
+                && mic_online == Some(false)
+            {
+                for _ in 0..4 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Ok(resp) = client.get(format!("{url}healthz")).send().await
+                        && let Ok(status) = resp.json::<Value>().await
+                    {
+                        mic_online = status["mic"].as_bool();
+                        if mic_online == Some(true) {
+                            break;
+                        }
+                    }
+                }
+            }
+            let vqe_state = platformd_vqe_state(app, target).await;
+            if let Some(reason) = reboot_reason_for_mic(tap_changed, &vqe_state, mic_online) {
+                app.log(&format!("Внимание: {reason}"));
+                let mut job = app.job.lock().unwrap();
+                job.reboot_needed = true;
+                job.reboot_reason = reason.into();
+                job.adb_address = target.to_string();
+            }
             if manual_autostart {
                 app.job.lock().unwrap().warning = concat!(
                     "Автозапуск не удалось записать в прошивку. ",
@@ -994,11 +1343,42 @@ async fn stage_install(
     Err("Панель новой сборки не ответила. Служба вернёт предыдущую версию, если она была установлена".into())
 }
 
+async fn platformd_vqe_state(app: &Setup, target: SocketAddrV4) -> String {
+    let script = r#"for p in /proc/[0-9]*; do
+    [ -r "$p/cmdline" ] || continue
+    if tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -- '--platformd'; then
+        if grep -q 'vqe_tap\.so (deleted)' "$p/maps" 2>/dev/null; then echo deleted; exit 0; fi
+        if grep -q 'vqe_tap\.so' "$p/maps" 2>/dev/null; then echo loaded; exit 0; fi
+        echo missing; exit 0
+    fi
+done
+echo none"#;
+    app.shell(target, script).await.unwrap_or_else(|_| "unknown".into())
+}
+
+fn reboot_reason_for_mic(
+    tap_changed: bool,
+    vqe_state: &str,
+    mic_online: Option<bool>,
+) -> Option<&'static str> {
+    if tap_changed || vqe_state == "deleted" {
+        return Some("Библиотека микрофона обновилась, но Алиса (maind) держит старую версию до перезагрузки колонки.");
+    }
+    if matches!(vqe_state, "missing" | "none") {
+        return Some("Перехват микрофона установлен, но Алиса работает без него до перезагрузки колонки.");
+    }
+    if mic_online == Some(false) {
+        return Some("Звук с микрофона пока не поступает — перезагрузите колонку.");
+    }
+    None
+}
+
 fn install_script(
     stage: &str,
     userland: &str,
     digest: &str,
     version: &str,
+    has_backup: bool,
 ) -> Result<String, String> {
     if !matches!(userland, "armhf" | "arm64")
         || digest.len() != 64
@@ -1011,6 +1391,15 @@ fn install_script(
         return Err("Повреждён пакет установки".into());
     }
     let pending = json!({"version":version,"sha256":digest});
+    let restore_block = if has_backup {
+        r#"if [ -d "$s/backup" ]; then
+    cp -rf "$s/backup/." "$d/"
+    chmod 600 "$d/settings.json" "$d/plugins.json" "$d/restore-plugins.json" 2>/dev/null || true
+    chmod 600 "$d"/plugins-data/*.json "$d"/plugins/*/data.json 2>/dev/null || true
+fi"#
+    } else {
+        ""
+    };
     Ok(format!(
         r#"set -eu
 d=/data/opt/jarvisd; s={stage}
@@ -1022,7 +1411,15 @@ chmod 755 "$d/jarvisd.next-rust"
 cp "$s/jarvis-supervisor" "$d/jarvis-supervisor.new"
 chmod 755 "$d/jarvis-supervisor.new"
 for name in wake.bin oww.bin wake_oww.bin; do test -e "$d/$name" || cp "$s/$name" "$d/$name"; done
-cp "$s/vqe_tap-{userland}.so" "$d/vqe_tap.so.new"
+tap_changed=0
+old_tap=""
+new_tap="$(sha256sum "$s/vqe_tap-{userland}.so" | awk '{{print $1}}')"
+if [ -f "$d/vqe_tap.so" ]; then
+    old_tap="$(sha256sum "$d/vqe_tap.so" | awk '{{print $1}}')"
+fi
+if [ "$new_tap" != "$old_tap" ]; then
+    cp "$s/vqe_tap-{userland}.so" "$d/vqe_tap.so.new"
+fi
 if [ -f "$s/spotcmd" ]; then cp "$s/spotcmd" "$d/spotcmd"; chmod 755 "$d/spotcmd"; fi
 init=/etc/init.d/S98jarvisd
 manual=0
@@ -1055,7 +1452,11 @@ done
 cp "$s/jarvisd.sh" "$d/jarvisd.sh"
 chmod 755 "$d/jarvisd.sh"
 mv "$d/jarvis-supervisor.new" "$d/jarvis-supervisor"
-mv "$d/vqe_tap.so.new" "$d/vqe_tap.so"
+if [ -f "$d/vqe_tap.so.new" ]; then
+    mv "$d/vqe_tap.so.new" "$d/vqe_tap.so"
+    tap_changed=1
+fi
+{restore_block}
 cp "$s/seed.json" "$d/seed.json"
 chmod 600 "$d/seed.json"
 rm -f "$s/seed.json" "$d/disabled" "$d/update-rust.error"
@@ -1063,8 +1464,39 @@ printf '%s' '{pending}' > "$d/update-rust.tmp"
 mv "$d/update-rust.tmp" "$d/update-rust.json"
 sync
 "$d/jarvisd.sh" boot
+if [ "$tap_changed" = 1 ]; then
+    printf '%s\n' '{TAP_CHANGED}'
+fi
 if [ "$manual" = 1 ]; then
     printf '%s\n' '{AUTOSTART_MANUAL}'
 fi"#
     ))
+}
+
+#[cfg(test)]
+mod mic_and_script_tests {
+    use super::*;
+
+    #[test]
+    fn install_script_tracks_tap_changes_and_optional_backup_restore() {
+        let hex = "a".repeat(64);
+        let plain = install_script("/tmp/s", "arm64", &hex, "0.10.16", false).unwrap();
+        assert!(plain.contains("tap_changed=0"));
+        assert!(plain.contains("jarvis-tap-changed"));
+        assert!(!plain.contains("$s/backup"));
+
+        let with_backup = install_script("/tmp/s", "arm64", &hex, "0.10.16", true).unwrap();
+        assert!(with_backup.contains("cp -rf \"$s/backup/.\" \"$d/\""));
+        assert!(with_backup.find("$s/backup").unwrap() < with_backup.find("$s/seed.json").unwrap());
+    }
+
+    #[test]
+    fn reboot_reason_flags_updated_or_missing_vqe_tap() {
+        assert!(reboot_reason_for_mic(true, "loaded", Some(true)).is_some());
+        assert!(reboot_reason_for_mic(false, "deleted", Some(true)).is_some());
+        assert!(reboot_reason_for_mic(false, "missing", Some(true)).is_some());
+        assert!(reboot_reason_for_mic(false, "loaded", Some(false)).is_some());
+        assert!(reboot_reason_for_mic(false, "loaded", Some(true)).is_none());
+        assert!(reboot_reason_for_mic(false, "loaded", None).is_none());
+    }
 }

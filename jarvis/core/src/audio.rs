@@ -55,6 +55,30 @@ impl Mic {
         now_ms().saturating_sub(self.seen.load(Ordering::Relaxed)) < 3000
     }
 
+    /// Короткое объяснение, почему звук с микрофона ещё не поступает.
+    pub fn why(&self) -> String {
+        if self.online() {
+            return String::new();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if std::path::Path::new("/data/opt/jarvisd/no-mic").exists() {
+                return "отключён файлом no-mic".into();
+            }
+            let maps = crate::alice::platformd_maps();
+            if maps.iter().any(|m| classify_platformd_maps(m) == "deleted") {
+                return "библиотека микрофона обновилась, перезагрузите колонку".into();
+            }
+            if maps.iter().any(|m| classify_platformd_maps(m) == "missing") {
+                return "перехват микрофона ещё не загружен в систему, перезагрузите колонку".into();
+            }
+            if !maps.is_empty() {
+                return "перехват загружен, но звук не поступает, попробуйте перезагрузить колонку".into();
+            }
+        }
+        String::new()
+    }
+
     /// Раздать кадр (из сокета или для тестов).
     pub fn publish(&self, mut pcm: Vec<i16>) {
         gain_pcm(&mut pcm, (self.gain_db)());
@@ -271,4 +295,39 @@ pub fn send_wav(sock: &std::path::Path, wav: &std::path::Path) -> std::io::Resul
         s.send_to(c, sock)?;
     }
     Ok(())
+}
+
+/// Проверить содержимое /proc/<pid>/maps процесса maind --platformd на наличие vqe_tap.so.
+pub(crate) fn classify_platformd_maps(maps: &str) -> &'static str {
+    let mut loaded = false;
+    for line in maps.lines() {
+        if line.contains("vqe_tap.so") {
+            if line.contains("(deleted)") {
+                return "deleted";
+            }
+            loaded = true;
+        }
+    }
+    if loaded { "loaded" } else { "missing" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_platformd_maps;
+
+    #[test]
+    fn detects_vqe_tap_state_in_proc_maps() {
+        assert_eq!(
+            classify_platformd_maps("7f8000-7f9000 r-xp 00000000 /data/opt/jarvisd/vqe_tap.so (deleted)\n"),
+            "deleted"
+        );
+        assert_eq!(
+            classify_platformd_maps("7f8000-7f9000 r-xp 00000000 /data/opt/jarvisd/vqe_tap.so\n"),
+            "loaded"
+        );
+        assert_eq!(
+            classify_platformd_maps("7f8000-7f9000 r-xp 00000000 /system/vendor/quasar/maind\n"),
+            "missing"
+        );
+    }
 }

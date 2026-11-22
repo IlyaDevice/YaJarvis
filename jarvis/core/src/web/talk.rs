@@ -63,7 +63,7 @@ pub async fn journal(State(app): State<App>) -> Response {
     let phase = if talking { e.leds.phase().name() } else { "" };
     reply(
         StatusCode::OK,
-        json!({"items": e.journal.items(50), "mic": e.mic.online(), "mic_why": "", "talking": talking, "phase": phase,
+        json!({"items": e.journal.items(50), "mic": e.mic.online(), "mic_why": e.mic.why(), "talking": talking, "phase": phase,
                "sys": sys, "volume": vol, "version": crate::version()}),
     )
 }

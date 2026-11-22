@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { api, toast, upload, waitRestart } from "#helpers/core.js";
+  import { renderMarkdown } from "#helpers/markdown.js";
   import styles from "./Updates.module.css";
 
   const controller = new AbortController();
@@ -140,7 +141,7 @@
     {#if update.available && update.notes}
       <details class={["mini", styles.release]}>
         <summary>Что нового в {update.latest}</summary>
-        <pre class={styles.notes}>{update.notes}</pre>
+        <div class={styles.notes}>{@html renderMarkdown(update.notes)}</div>
       </details>
     {/if}
   {:else}

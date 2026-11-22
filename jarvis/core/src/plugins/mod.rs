@@ -599,10 +599,23 @@ impl Host {
                 }
                 g.plugins.insert(m.id.clone(), Plugin { manifest: m, dir, rt: None, err });
             }
+            let pending_restore: std::collections::BTreeSet<String> = std::fs::read(
+                self.data_dir.join(jarvis_station::backup::RESTORE_PLUGINS_FILE),
+            )
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Vec<jarvis_station::backup::BackupPlugin>>(&b).ok())
+            .into_iter()
+            .flatten()
+            .map(|p| p.id)
+            .collect();
             let ids: Vec<String> = g.state.keys().cloned().collect();
             for id in ids {
-                // папку плагина удалили — забыть (кроме отметки «удалён руками»)
-                if modules::is_embedded(&id) || (!g.plugins.contains_key(&id) && !g.state[&id].removed) {
+                // папку плагина удалили — забыть (кроме отметки «удалён руками» и отложенного восстановления бэкапа)
+                if modules::is_embedded(&id)
+                    || (!g.plugins.contains_key(&id)
+                        && !g.state[&id].removed
+                        && !pending_restore.contains(&id))
+                {
                     g.state.remove(&id);
                 }
             }
@@ -979,6 +992,87 @@ impl Host {
         self.sync_wake_training(&g);
         log::info!("плагины: удалён {id}");
         Ok(())
+    }
+
+    /// Список установленных плагинов для манифеста резервной копии.
+    pub fn backup_plugins(&self) -> Vec<jarvis_station::backup::BackupPlugin> {
+        let g = self.inner.lock().unwrap();
+        g.plugins
+            .values()
+            .filter(|p| !modules::is_embedded(&p.manifest.id))
+            .map(|p| {
+                let st = g.state.get(&p.manifest.id);
+                jarvis_station::backup::BackupPlugin {
+                    id: p.manifest.id.clone(),
+                    kind: p.manifest.kind.clone(),
+                    source: st.map(|s| s.source.clone()).unwrap_or_default(),
+                    official: st.is_some_and(|s| s.official),
+                    version: p.manifest.version.clone(),
+                    enabled: st.is_some_and(|s| s.enabled),
+                }
+            })
+            .collect()
+    }
+
+    /// Переустановить недостающие Rust-плагины, сохранённые в restore-plugins.json после восстановления бэкапа.
+    pub async fn restore_pending_plugins(self: &Arc<Self>) {
+        let path = self.data_dir.join(jarvis_station::backup::RESTORE_PLUGINS_FILE);
+        let Ok(raw) = std::fs::read(&path) else {
+            return;
+        };
+        let Ok(mut pending) =
+            serde_json::from_slice::<Vec<jarvis_station::backup::BackupPlugin>>(&raw)
+        else {
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        if pending.is_empty() {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        // VPN ставим первым, чтобы последующие загрузки могли идти через настроенный туннель при необходимости.
+        pending.sort_by_key(|p| if p.id == "vpn" { (0, p.id.clone()) } else { (1, p.id.clone()) });
+
+        let mut remaining = Vec::new();
+        for p in pending {
+            let already = self.inner.lock().unwrap().plugins.contains_key(&p.id);
+            if already {
+                continue;
+            }
+            let res: Result<(), String> = if compiled_modules().iter().any(|m| m == &p.id) {
+                self.install_module(&p.id).await.map(|_| ())
+            } else if catalog::valid_repo(&p.source) {
+                let req = install::InstallRequest {
+                    id: p.id.clone(),
+                    repo: p.source.clone(),
+                    expected_version: String::new(),
+                    update: false,
+                };
+                self.install_repo(&req, || true).await.map(|_| ())
+            } else {
+                Err("нет репозитория источника".into())
+            };
+            match res {
+                Ok(()) => {
+                    if !p.enabled {
+                        let _ = self.set_enabled(&p.id, false).await;
+                    }
+                    log::info!("бэкап: переустановлен плагин {}", p.id);
+                    if p.id == "vpn" {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+                Err(err) => {
+                    log::warn!("бэкап: не удалось переустановить плагин {}: {}", p.id, err);
+                    remaining.push(p);
+                }
+            }
+        }
+        if remaining.is_empty() {
+            let _ = std::fs::remove_file(&path);
+        } else if let Ok(data) = serde_json::to_vec_pretty(&remaining) {
+            let _ = crate::settings::write_atomic(&path, &data, 0o600);
+        }
     }
 
     /// Для панели: установленные плагины, их настройки (ключи — только хвостом) и состояние.

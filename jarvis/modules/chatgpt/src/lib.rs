@@ -111,13 +111,13 @@ impl ChatGpt {
         if get("refresh").is_empty() || get("account").is_empty(){return Err("Не выполнен вход в ChatGPT".into());}
         if !get("access").is_empty() && before["expires"].as_i64().unwrap_or(0)>now()+margin_secs{return Ok(before);}
         let client=self.client().await?;
-        let response=client.post(format!("{}/oauth/token",self.issuer)).form(&[("grant_type","refresh_token"),("refresh_token",get("refresh")),("client_id",CLIENT),("scope","openid profile email")]).send().await.map_err(|_|"Не продлить вход в ChatGPT")?;
+        let response=client.post(format!("{}/oauth/token",self.issuer)).form(&[("grant_type","refresh_token"),("refresh_token",get("refresh")),("client_id",CLIENT),("scope","openid profile email")]).send().await.map_err(|e|net_error("Не продлить вход в ChatGPT",&e))?;
         let tokens=json_response(response).await?;let after=tokens_to_auth(&tokens,&before)?;
         (self.services)("auth.set".into(),json!({"before":before,"after":after})).await?;Ok(after)
     }
     async fn start(&self)->Result<Value,String>{
         self.stop();let http=self.client().await?;
-        let response=http.post(format!("{}/api/accounts/deviceauth/usercode",self.issuer)).json(&json!({"client_id":CLIENT})).send().await.map_err(|_|"Не начать вход в ChatGPT")?;
+        let response=http.post(format!("{}/api/accounts/deviceauth/usercode",self.issuer)).json(&json!({"client_id":CLIENT})).send().await.map_err(|e|net_error("Не начать вход в ChatGPT",&e))?;
         let device=json_response(response).await?;let id=device["device_auth_id"].as_str().ok_or("OpenAI не выдал device ID")?.to_string();
         let code=device["user_code"].as_str().or_else(||device["usercode"].as_str()).ok_or("OpenAI не выдал код")?.to_string();
         let interval=device["interval"].as_u64().or_else(||device["interval"].as_str().and_then(|v|v.parse().ok())).unwrap_or(5).clamp(1,30);
@@ -135,7 +135,7 @@ impl ChatGpt {
                     if [403,404,429,500,502,503,504].contains(&response.status().as_u16()){continue;}
                     let grant=json_response(response).await?;let Some(code)=grant["authorization_code"].as_str().filter(|s|!s.is_empty())else{continue;};
                     let verifier=grant["code_verifier"].as_str().ok_or("OpenAI не выдал verifier")?;
-                    let response=http.post(format!("{issuer}/oauth/token")).form(&[("grant_type","authorization_code"),("code",code),("client_id",CLIENT),("redirect_uri",&format!("{issuer}/deviceauth/callback")),("code_verifier",verifier)]).send().await.map_err(|_|"Не обменять код ChatGPT")?;
+                    let response=http.post(format!("{issuer}/oauth/token")).form(&[("grant_type","authorization_code"),("code",code),("client_id",CLIENT),("redirect_uri",&format!("{issuer}/deviceauth/callback")),("code_verifier",verifier)]).send().await.map_err(|e|net_error("Не обменять код ChatGPT",&e))?;
                     let after=tokens_to_auth(&json_response(response).await?,&json!({}))?;
                     if serial.load(std::sync::atomic::Ordering::SeqCst)!=generation{return Ok(());}
                     (services)("auth.set".into(),json!({"before":before,"after":after})).await?;*login.lock().unwrap()=Value::Null;return Ok(());
@@ -148,12 +148,28 @@ impl ChatGpt {
     async fn codex(&self,params:Value)->Result<Value,String>{
         let auth=self.token().await?;let access=auth["access"].as_str().ok_or("Нет токена ChatGPT")?;let account=auth["account"].as_str().ok_or("Нет аккаунта ChatGPT")?;
         let session=params["session"].as_str().unwrap_or("");if session.len()>128{return Err("Неверный ID сессии".into());}
-        let client=self.client().await?;let response=client.post(&self.codex).bearer_auth(access).header("chatgpt-account-id",account).header("Accept","text/event-stream").header("OpenAI-Beta","responses=experimental").header("originator","codex_cli_rs").header("session_id",session).json(&params["body"]).send().await.map_err(|_|"Нет соединения с ChatGPT")?;
+        let client=self.client().await?;let response=client.post(&self.codex).bearer_auth(access).header("chatgpt-account-id",account).header("Accept","text/event-stream").header("OpenAI-Beta","responses=experimental").header("originator","codex_cli_rs").header("session_id",session).json(&params["body"]).send().await.map_err(|e|net_error("Нет соединения с ChatGPT",&e))?;
         if !response.status().is_success(){return Err(format!("ChatGPT ответил {}",response.status().as_u16()));}
         sse(response).await
     }
 }
 impl Drop for ChatGpt{fn drop(&mut self){self.stop();}}
+fn classify_net_error(is_timeout:bool,is_connect:bool,detail:&str)->&'static str{
+    if is_timeout{"сервер не ответил вовремя"}
+    else if detail.contains("socks")||detail.contains("proxy"){"ошибка VPN-прокси"}
+    else if detail.contains("dns")||detail.contains("lookup")||detail.contains("resolve"){"не удалось определить адрес сервера"}
+    else if detail.contains("tls")||detail.contains("handshake")||detail.contains("certificate")||detail.contains("ssl"){"ошибка TLS-соединения"}
+    else if is_connect{"не удалось подключиться"}
+    else{"сетевая ошибка"}
+}
+fn net_error(prefix:&str,err:&reqwest::Error)->String{
+    use std::error::Error as _;
+    let mut detail=err.to_string().to_ascii_lowercase();
+    let mut src=err.source();
+    while let Some(s)=src{detail.push(' ');detail.push_str(&s.to_string().to_ascii_lowercase());src=s.source();}
+    let reason=classify_net_error(err.is_timeout(),err.is_connect(),&detail);
+    format!("{prefix}: {reason}. Проверьте сеть и настройки VPN")
+}
 fn client(network:&Value)->Result<reqwest::Client,String>{
     if let Some(error)=network["error"].as_str(){return Err(error.into());}if !network.is_object(){return Err("Нет маршрута ChatGPT".into());}
     let mut builder=reqwest::Client::builder()
@@ -233,5 +249,14 @@ async fn sse(mut response:reqwest::Response)->Result<Value,String>{
             let server=tokio::spawn(async move{let (mut socket,_)=listener.accept().await.unwrap();let mut request=[0;1024];socket.read(&mut request).await.unwrap();socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",events.len()).as_bytes()).await.unwrap();for part in events.as_bytes().chunks(3){if socket.write_all(part).await.is_err(){break;}tokio::task::yield_now().await;}});
             let response=client(&json!({})).unwrap().get(url).send().await.unwrap();let result=sse(response).await;if complete{assert_eq!(result.unwrap()["answer"],"Привет");}else{assert!(result.unwrap_err().contains("оборван"));}server.await.unwrap();
         }
+    }
+    #[test]
+    fn net_error_classification_covers_common_failures(){
+        assert_eq!(classify_net_error(true,false,""),"сервер не ответил вовремя");
+        assert_eq!(classify_net_error(false,true,"socks5 error"),"ошибка VPN-прокси");
+        assert_eq!(classify_net_error(false,true,"dns lookup failed"),"не удалось определить адрес сервера");
+        assert_eq!(classify_net_error(false,false,"tls handshake failed"),"ошибка TLS-соединения");
+        assert_eq!(classify_net_error(false,true,"connection refused"),"не удалось подключиться");
+        assert_eq!(classify_net_error(false,false,"unexpected eof"),"сетевая ошибка");
     }
 }

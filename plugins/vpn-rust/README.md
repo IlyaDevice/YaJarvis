@@ -12,8 +12,8 @@ Xray-модуля ещё не достигнута: ограничения пе�
 - VLESS TCP (`type=tcp` или `raw`) и WebSocket (`type=ws`);
 - `security=none`, `tls` и `reality`, `encryption=none`;
 - REALITY: X25519, short ID, аутентификация сертификата HMAC-SHA512 и подписи Ed25519;
-- REALITY `fp=chrome`/`chrome133`: Chrome 133 ClientHello, GREASE, перестановка расширений,
-  X25519+ML-KEM-768 и Brotli для сертификатов; профиль закреплён, не обновляется сам;
+- REALITY `fp=chrome`/`chrome133` и алиасы (`edge`, `safari`, `ios`, `android`, `random`, `randomized`, `qq`, `360`): Chrome 133 ClientHello, GREASE, перестановка расширений, X25519+ML-KEM-768 и Brotli для сертификатов; профиль закреплён, не обновляется сам;
+- REALITY `fp=firefox`/`firefox120`: профиль Firefox ClientHello;
 - Vision (`flow=xtls-rprx-vision` и TCP-алиас `xtls-rprx-vision-udp443`) поверх TCP с TLS 1.3/REALITY;
 - потоковое снятие Vision padding, независимый переход чтения/записи на raw TCP по границам TLS-записей;
 - TLS с проверкой сертификата и имени сервера, `sni`/`peer`, явный `allowInsecure=1`;
@@ -27,12 +27,10 @@ Xray-модуля ещё не достигнута: ограничения пе�
 - повторный запрос с той же ссылкой переиспользует слушатель;
 - изменение ссылки, её очистка и выключение плагина закрывают существующие соединения.
 
-Chrome для обычного TLS, Firefox TLS fingerprint, UDP с Vision (нужен XUDP), ML-DSA REALITY, gRPC, XHTTP,
-VLESS Encryption и WebSocket early data пока отсутствуют. ALPN обычного TLS ограничен
-`http/1.1`; Chrome REALITY использует `h2,http/1.1` и отклоняет другой явный ALPN.
-Такие настройки возвращают ошибку; модуль не убирает их молча и не пробует прямой маршрут.
-Для обычного TLS `fp` допускает только пустое значение или `rustls`.
-Chrome доступен с REALITY; подписка ChatGPT использует его UDP-туннель для ICE/DTLS/RTP.
+Chrome/Firefox ClientHello для обычного `security=tls` (используется профиль `rustls`, при этом распространённые браузерные `fp` в ссылке принимаются), UDP с Vision (нужен XUDP), ML-DSA REALITY, gRPC, XHTTP,
+VLESS Encryption и WebSocket early data пока отсутствуют. ALPN для TCP допускает `h2`, `http/1.1` и `h2,http/1.1`; WebSocket требует `http/1.1`.
+Неподдержанный `fp` или неподходящие настройки сразу возвращают ошибку на проверке ссылки; модуль не пробует прямой маршрут.
+Chrome и Firefox REALITY доступны с `security=reality`; подписка ChatGPT использует его UDP-туннель для ICE/DTLS/RTP.
 REALITY требует явного SNI и `pbk`; `allowInsecure` не отключает его аутентификацию.
 Spider/fallback к сайту прикрытия не выполняется. Неверный ключ или short ID закрывает соединение.
 

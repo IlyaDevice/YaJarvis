@@ -15,7 +15,19 @@ async function api(method, url, body, signal) {
   return result;
 }
 
+async function upload(url, file, signal) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "X-Token": window.TOKEN },
+    body: file,
+    signal,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || `Ошибка ${response.status}`);
+  return result;
+}
+
 mount(Installer, {
   target: document.getElementById("installer"),
-  props: { api, version: window.VERSION || "" },
+  props: { api, upload, version: window.VERSION || "" },
 });

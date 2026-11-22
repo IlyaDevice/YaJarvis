@@ -1,11 +1,13 @@
 <script>
   import styles from "./DeviceCheck.module.css";
 
-  let { api, selectedSpeaker, onBack, onContinue, onUninstalled } = $props();
+  let { api, upload, selectedSpeaker, onBack, onContinue, onRestored, onUninstalled } = $props();
   let speaker = $derived($selectedSpeaker);
   let adbAddress = $derived(speaker?.adb_address ?? speaker?.ip);
   let problems = $derived(speaker?.problems ?? []);
   let uninstalling = $state(false);
+  let restoring = $state(false);
+  let restoreError = $state("");
 
   function checksFor(speaker) {
     return [
@@ -43,7 +45,7 @@
   }
 
   async function uninstall() {
-    if (uninstalling || !confirm("Удалить Джарвиса с колонки? Она перезагрузится, Алиса останется как была.")) return;
+    if (uninstalling || restoring || !confirm("Удалить Джарвиса с колонки? Она перезагрузится, Алиса останется как была.")) return;
 
     uninstalling = true;
     try {
@@ -53,6 +55,27 @@
       alert(error.message);
     } finally {
       uninstalling = false;
+    }
+  }
+
+  async function pickBackup(event) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || restoring || uninstalling || !adbAddress) return;
+    restoreError = "";
+    restoring = true;
+    try {
+      const info = await upload("/api/backup/inspect", file);
+      if (!confirm(`Восстановить бэкап (версия ${info.app_version || "?"}, файлов: ${info.files}) на эту колонку? Текущие настройки будут заменены.`)) {
+        return;
+      }
+      await api("POST", "/api/restore", { ip: adbAddress, backup_id: info.id });
+      onRestored();
+    } catch (error) {
+      restoreError = error.message;
+    } finally {
+      restoring = false;
     }
   }
 </script>
@@ -126,7 +149,16 @@
       </dl>
     </details>
     {#if speaker.installed}
-      <button class="btn danger" type="button" onclick={uninstall} disabled={uninstalling}>Удалить Джарвиса</button>
+      <div class={styles.extraActions}>
+        <label class={[styles.restoreLink, restoring && styles.disabled]}>
+          {restoring ? "Проверяю бэкап…" : "Восстановить из бэкапа…"}
+          <input type="file" accept=".zip,application/zip" disabled={uninstalling || restoring} onchange={pickBackup}>
+        </label>
+        <button class="btn danger" type="button" onclick={uninstall} disabled={uninstalling || restoring}>Удалить Джарвиса</button>
+      </div>
+      {#if restoreError}
+        <p class={styles.restoreError} role="alert">{restoreError}</p>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -134,12 +166,12 @@
 {#if speaker}
   <div class="step-footer">
     <div class="actions">
-      <button class="btn ghost" type="button" onclick={onBack} disabled={uninstalling}>Назад</button>
+      <button class="btn ghost" type="button" onclick={onBack} disabled={uninstalling || restoring}>Назад</button>
       <button
         class="btn accent"
         type="button"
         onclick={() => onContinue(speaker)}
-        disabled={uninstalling || problems.length > 0 || speaker.space_ok === false}
+        disabled={uninstalling || restoring || problems.length > 0 || speaker.space_ok === false}
       >
         {speaker.installed ? "Обновить" : "Дальше"}
       </button>

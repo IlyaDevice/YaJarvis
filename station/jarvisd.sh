@@ -45,6 +45,24 @@ stop() {
     rm -f "$LOOP" "$PID"
 }
 
+mic_state() {
+    mounted "$LAUNCH" || { echo "хук не настроен"; return; }
+    state="не загружен (нужна перезагрузка)"
+    for p in /proc/[0-9]*; do
+        [ -r "$p/cmdline" ] || continue
+        if tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -- '--platformd'; then
+            if grep -q 'vqe_tap\.so (deleted)' "$p/maps" 2>/dev/null; then
+                echo "устарел (нужна перезагрузка)"
+                return
+            fi
+            if grep -q 'vqe_tap\.so' "$p/maps" 2>/dev/null; then
+                state="подключён"
+            fi
+        fi
+    done
+    echo "$state"
+}
+
 case "$1" in
 boot)
     [ -f "$D/disabled" ] && exit 0
@@ -58,7 +76,7 @@ stop) stop ;;
 restart) stop; sleep 1; start ;;
 status)
     echo "jarvisd: $(running "$PID" && echo работает || echo остановлен) ($("$D/jarvisd" version 2>/dev/null))"
-    echo "микрофон: $(mounted "$LAUNCH" && echo подключён || echo нет)"
+    echo "микрофон: $(mic_state)"
     echo "автозапуск: $([ -f "$D/disabled" ] && echo выключен || echo включён)"
     ;;
 uninstall)

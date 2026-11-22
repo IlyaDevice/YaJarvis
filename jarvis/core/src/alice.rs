@@ -282,7 +282,7 @@ fn misses_tap(mounts: &str, maps: &[String]) -> bool {
     mounts.contains(&format!(" {LAUNCH} ")) && !maps.is_empty() && !maps.iter().any(|m| m.contains("vqe_tap"))
 }
 
-fn platformd_maps() -> Vec<String> {
+pub(crate) fn platformd_maps() -> Vec<String> {
     let mut out = vec![];
     for d in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let p = d.path();

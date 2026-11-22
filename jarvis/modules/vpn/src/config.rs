@@ -162,7 +162,7 @@ impl Config {
                 }
             }
             _ if !tls => Fingerprint::Rustls,
-            _ => return Err(format!("TLS fingerprint «{fp_raw}» не поддерживается в Rust VPN")),
+            _ => return Err(format!("TLS fingerprint «{fp_raw}» не поддерживается в Rust VPN (доступны chrome, chrome133, firefox, edge, safari, ios, android, random, rustls)")),
         };
         if !matches!(get("headerType"), "" | "none")
             || (!tls && (!get("pbk").is_empty() || !get("sid").is_empty()))

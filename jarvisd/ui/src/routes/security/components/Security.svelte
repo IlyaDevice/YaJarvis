@@ -2,6 +2,7 @@
   import { act, api, icon, tip } from "#helpers/core.js";
   import { S, reload } from "#state/panelState.js";
   import { wizOpen } from "#state/wizard.js";
+  import Backup from "./Backup/Backup.svelte";
   import Updates from "./Updates/Updates.svelte";
 
   let currentPassword = $state("");
@@ -107,6 +108,14 @@
 <section class="sec">
   <div class="sec-h"><h2>Обновления</h2></div>
   <div class="sec-b"><Updates /></div>
+</section>
+
+<section class="sec">
+  <div class="sec-h">
+    <h2>Резервная копия</h2>
+    <p>Настройки, ключи, память и данные плагинов в одном архиве</p>
+  </div>
+  <div class="sec-b"><Backup /></div>
 </section>
 
 <section class="sec">
