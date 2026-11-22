@@ -450,6 +450,22 @@ impl Settings {
             .unwrap_or_else(|| Settings::default().profiles.remove(0))
     }
 
+    /// Если у активного профиля ещё не выбран голосовой движок, выбрать только что подключённый.
+    pub fn auto_select_engine(&mut self, service: &str) {
+        let engine = match service {
+            "chatgpt" | "openai" | "gemini" | "grok" => service,
+            "elevenlabs" => "eleven_realtime",
+            _ => return,
+        };
+        let idx = self.profiles.iter().position(|p| p.id == self.active).unwrap_or(0);
+        if let Some(p) = self.profiles.get_mut(idx) && p.engine.trim().is_empty() {
+            p.engine = engine.into();
+            if p.mode.trim().is_empty() {
+                p.mode = "live".into();
+            }
+        }
+    }
+
     pub fn prompt_text(&self, id: &str) -> String {
         self.prompts.iter().find(|p| p.id == id).map(|p| p.text.clone()).unwrap_or_else(|| DEFAULT_PROMPT.into())
     }

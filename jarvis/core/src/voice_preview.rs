@@ -8,7 +8,7 @@ use std::{
     io::Read,
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
         mpsc::RecvTimeoutError,
     },
@@ -29,6 +29,157 @@ const CACHE_BUDGET: u64 = 4 << 20;
 pub(super) struct Previews {
     generation: AtomicU64,
     player: Mutex<()>,
+    progress: Mutex<PreviewProgress>,
+    active_session: Mutex<Option<(u64, Weak<dyn Session>)>>,
+}
+
+#[derive(Default)]
+struct PreviewProgress {
+    generation: u64,
+    engine: String,
+    voice: String,
+    phase: &'static str,
+    started: Option<Instant>,
+    cached: bool,
+}
+
+impl Previews {
+    fn abort_active_session(&self, before_generation: u64) {
+        let session = {
+            let mut slot = self.active_session.lock().unwrap();
+            match slot.as_ref() {
+                Some((gen_id, _)) if *gen_id < before_generation => {
+                    slot.take().and_then(|(_, weak)| weak.upgrade())
+                }
+                _ => None,
+            }
+        };
+        if let Some(session) = session {
+            thread::spawn(move || session.close());
+        }
+    }
+
+    fn register_session(&self, generation: u64, session: &Arc<dyn Session>) {
+        if self.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        *self.active_session.lock().unwrap() = Some((generation, Arc::downgrade(session)));
+    }
+
+    fn clear_session(&self, generation: u64) {
+        let mut slot = self.active_session.lock().unwrap();
+        if slot.as_ref().is_some_and(|(gen_id, _)| *gen_id == generation) {
+            *slot = None;
+        }
+    }
+
+    fn begin(&self, generation: u64, engine: &str, voice: &str) {
+        self.abort_active_session(generation);
+        let mut state = self.progress.lock().unwrap();
+        if generation >= state.generation {
+            *state = PreviewProgress {
+                generation,
+                engine: engine.into(),
+                voice: voice.into(),
+                phase: "queued",
+                started: Some(Instant::now()),
+                cached: false,
+            };
+        }
+        log::info!("Проба голоса: #{generation} запрос engine={engine} voice={voice}");
+    }
+
+    fn phase(&self, generation: u64, phase: &'static str, cached: bool) {
+        let mut state = self.progress.lock().unwrap();
+        if state.generation == generation {
+            state.phase = phase;
+            state.cached = cached;
+            log::info!(
+                "Проба голоса: #{generation} стадия={phase}, кеш={cached}, прошло={} мс",
+                state.started.map_or(0, |time| time.elapsed().as_millis())
+            );
+        }
+    }
+
+    fn finish(&self, generation: u64, result: &Result<bool, String>) {
+        let mut state = self.progress.lock().unwrap();
+        if state.generation != generation {
+            return;
+        }
+        let duration = state.started.map_or(0, |time| time.elapsed().as_millis());
+        match result {
+            Ok(cached) => {
+                state.phase = "done";
+                state.cached = *cached;
+                log::info!(
+                    "Проба голоса: #{generation} завершена voice={} engine={} кеш={cached}, {} мс",
+                    state.voice,
+                    state.engine,
+                    duration
+                );
+            }
+            Err(error) if error == INTERRUPTED => {
+                state.phase = "cancelled";
+                log::info!(
+                    "Проба голоса: #{generation} отменена voice={} через {} мс",
+                    state.voice,
+                    duration
+                );
+            }
+            Err(error) => {
+                let previous_phase = state.phase;
+                state.phase = "error";
+                let category = if error.contains("не успел") {
+                    "audio_timeout"
+                } else if error.contains("занят") {
+                    "speaker_busy"
+                } else if error.contains("звук") {
+                    "no_audio"
+                } else {
+                    "provider_or_playback"
+                };
+                log::warn!(
+                    "Проба голоса: #{generation} ошибка voice={} engine={} категория={category} стадия={previous_phase} через {} мс",
+                    state.voice,
+                    state.engine,
+                    duration
+                );
+            }
+        }
+    }
+
+    fn cancel(&self) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.abort_active_session(generation);
+        let mut state = self.progress.lock().unwrap();
+        if generation >= state.generation
+            && matches!(
+                state.phase,
+                "queued"
+                    | "checking_speaker"
+                    | "checking_cache"
+                    | "connecting"
+                    | "generating"
+                    | "playing"
+            )
+        {
+            state.generation = generation;
+            state.phase = "cancelled";
+        }
+        log::info!("Проба голоса: отмена по запросу панели (поколение #{generation})");
+    }
+
+    fn status(&self) -> serde_json::Value {
+        let state = self.progress.lock().unwrap();
+        serde_json::json!({
+            "generation": state.generation,
+            "engine": state.engine,
+            "voice": state.voice,
+            "phase": if state.phase.is_empty() { "idle" } else { state.phase },
+            "elapsed_ms": state.started.map_or(0, |time| time.elapsed().as_millis()),
+            "cached": state.cached,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -186,10 +337,23 @@ impl Engine {
     pub(crate) async fn preview(self: Arc<Self>, request: Request) -> Result<bool, String> {
         let profile = request.profile()?;
         let seq = self.previews.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.previews.begin(seq, &profile.engine, &profile.voice);
         let epoch = self.speech_epoch.load(Ordering::SeqCst);
-        tokio::task::spawn_blocking(move || self.preview_blocking(profile, seq, epoch))
-            .await
-            .map_err(|_| "Проверка голоса прервана".to_string())?
+        let engine = self.clone();
+        let result =
+            tokio::task::spawn_blocking(move || engine.preview_blocking(profile, seq, epoch))
+                .await
+                .map_err(|_| "Проверка голоса прервана".to_string())?;
+        self.previews.finish(seq, &result);
+        result
+    }
+
+    pub(crate) fn preview_status(&self) -> serde_json::Value {
+        self.previews.status()
+    }
+
+    pub(crate) fn preview_cancel(&self) {
+        self.previews.cancel();
     }
 
     fn preview_blocking(&self, profile: Profile, seq: u64, epoch: u64) -> Result<bool, String> {
@@ -201,6 +365,7 @@ impl Engine {
         if cancelled() {
             return Err(INTERRUPTED.into());
         }
+        self.previews.phase(seq, "checking_speaker", false);
         let _speaker = {
             let mut st = self.st.lock().unwrap();
             if st.busy
@@ -219,6 +384,7 @@ impl Engine {
             PreviewSpeaker(self)
         };
 
+        self.previews.phase(seq, "checking_cache", false);
         let directory = self.data.join("voice-samples");
         let path = directory.join(cache_name(&profile));
         let cached = Sample::read(&path);
@@ -226,17 +392,27 @@ impl Engine {
         let sample = match cached {
             Some(sample) => sample,
             None => {
+                self.previews.phase(seq, "connecting", false);
                 let settings = self.store.get();
                 let missing = crate::engine::tts_missing(&self.host, &settings, &profile);
                 if !missing.is_empty() {
                     return Err(missing);
                 }
                 let session = self.preview_session(settings, profile);
+                self.previews.register_session(seq, &session);
+                if cancelled() {
+                    self.previews.clear_session(seq);
+                    session.close();
+                    return Err(INTERRUPTED.into());
+                }
+                self.previews.phase(seq, "generating", false);
                 let result = capture(&*session, &cancelled);
+                self.previews.clear_session(seq);
                 session.close();
                 result?
             }
         };
+        self.previews.phase(seq, "playing", from_cache);
         self.play_preview(&sample, &cancelled)?;
         if !from_cache {
             if let Err(error) = fs::create_dir_all(&directory)
@@ -335,6 +511,11 @@ impl Drop for PreviewSpeaker<'_> {
 fn capture(session: &dyn Session, cancelled: &impl Fn() -> bool) -> Result<Sample, String> {
     let started = Instant::now();
     let ready = session.ready(Duration::from_secs(10));
+    log::info!(
+        "Проба голоса: готовность движка за {} мс, успешно={}",
+        started.elapsed().as_millis(),
+        ready.is_ok()
+    );
     if cancelled() {
         return Err(INTERRUPTED.into());
     }
@@ -348,6 +529,7 @@ fn capture(session: &dyn Session, cancelled: &impl Fn() -> bool) -> Result<Sampl
         PHRASE,
         Duration::from_secs(25).saturating_sub(started.elapsed()),
         cancelled,
+        true,
     )
 }
 
@@ -357,6 +539,7 @@ pub(super) fn capture_phrase(
     text: &str,
     limit: Duration,
     cancelled: &impl Fn() -> bool,
+    trace_preview: bool,
 ) -> Result<Sample, String> {
     let started = Instant::now();
     if cancelled() {
@@ -369,11 +552,25 @@ pub(super) fn capture_phrase(
         pcm: Vec::new(),
     };
     let mut last_audio: Option<(Instant, usize)> = None;
+    let mut received_frames = 0usize;
+    // Preview diagnostics record only signal levels, never PCM or transcripts.
+    let mut max_frame_peak = 0.0_f64;
+    let mut nonzero_frames = 0usize;
     loop {
         if cancelled() {
             return Err(INTERRUPTED.into());
         }
         if started.elapsed() > limit {
+            if trace_preview {
+                log::warn!(
+                    "Проба голоса: тайм-аут генерации, {} мс, кадров={}, звуковых_кадров={}, максимум_PCM={}, ненулевых_кадров={}",
+                    started.elapsed().as_millis(),
+                    received_frames,
+                    last_audio.is_some(),
+                    max_frame_peak,
+                    nonzero_frames
+                );
+            }
             return Err("Голосовой движок не успел произнести образец".into());
         }
         if last_audio.is_some_and(|(at, _)| at.elapsed() >= Duration::from_millis(900)) {
@@ -384,8 +581,23 @@ pub(super) fn capture_phrase(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        received_frames += 1;
+        let frame_peak = peak(&pcm);
+        if trace_preview {
+            max_frame_peak = max_frame_peak.max(frame_peak);
+            if frame_peak > 0.0 {
+                nonzero_frames += 1;
+            }
+        }
         // Ignore initial silence. Keep internal pauses and a short tail.
-        if peak(&pcm) > 100.0 {
+        if frame_peak > 100.0 {
+            if trace_preview && last_audio.is_none() {
+                log::info!(
+                    "Проба голоса: первый аудиокадр за {} мс ({} полученных кадров)",
+                    started.elapsed().as_millis(),
+                    received_frames
+                );
+            }
             last_audio = Some((Instant::now(), sample.pcm.len() + pcm.len()));
         }
         if last_audio.is_some() {
@@ -397,6 +609,14 @@ pub(super) fn capture_phrase(
     }
     let (_, end) = last_audio.ok_or("Образец голоса не прозвучал")?;
     sample.pcm.truncate(end + sample.rate / 8);
+    if trace_preview {
+        log::info!(
+            "Проба голоса: синтез завершён за {} мс, длительность={} мс, частота={} Гц",
+            started.elapsed().as_millis(),
+            sample.pcm.len() * 1000 / sample.rate,
+            sample.rate
+        );
+    }
     Ok(sample)
 }
 
@@ -476,6 +696,7 @@ mod tests {
         audio: Mutex<Option<Receiver<Vec<i16>>>>,
         rate: usize,
         dialog: crate::session::Dialog,
+        closed: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl Session for Voice {
@@ -495,13 +716,92 @@ mod tests {
             assert_eq!(text, PHRASE);
             Ok(())
         }
-        fn close(&self) {}
+        fn close(&self) {
+            if let Some(closed) = &self.closed {
+                closed.store(true, Ordering::SeqCst);
+            }
+        }
         fn dialog(&self) -> &crate::session::Dialog {
             &self.dialog
         }
         fn out_boost(&self) -> f64 {
             1.5
         }
+    }
+
+    #[test]
+    fn cancellation_invalidates_previous_preview_and_preserves_new_status() {
+        let previews = Previews::default();
+        assert_eq!(previews.status()["phase"], "idle");
+        // Calling cancel while idle or done must not falsely mark the status as cancelled.
+        previews.cancel();
+        assert_eq!(previews.status()["phase"], "idle");
+
+        let old = previews.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        previews.begin(old, "chatgpt", "hanul");
+        previews.phase(old, "generating", false);
+        assert_eq!(previews.status()["phase"], "generating");
+
+        previews.cancel();
+        assert_eq!(previews.status()["phase"], "cancelled");
+        let current = previews.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        previews.begin(current, "chatgpt", "himari");
+        previews.phase(current, "playing", true);
+
+        // A late response from the previous preview must not overwrite the new row.
+        previews.finish(old, &Err(INTERRUPTED.to_owned()));
+        assert_eq!(previews.status()["voice"], "himari");
+        assert_eq!(previews.status()["phase"], "playing");
+        previews.finish(current, &Ok(true));
+        assert_eq!(previews.status()["phase"], "done");
+        assert_eq!(previews.status()["cached"], true);
+
+        previews.cancel();
+        assert_eq!(previews.status()["phase"], "done");
+    }
+
+    #[test]
+    fn abort_active_session_closes_prior_session_on_cancel_and_new_preview() {
+        use std::sync::atomic::AtomicBool;
+        let previews = Previews::default();
+        let closed_first = Arc::new(AtomicBool::new(false));
+        let first: Arc<dyn Session> = Arc::new(Voice {
+            audio: Mutex::new(None),
+            rate: 24_000,
+            dialog: crate::session::Dialog::new(Arc::new(Journal::default()), "test", "test"),
+            closed: Some(closed_first.clone()),
+        });
+        let g1 = previews.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        previews.begin(g1, "chatgpt", "cove");
+        previews.register_session(g1, &first);
+        previews.cancel();
+        for _ in 0..50 {
+            if closed_first.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(closed_first.load(Ordering::SeqCst));
+
+        let closed_second = Arc::new(AtomicBool::new(false));
+        let second: Arc<dyn Session> = Arc::new(Voice {
+            audio: Mutex::new(None),
+            rate: 24_000,
+            dialog: crate::session::Dialog::new(Arc::new(Journal::default()), "test", "test"),
+            closed: Some(closed_second.clone()),
+        });
+        let g2 = previews.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        previews.begin(g2, "chatgpt", "maple");
+        previews.register_session(g2, &second);
+        let g3 = previews.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        previews.begin(g3, "chatgpt", "rio");
+        for _ in 0..50 {
+            if closed_second.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(closed_second.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -514,6 +814,7 @@ mod tests {
                 audio: Mutex::new(Some(audio)),
                 rate,
                 dialog: crate::session::Dialog::new(Arc::new(Journal::default()), "test", "test"),
+                closed: None,
             };
             let original = capture(&voice, &|| false).unwrap();
             let hit = Sample::decode(&original.encode()).unwrap();

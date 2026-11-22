@@ -97,13 +97,22 @@ fn chrome133_offer_matches_utls_profile_and_permutates_extensions() {
 }
 
 #[test]
-fn chrome_profile_rejects_conflicting_alpn_and_other_fingerprints() {
+fn chrome_profile_accepts_common_browser_fps_and_alpn_and_rejects_unknown() {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let key=URL_SAFE_NO_PAD.encode(PublicKey::from(&StaticSecret::from([42;32])).as_bytes());
     let base=format!("vless://00112233-4455-6677-8899-aabbccddeeff@127.0.0.1:443?security=reality&pbk={key}&sni=vpn.example.org");
-    assert!(Config::parse(&format!("{base}&fp=chrome&alpn=h2%2Chttp%2F1.1")).is_ok());
-    assert!(Config::parse(&format!("{base}&fp=chrome&alpn=http%2F1.1")).is_err());
-    assert!(Config::parse(&format!("{base}&fp=safari")).is_err());
+    for suffix in [
+        "&fp=chrome&alpn=h2%2Chttp%2F1.1",
+        "&fp=chrome&alpn=http%2F1.1",
+        "&fp=edge&alpn=h2",
+        "&fp=safari",
+        "&fp=randomized",
+    ] {
+        let parsed = Config::parse(&format!("{base}{suffix}")).unwrap();
+        assert_eq!(parsed.info()["fingerprint"], "chrome133", "{suffix}");
+    }
+    assert!(Config::parse(&format!("{base}&fp=chrome&alpn=h3")).is_err());
+    assert!(Config::parse(&format!("{base}&fp=unknown_fp")).is_err());
 }
 #[test]
 fn hybrid_and_classical_secrets_match_independent_peer_and_reject_low_order_keys() {

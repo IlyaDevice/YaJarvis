@@ -211,7 +211,7 @@ fn lang_name(l: &str) -> &'static str {
 /// Чего не хватает, чтобы говорить выбранным движком ("" — всё на месте).
 pub fn key_missing(host: &Host, s: &Settings, engine: &str) -> String {
     let id = match engine {
-        "" => return "Установите голосовой плагин и выберите его в настройках ассистента".into(),
+        "" => return "Выберите голосовой движок в настройках ассистента".into(),
         "live" => "openai",
         "eleven_realtime" => "elevenlabs",
         id => id,

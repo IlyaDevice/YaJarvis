@@ -12,6 +12,7 @@ fn snapshot(s:&Settings,service:&str)->Value {
     }
 }
 fn assign(s:&mut Settings,service:&str,key:String){
+    let auto_select = !key.is_empty();
     match service {
         "openai"=>s.openai_key=key,"grok"=>s.grok_key=key,
         "yandex"=>{let was=s.home_connected("yandex");s.yandex_token=key;if !was && s.home_connected("yandex"){s.home_use.remove("yandex");}},
@@ -23,6 +24,9 @@ fn assign(s:&mut Settings,service:&str,key:String){
             if key.is_empty(){s.elevenlabs_key.clear();s.eleven_keys.clear();}
             else {if !s.eleven_keys.iter().any(|k|k.key==key){s.eleven_keys.push(ElevenKey{key:key.clone(),..Default::default()});}if s.elevenlabs_key.is_empty(){s.elevenlabs_key=key;}}
         },_=>{},
+    }
+    if auto_select {
+        s.auto_select_engine(service);
     }
 }
 pub async fn put(State(app):State<App>,Json(v):Json<Value>)->Response {
@@ -68,6 +72,98 @@ pub async fn tts_voices(
         Err(e) => bad(e),
     }
 }
+fn validate_voice_input<'a>(name: &'a str, prompt: &'a str) -> Result<(&'a str, &'a str), String> {
+    let name = name.trim();
+    let prompt = prompt.trim();
+    if name.is_empty()
+        || name.chars().count() > 80
+        || prompt.chars().count() < 10
+        || prompt.chars().count() > 2000
+    {
+        return Err("Нужны название и описание голоса (хотя бы пара фраз)".into());
+    }
+    Ok((name, prompt))
+}
+
+pub async fn create_voice(State(app): State<App>, Json(v): Json<Value>) -> Response {
+    let (name, prompt) = match validate_voice_input(
+        v["name"].as_str().unwrap_or(""),
+        v["prompt"].as_str().unwrap_or(""),
+    ) {
+        Ok(pair) => pair,
+        Err(e) => return bad(e),
+    };
+    let openai_key = app.store.with(|s| s.openai_key.clone());
+    if openai_key.is_empty() {
+        return bad("Добавьте ключ OpenAI в «Подключениях»");
+    }
+    let client = match super::vpn::route_client(&app.proxy.route("openai"), Duration::from_secs(60)) {
+        Ok(c) => c,
+        Err(e) => return bad(e),
+    };
+    let mut resp = match client
+        .post("https://api.openai.com/v1/audio/voices")
+        .bearer_auth(&openai_key)
+        .json(&json!({"type": "prompt", "name": name, "prompt": prompt, "model": "auto"}))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return bad(crate::net::short(&e)),
+    };
+    let status = resp.status();
+    let mut body = Vec::new();
+    while body.len() < 256 * 1024 {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = (256 * 1024) - body.len();
+                body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let data: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let id = data["id"].as_str().map(str::trim).unwrap_or("");
+    if !status.is_success() || id.is_empty() {
+        let mut msg = format!("OpenAI ответил {}", status.as_u16());
+        if let Some(err_msg) = data
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let safe: String = err_msg.replace(&openai_key, "***").chars().take(240).collect();
+            msg.push_str(": ");
+            msg.push_str(&safe);
+        }
+        return bad(msg);
+    }
+    if let Err(e) = app.store.update(|s| -> Result<(), std::io::Error> {
+        s.live_voices.push(crate::settings::CustomVoice {
+            id: id.to_string(),
+            name: name.to_string(),
+            prompt: prompt.to_string(),
+        });
+        Ok(())
+    }) {
+        return bad(e.to_string());
+    }
+    super::reply(axum::http::StatusCode::OK, json!({"ok": true, "id": id}))
+}
+
+pub async fn delete_voice(
+    State(app): State<App>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let id = query.get("id").map(|s| s.trim()).unwrap_or("");
+    match app.store.update(|s| -> Result<(), std::io::Error> {
+        s.live_voices.retain(|v| v.id != id);
+        Ok(())
+    }) {
+        Ok(()) => ok(),
+        Err(e) => bad(e.to_string()),
+    }
+}
 fn pool(app:&App,service:&str,v:Value)->Response{
     let Some(object)=v.as_object().filter(|o|o.len()==1)else{return bad("Нужна одна операция с ключом");};
     let (op,value)=object.iter().next().unwrap();
@@ -96,7 +192,33 @@ mod tests {
     fn key_pool_add_clear_and_duplicates_preserve_selected_key(){
         let mut s=Settings::default();assign(&mut s,"gemini","first".into());assign(&mut s,"gemini","second".into());assign(&mut s,"gemini","second".into());
         assert_eq!(s.gemini_key,"first");assert_eq!(s.gemini_keys,vec!["first","second"]);
+        assert_eq!(s.active_profile_ref().unwrap().engine, "gemini");
+        assign(&mut s,"openai","sk-test".into());
+        assert_eq!(s.active_profile_ref().unwrap().engine, "gemini");
         assign(&mut s,"elevenlabs","a".into());assign(&mut s,"elevenlabs","b".into());assert_eq!(s.elevenlabs_key,"a");assert_eq!(s.eleven_keys.len(),2);
         assign(&mut s,"gemini","".into());assign(&mut s,"elevenlabs","".into());assert!(s.gemini_keys.is_empty() && s.eleven_keys.is_empty());
+    }
+
+    #[test]
+    fn auto_select_engine_sets_chatgpt_and_custom_voices_validate_and_mutate() {
+        let mut s = Settings::default();
+        assert_eq!(s.active_profile_ref().unwrap().engine, "");
+        s.auto_select_engine("chatgpt");
+        assert_eq!(s.active_profile_ref().unwrap().engine, "chatgpt");
+
+        assert!(validate_voice_input("", "Достаточно длинное описание").is_err());
+        assert!(validate_voice_input("Бархат", "коротко").is_err());
+        let (name, prompt) = validate_voice_input(" Бархат ", "  Спокойный низкий мужской голос  ").unwrap();
+        assert_eq!(name, "Бархат");
+        assert_eq!(prompt, "Спокойный низкий мужской голос");
+
+        s.live_voices.push(crate::settings::CustomVoice {
+            id: "v1".into(),
+            name: name.into(),
+            prompt: prompt.into(),
+        });
+        assert_eq!(s.live_voices.len(), 1);
+        s.live_voices.retain(|v| v.id != "v1");
+        assert!(s.live_voices.is_empty());
     }
 }

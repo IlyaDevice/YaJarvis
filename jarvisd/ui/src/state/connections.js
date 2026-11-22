@@ -12,7 +12,7 @@ const CONN = { open: "", net: {}, tab: "svc" };
 let connectionView;
 const servicePlugin = (id) => S.providers?.[id]?.plugin || "home";
 
-export const NET_NAMES = { openai: "OpenAI", gemini: "Gemini", grok: "Grok", elevenlabs: "ElevenLabs", youtube: "YouTube" };
+export const NET_NAMES = { chatgpt: "ChatGPT", openai: "OpenAI", gemini: "Gemini", grok: "Grok", elevenlabs: "ElevenLabs", youtube: "YouTube", vpn: "VPN" };
 export const VPN_NAMES = [["chatgpt", "Подписка ChatGPT"], ["openai", "OpenAI"], ["gemini", "Google Gemini"], ["grok", "xAI Grok"],
   ["elevenlabs", "ElevenLabs"], ["youtube", "YouTube"], ["smartlife", "Smart Life"], ["xiaomi", "Xiaomi Home"], ["gdrive", "Google Диск"], ["yandex", "Яндекс"], ["plugins", "Плагины"]];
 

@@ -7,6 +7,8 @@ mod udp;
 
 #[test]
 fn parses_vless_and_rejects_unsupported_or_ambiguous_settings() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let valid_pbk = URL_SAFE_NO_PAD.encode([1u8; 32]);
     let c = Config::parse(&format!("vless://{UUID}@[::1]:8443?type=ws&security=tls&sni=example.org&host=front.example.org&path=%2Fproxy%3Fx%3D1#My%20VPN")).unwrap();
     assert_eq!(c.host, "::1");
     assert_eq!(c.port, 8443);
@@ -14,13 +16,16 @@ fn parses_vless_and_rejects_unsupported_or_ambiguous_settings() {
     assert_eq!(c.info()["name"], "My VPN");
     assert!(c.tls && c.websocket);
     assert!(!c.info().to_string().contains(UUID));
+    let bogus_fp = format!("?security=reality&pbk={valid_pbk}&sni=example.org&fp=bogus");
     for suffix in [
         "?security=reality",
         "?flow=xtls-rprx-vision",
         "?type=grpc",
         "?type=ws&type=tcp",
         "?encryption=secret",
-        "?security=tls&alpn=h2",
+        "?type=ws&security=tls&alpn=h2",
+        "?security=tls&alpn=h3",
+        bogus_fp.as_str(),
         "?type=ws&host=evil%0D%0Ax:y",
         "?type=ws&path=http://elsewhere",
         "?insecure=yes",
@@ -37,6 +42,23 @@ fn parses_vless_and_rejects_unsupported_or_ambiguous_settings() {
         "vless://00112233445566778899aabbccddeeff@example.org",
     ] {
         assert!(Config::parse(raw).is_err());
+    }
+    let tls_edge = Config::parse(&format!(
+        "vless://{UUID}@example.org:443?security=tls&flow=xtls-rprx-vision&fp=edge&alpn=h2"
+    ))
+    .unwrap();
+    assert_eq!(tls_edge.info()["fingerprint"], "rustls");
+    let tls_chrome = Config::parse(&format!(
+        "vless://{UUID}@example.org:443?security=tls&fp=chrome&alpn=h2%2Chttp%2F1.1"
+    ))
+    .unwrap();
+    assert_eq!(tls_chrome.info()["fingerprint"], "rustls");
+    for fp in ["edge", "randomized", "safari"] {
+        let reality = Config::parse(&format!(
+            "vless://{UUID}@example.org:443?security=reality&pbk={valid_pbk}&sni=example.org&fp={fp}&alpn=h2"
+        ))
+        .unwrap();
+        assert_eq!(reality.info()["fingerprint"], "chrome133");
     }
 }
 

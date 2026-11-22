@@ -59,6 +59,9 @@ impl CoreServices {
                         return Err(std::io::Error::other("account changed; retry login"));
                     }
                     st.chatgpt = norm(&after);
+                    if crate::chatgpt::signed_in(&st.chatgpt) {
+                        st.auto_select_engine("chatgpt");
+                    }
                     Ok(())
                 })
                 .map_err(|e| e.to_string())?;

@@ -143,16 +143,27 @@ impl Config {
         } else {
             None
         };
-        let fingerprint = match get("fp") {
-            "" | "rustls" => Fingerprint::Rustls,
-            "chrome" | "chrome133" => Fingerprint::Chrome133,
-            "firefox" | "firefox120" => Fingerprint::Firefox120,
+        let fp_raw = get("fp").trim().to_ascii_lowercase();
+        let fingerprint = match fp_raw.as_str() {
+            "" | "rustls" | "none" => Fingerprint::Rustls,
+            "firefox" | "firefox120" => {
+                if reality.is_some() {
+                    Fingerprint::Firefox120
+                } else {
+                    Fingerprint::Rustls
+                }
+            }
+            "chrome" | "chrome133" | "edge" | "safari" | "ios" | "android" | "random"
+            | "randomized" | "qq" | "360" => {
+                if reality.is_some() {
+                    Fingerprint::Chrome133
+                } else {
+                    Fingerprint::Rustls
+                }
+            }
             _ if !tls => Fingerprint::Rustls,
-            _ => return Err("Этот TLS fingerprint ещё не перенесён в Rust VPN".into()),
+            _ => return Err(format!("TLS fingerprint «{fp_raw}» не поддерживается в Rust VPN")),
         };
-        if fingerprint != Fingerprint::Rustls && reality.is_none() {
-            return Err(format!("TLS fingerprint {} поддерживается только с REALITY", fingerprint.name()));
-        }
         if !matches!(get("headerType"), "" | "none")
             || (!tls && (!get("pbk").is_empty() || !get("sid").is_empty()))
         {
@@ -162,11 +173,19 @@ impl Config {
             return Err("Этот транспорт VLESS ещё не перенесён в Rust VPN".into());
         }
         // WebSocket needs HTTP/1.1; a raw byte tunnel must not negotiate an outer HTTP/2 session.
-        if fingerprint != Fingerprint::Rustls && !matches!(get("alpn"), "" | "h2,http/1.1") {
-            return Err(format!("REALITY с TLS fingerprint {} использует ALPN h2,http/1.1", fingerprint.name()));
-        }
-        if fingerprint == Fingerprint::Rustls && !matches!(get("alpn"), "" | "http/1.1") {
-            return Err("Rust VPN пока поддерживает только ALPN http/1.1".into());
+        let alpn_raw = get("alpn").trim();
+        if !alpn_raw.is_empty() {
+            let tokens: Vec<&str> = alpn_raw
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if tokens.is_empty() || !tokens.iter().all(|t| matches!(*t, "h2" | "http/1.1")) {
+                return Err("Rust VPN поддерживает только ALPN h2 и http/1.1".into());
+            }
+            if websocket && !tokens.contains(&"http/1.1") {
+                return Err("WebSocket требует ALPN http/1.1".into());
+            }
         }
         let server_name = [get("sni"), get("peer"), host.as_str()]
             .into_iter()

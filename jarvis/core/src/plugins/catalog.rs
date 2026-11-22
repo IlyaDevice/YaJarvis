@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 pub const TOPIC: &str = "yajarvis-plugin";
 
 pub fn official_url(path: &str) -> String {
-    let reference = option_env!("JARVIS_CATALOG_REF").unwrap_or("rust");
+    let reference = option_env!("JARVIS_CATALOG_REF").unwrap_or("main");
     official_url_at(reference, path)
 }
 
@@ -99,6 +99,9 @@ fn official_items(index: &Value) -> Result<Vec<Value>, String> {
             .as_str()
             .filter(|id| valid_id(id))
             .ok_or("Неверный ID в каталоге")?;
+        if super::modules::is_embedded(id) {
+            continue;
+        }
         let supported = match item["kind"].as_str() {
             Some("rust") => true,
             Some("lua") => cfg!(feature = "lua"),
@@ -243,6 +246,24 @@ mod tests {
         }
         assert!(items.iter().any(|item| item["id"] == "youtube" && item["kind"] == "rust" && item["category"] == "media"));
         assert!(official_items(&json!({"plugins":[]})).is_err());
+    }
+
+    #[test]
+    fn official_url_defaults_to_main_and_skips_embedded_voice_engines() {
+        if option_env!("JARVIS_CATALOG_REF").is_none() {
+            assert!(official_url("index.json").ends_with("/main/plugins/index.json"));
+        }
+        let mixed = json!({"plugins": [
+            {"id": "chatgpt", "kind": "rust", "name": "ChatGPT"},
+            {"id": "openai", "kind": "rust", "name": "OpenAI"},
+            {"id": "gemini", "kind": "rust", "name": "Gemini"},
+            {"id": "grok", "kind": "rust", "name": "Grok"},
+            {"id": "elevenlabs", "kind": "rust", "name": "ElevenLabs"},
+            {"id": "weather", "kind": "lua", "name": "Погода", "category": "info"}
+        ]});
+        let items = official_items(&mixed).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "weather");
     }
 
     #[tokio::test]

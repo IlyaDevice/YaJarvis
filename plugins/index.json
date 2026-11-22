@@ -74,7 +74,7 @@
       "kind": "rust",
       "category": "system",
       "name": "VPN",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "icon": "shield",
       "description": "Подключение по ссылке VLESS для выбранных сервисов.",
       "min_core": "0.10.0"
