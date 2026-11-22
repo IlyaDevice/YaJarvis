@@ -10,6 +10,7 @@ mod chatgpt;
 mod buttons;
 mod speakervol;
 mod cmdspot;
+mod counter;
 mod memory;
 mod music;
 mod engine;
@@ -349,6 +350,7 @@ async fn run(f: Flags, store: settings::Store) {
         let app = app.clone();
         buttons::watch(move || web::buttons_reset(&app));
     }
+    tokio::spawn(counter::run(store.clone(), f.data.clone()));
     if let Err(e) = web::serve(app, &f.listen).await {
         log::info!("веб-настройки: {e}");
         host.stop_all().await;

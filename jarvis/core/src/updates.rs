@@ -57,6 +57,7 @@ struct Status {
 
 pub struct Updater {
     data: PathBuf,
+    legacy_run: PathBuf,
     store: Store,
     host: Arc<Host>,
     status: Mutex<Status>,
@@ -73,11 +74,22 @@ impl Updater {
     pub fn new(data: PathBuf, store: Store, host: Arc<Host>) -> Self {
         Self {
             data,
+            legacy_run: PathBuf::from("/tmp/jarvisd"),
             store,
             host,
             status: Mutex::default(),
             operation: tokio::sync::Mutex::new(()),
         }
+    }
+
+    fn legacy_next_path(&self) -> Option<PathBuf> {
+        let script = std::fs::read_to_string(self.data.join("jarvisd.sh")).ok()?;
+        (script.contains("apply_update") && script.contains("jarvisd.next"))
+            .then(|| self.legacy_run.join("jarvisd.next"))
+    }
+
+    pub fn can_self_update(&self) -> bool {
+        std::env::var_os("JARVIS_READY_PATH").is_some() || self.legacy_next_path().is_some()
     }
 
     pub fn repo(&self) -> String {
@@ -214,7 +226,7 @@ impl Updater {
             .operation
             .try_lock()
             .map_err(|_| "Обновление уже идёт")?;
-        self.require_supervisor()?;
+        self.require_supervisor(module)?;
         self.status.lock().unwrap().busy = "скачиваю обновление".into();
         let result = async {
             let mut required = self.required();
@@ -273,7 +285,7 @@ impl Updater {
             .operation
             .try_lock()
             .map_err(|_| "Обновление уже идёт")?;
-        self.require_supervisor()?;
+        self.require_supervisor(module)?;
         let path =
             std::env::temp_dir().join(format!("jarvis-upload-{}", crate::settings::rand_hex(6)));
         let written = tokio::fs::write(&path, &data)
@@ -288,14 +300,25 @@ impl Updater {
         result
     }
 
-    fn require_supervisor(&self) -> Result<(), String> {
-        if std::env::var_os("JARVIS_READY_PATH").is_none() {
-            return Err("Сначала обновите службу запуска установщиком".into());
+    fn require_supervisor(&self, module: Option<&str>) -> Result<(), String> {
+        if std::env::var_os("JARVIS_READY_PATH").is_some() {
+            if self.data.join(PENDING).exists() {
+                return Err("Сборка уже ждёт перезапуска".into());
+            }
+            return Ok(());
         }
-        if self.data.join(PENDING).exists() {
-            return Err("Сборка уже ждёт перезапуска".into());
+        if let Some(next) = self.legacy_next_path() {
+            if module.is_some() {
+                return Err(
+                    "Для установки Rust-модуля сначала обновите службу запуска установщиком".into(),
+                );
+            }
+            if next.exists() {
+                return Err("Сборка уже ждёт перезапуска".into());
+            }
+            return Ok(());
         }
-        Ok(())
+        Err("Сначала обновите службу запуска установщиком".into())
     }
 
     async fn stage(
@@ -328,37 +351,65 @@ impl Updater {
                     .into(),
             );
         }
-        let pending = Pending {
-            version: image.version,
-            sha256: digest,
-            module: module.map(str::to_owned),
-        };
-        let next = self.data.join(NEXT);
-        let saved = self.data.join(PREVIOUS);
-        if saved.exists() {
-            std::fs::remove_file(saved)
-                .or_else(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(e)
-                    }
-                })
-                .map_err(|e| e.to_string())?;
-        }
-        let copied = (|| -> std::io::Result<()> {
-            std::fs::copy(path, &next)?;
-            std::fs::File::open(&next)?.sync_all()?;
-            jarvis_station::atomic(
-                &self.data.join(PENDING),
-                &serde_json::to_vec(&pending).map_err(std::io::Error::other)?,
-            )
-        })();
-        if let Err(error) = copied {
-            if !self.data.join(PENDING).exists() {
-                let _ = std::fs::remove_file(next);
+        if std::env::var_os("JARVIS_READY_PATH").is_some() {
+            let pending = Pending {
+                version: image.version,
+                sha256: digest,
+                module: module.map(str::to_owned),
+            };
+            let next = self.data.join(NEXT);
+            let saved = self.data.join(PREVIOUS);
+            if saved.exists() {
+                std::fs::remove_file(saved)
+                    .or_else(|e| {
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            Ok(())
+                        } else {
+                            Err(e)
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
             }
-            return Err(error.to_string());
+            let copied = (|| -> std::io::Result<()> {
+                std::fs::copy(path, &next)?;
+                std::fs::File::open(&next)?.sync_all()?;
+                jarvis_station::atomic(
+                    &self.data.join(PENDING),
+                    &serde_json::to_vec(&pending).map_err(std::io::Error::other)?,
+                )
+            })();
+            if let Err(error) = copied {
+                if !self.data.join(PENDING).exists() {
+                    let _ = std::fs::remove_file(next);
+                }
+                return Err(error.to_string());
+            }
+        } else if let Some(next) = self.legacy_next_path() {
+            if module.is_some() {
+                return Err(
+                    "Для установки Rust-модуля сначала обновите службу запуска установщиком".into(),
+                );
+            }
+            if let Some(parent) = next.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let part = next.with_extension("next.part");
+            let copied = (|| -> std::io::Result<()> {
+                std::fs::copy(path, &part)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))?;
+                }
+                std::fs::File::open(&part)?.sync_all()?;
+                std::fs::rename(&part, &next)
+            })();
+            if let Err(error) = copied {
+                let _ = std::fs::remove_file(&part);
+                return Err(error.to_string());
+            }
+        } else {
+            return Err("Сначала обновите службу запуска установщиком".into());
         }
         let _ = std::fs::remove_file(self.data.join(FAILURE));
         let host = self.host.clone();
@@ -449,5 +500,32 @@ mod tests {
         );
         assert!(select(&builds, "arm64", &["training".into()]).is_none());
         assert!(select(&builds, "arm64", &["unavailable".into()]).is_none());
+    }
+
+    #[test]
+    fn detects_legacy_jarvisd_sh_only_with_apply_update() {
+        let dir =
+            std::env::temp_dir().join(format!("jarvis-upd-{}", crate::settings::rand_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(dir.join("settings.json")).unwrap();
+        let host = crate::plugins::Host::new(dir.clone(), crate::plugins::Hooks::default());
+        let updater = Updater::new(dir.clone(), store, host);
+
+        assert!(updater.legacy_next_path().is_none());
+
+        std::fs::write(dir.join("jarvisd.sh"), "exec \"$D/jarvis-supervisor\"").unwrap();
+        assert!(updater.legacy_next_path().is_none());
+
+        std::fs::write(
+            dir.join("jarvisd.sh"),
+            "apply_update() { cp \"$RUN/jarvisd.next\" \"$D/jarvisd\"; }",
+        )
+        .unwrap();
+        assert_eq!(
+            updater.legacy_next_path(),
+            Some(PathBuf::from("/tmp/jarvisd/jarvisd.next"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -85,7 +85,7 @@ pub async fn upload(State(app): State<App>, Query(input): Query<Upload>, data: B
 }
 
 pub fn automatic(app: App) {
-    if std::env::var_os("JARVIS_READY_PATH").is_none()
+    if !app.updater.can_self_update()
         || std::env::var_os("JARVIS_NO_AUTOUPDATE").is_some()
     {
         return;
@@ -93,15 +93,17 @@ pub fn automatic(app: App) {
     let data = app.data_dir.clone();
     // The supervisor keeps the old image until startup is confirmed. Afterwards,
     // its copy could still contain the machine code of a removed module.
-    tokio::spawn(async move {
-        for _ in 0..35 {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if !data.join(jarvis_station::PENDING).exists() {
-                let _ = tokio::fs::remove_file(data.join(jarvis_station::PREVIOUS)).await;
-                break;
+    if std::env::var_os("JARVIS_READY_PATH").is_some() {
+        tokio::spawn(async move {
+            for _ in 0..35 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if !data.join(jarvis_station::PENDING).exists() {
+                    let _ = tokio::fs::remove_file(data.join(jarvis_station::PREVIOUS)).await;
+                    break;
+                }
             }
-        }
-    });
+        });
+    }
     tokio::spawn(async move {
         use std::time::Duration;
         tokio::time::sleep(Duration::from_secs(120)).await;

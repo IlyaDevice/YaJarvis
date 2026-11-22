@@ -1,5 +1,5 @@
 // Счётчик установок для README: читает скачивания файлов служебного релиза «stats»
-// (их скачивают колонки, см. jarvisd/counter.go) и рисует stats.svg + badge.json + stats.json.
+// (их скачивают колонки, см. jarvis/core/src/counter.rs) и рисует stats.svg + badge.json + stats.json.
 // Запуск: GH_TOKEN=… REPO=owner/name node scripts/stats.mjs <папка>
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
