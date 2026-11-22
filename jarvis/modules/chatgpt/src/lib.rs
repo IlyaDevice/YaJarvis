@@ -16,19 +16,54 @@ pub struct ChatGpt {
     generation:Arc<std::sync::atomic::AtomicU64>,poller:Mutex<Option<tokio::task::JoinHandle<()>>>,
     issuer:String,codex:String,call_url:String,
     client_cache:Mutex<Option<(Value,reqwest::Client)>>,
+    standby:Mutex<Option<rtc_voice::StandbyPeer>>,standby_lock:tokio::sync::Mutex<()>,
     voices:Mutex<std::collections::BTreeMap<String,Arc<rtc_voice::RtcVoice>>>,voice_lock:tokio::sync::Mutex<()>,
 }
 impl ChatGpt {
-    pub fn new(services:Callback)->Self{Self{services,refresh:tokio::sync::Mutex::new(()),login:Arc::new(Mutex::new(Value::Null)),generation:Arc::new(std::sync::atomic::AtomicU64::new(0)),poller:Mutex::new(None),issuer:ISSUER.into(),codex:"https://chatgpt.com/backend-api/codex/responses".into(),call_url:"https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas".into(),client_cache:Mutex::default(),voices:Mutex::default(),voice_lock:tokio::sync::Mutex::new(())}}
+    pub fn new(services:Callback)->Self{Self{services,refresh:tokio::sync::Mutex::new(()),login:Arc::new(Mutex::new(Value::Null)),generation:Arc::new(std::sync::atomic::AtomicU64::new(0)),poller:Mutex::new(None),issuer:ISSUER.into(),codex:"https://chatgpt.com/backend-api/codex/responses".into(),call_url:"https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas".into(),client_cache:Mutex::default(),standby:Mutex::default(),standby_lock:tokio::sync::Mutex::new(()),voices:Mutex::default(),voice_lock:tokio::sync::Mutex::new(())}}
     async fn client(&self)->Result<reqwest::Client,String>{self.client_for(&(self.services)("network".into(),json!({})).await?)}
     fn client_for(&self,network:&Value)->Result<reqwest::Client,String>{
         if let Some(error)=network["error"].as_str(){return Err(error.into());}
         let mut cached=self.client_cache.lock().unwrap();if let Some((route,client))=cached.as_ref(){if route==network{return Ok(client.clone());}}
         let client=client(network)?;*cached=Some((network.clone(),client.clone()));Ok(client)
     }
+    fn take_standby(&self,network:&Value)->Option<rtc_voice::StandbyPeer>{
+        let peer=self.standby.lock().unwrap().take()?;
+        peer.matches(network).then_some(peer)
+    }
+    #[cfg(test)]
+    fn has_standby(&self)->bool{self.standby.lock().unwrap().is_some()}
+    async fn ensure_standby(&self,network:&Value){
+        let _lock=self.standby_lock.lock().await;
+        let generation=self.generation.load(std::sync::atomic::Ordering::SeqCst);
+        let stale={
+            let mut slot=self.standby.lock().unwrap();
+            if slot.as_ref().is_some_and(|peer|peer.matches(network)){return;}
+            slot.take()
+        };
+        if let Some(peer)=stale{peer.close().await;}
+        if let Ok(peer)=rtc_voice::StandbyPeer::build(&self.services,network.clone()).await{
+            if generation!=self.generation.load(std::sync::atomic::Ordering::SeqCst){
+                peer.close().await;
+                return;
+            }
+            let extra = {
+                let mut slot=self.standby.lock().unwrap();
+                if slot.is_none(){
+                    *slot=Some(peer);
+                    None
+                }else{
+                    Some(peer)
+                }
+            };
+            if let Some(peer)=extra{
+                peer.close().await;
+            }
+        }
+    }
     pub fn login_state(&self)->Value{self.login.lock().unwrap().clone()}
-    pub fn stop(&self){self.generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if let Some(task)=self.poller.lock().unwrap().take(){task.abort();}*self.login.lock().unwrap()=Value::Null;self.voices.lock().unwrap().clear();self.client_cache.lock().unwrap().take();}
-    pub async fn shutdown(&self){let voices=std::mem::take(&mut*self.voices.lock().unwrap());self.stop();for (_,voice) in voices{voice.close().await;}}
+    pub fn stop(&self){self.generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if let Some(task)=self.poller.lock().unwrap().take(){task.abort();}*self.login.lock().unwrap()=Value::Null;self.standby.lock().unwrap().take();self.voices.lock().unwrap().clear();self.client_cache.lock().unwrap().take();}
+    pub async fn shutdown(&self){let voices=std::mem::take(&mut*self.voices.lock().unwrap());let standby=self.standby.lock().unwrap().take();self.stop();for (_,voice) in voices{voice.close().await;}if let Some(peer)=standby{peer.close().await;}}
     pub async fn request(&self,method:&str,params:Value)->Result<Value,String>{
         match method{
             "auth.token"=>Box::pin(self.token()).await,
@@ -39,10 +74,17 @@ impl ChatGpt {
             "voice.warm"=>Box::pin(async move {
                 let auth=(self.services)("auth.get".into(),Value::Null).await?;
                 if auth["refresh"].as_str().is_some_and(|value| !value.is_empty()) {
-                    let client=self.client().await?;
-                    let url=reqwest::Url::parse(&self.call_url).map_err(|_|"Неверный адрес звонка ChatGPT")?;
-                    // Reuse DNS, SOCKS and TLS. HEAD carries no token, audio or conversation.
-                    let _=client.head(url).timeout(Duration::from_secs(4)).send().await;
+                    let network=(self.services)("network".into(),json!({})).await?;
+                    if network["error"].as_str().is_none() {
+                        let client=self.client_for(&network)?;
+                        let url=reqwest::Url::parse(&self.call_url).map_err(|_|"Неверный адрес звонка ChatGPT")?;
+                        // Reuse DNS, SOCKS, H2 TLS, access token and a local WebRTC PeerConnection without opening an OpenAI call.
+                        let _=tokio::join!(
+                            self.token_with_margin(900),
+                            async{let _=client.head(url).timeout(Duration::from_secs(4)).send().await;},
+                            self.ensure_standby(&network),
+                        );
+                    }
                 }
                 Ok::<Value,String>(Value::Null)
             }).await,
@@ -62,11 +104,12 @@ impl ChatGpt {
         }
     }
     fn voice(&self,params:&Value)->Result<Arc<rtc_voice::RtcVoice>,String>{self.voices.lock().unwrap().get(params["id"].as_str().unwrap_or("")).cloned().ok_or("Звонок ChatGPT закрыт".into())}
-    async fn token(&self)->Result<Value,String>{
+    async fn token(&self)->Result<Value,String>{self.token_with_margin(300).await}
+    async fn token_with_margin(&self,margin_secs:i64)->Result<Value,String>{
         let _lock=self.refresh.lock().await;let before=(self.services)("auth.get".into(),Value::Null).await?;
         let get=|k:&str|before[k].as_str().unwrap_or("");
         if get("refresh").is_empty() || get("account").is_empty(){return Err("Не выполнен вход в ChatGPT".into());}
-        if !get("access").is_empty() && before["expires"].as_i64().unwrap_or(0)>now()+300{return Ok(before);}
+        if !get("access").is_empty() && before["expires"].as_i64().unwrap_or(0)>now()+margin_secs{return Ok(before);}
         let client=self.client().await?;
         let response=client.post(format!("{}/oauth/token",self.issuer)).form(&[("grant_type","refresh_token"),("refresh_token",get("refresh")),("client_id",CLIENT),("scope","openid profile email")]).send().await.map_err(|_|"Не продлить вход в ChatGPT")?;
         let tokens=json_response(response).await?;let after=tokens_to_auth(&tokens,&before)?;
@@ -113,7 +156,15 @@ impl ChatGpt {
 impl Drop for ChatGpt{fn drop(&mut self){self.stop();}}
 fn client(network:&Value)->Result<reqwest::Client,String>{
     if let Some(error)=network["error"].as_str(){return Err(error.into());}if !network.is_object(){return Err("Нет маршрута ChatGPT".into());}
-    let mut builder=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(60));
+    let mut builder=reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .pool_idle_timeout(Some(Duration::from_secs(90)))
+        .http2_keep_alive_interval(Some(Duration::from_secs(30)))
+        .http2_keep_alive_while_idle(true);
     if let Some(socks)=network["socks"].as_str(){let addr:SocketAddr=socks.parse().map_err(|_|"Неверный SOCKS VPN")?;let user=network["user"].as_str().unwrap_or("");let pass=network["pass"].as_str().unwrap_or("");if !addr.ip().is_loopback()||addr.port()==0||user.is_empty()||pass.is_empty(){return Err("Неверный SOCKS VPN".into());}builder=builder.proxy(reqwest::Proxy::all(format!("socks5h://{socks}")).map_err(|_|"Неверный SOCKS VPN")?.basic_auth(user,pass));}
     builder.build().map_err(|_|"Не создать клиент ChatGPT".into())
 }

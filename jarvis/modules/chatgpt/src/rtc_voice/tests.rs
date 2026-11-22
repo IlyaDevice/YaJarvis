@@ -148,3 +148,94 @@ async fn call(network:Value, fallback: bool){
         provider.request("voice.close",json!({"id":"local-call"})).await.unwrap();assert!(provider.request("voice.feed",json!({"id":"local-call","pcm":""})).await.is_err());remote.close().await.unwrap();
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn voice_warm_builds_standby_without_socks_traffic_and_open_consumes_it() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let socks_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_addr = socks_listener.local_addr().unwrap();
+        let dummy_services: Callback = Arc::new(|_, _| Box::pin(async { Ok(Value::Null) }));
+        let standby = StandbyPeer::build(
+            &dummy_services,
+            json!({"socks": socks_addr.to_string(), "user": "user", "pass": "pass", "udp": true}),
+        ).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(60), socks_listener.accept()).await.is_err());
+        standby.close().await;
+
+        let (events, mut event_rx) = tokio::sync::mpsc::channel(32);
+        let services: Callback = Arc::new(move |method, params| {
+            let events = events.clone();
+            Box::pin(async move {
+                match method.as_str() {
+                    "network" => Ok(json!({})),
+                    "auth.get" => Ok(json!({"access":"test-access","account":"test-account","refresh":"test-refresh","expires":super::super::now()+3600})),
+                    "voice.event" => { events.send(params).await.map_err(|e| e.to_string())?; Ok(json!(true)) }
+                    _ => Err("unexpected service".into()),
+                }
+            })
+        });
+        let mut provider = ChatGpt::new(services);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        provider.call_url = format!("http://{}/call", listener.local_addr().unwrap());
+
+        let (channels, mut channel_rx) = tokio::sync::mpsc::channel(1);
+        let (audio, _audio_rx) = tokio::sync::mpsc::channel(8);
+        let gathered = Arc::new(tokio::sync::Notify::new());
+        let handler = Arc::new(PeerHandler { gathered: gathered.clone(), channel: channels, audio });
+        let mut media = MediaEngine::default();
+        media.register_codec(RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec { mime_type: "audio/opus".into(), clock_rate: 48000, channels: 2, sdp_fmtp_line: "minptime=10;useinbandfec=1".into(), rtcp_feedback: vec![] },
+            payload_type: 111,
+            ..Default::default()
+        }, RtpCodecKind::Audio).unwrap();
+        let remote: Arc<dyn PeerConnection> = Arc::new(PeerConnectionBuilder::new().with_media_engine(media).with_handler(handler).with_runtime(Arc::new(webrtc::runtime::TokioRuntime)).with_udp_addrs(vec!["0.0.0.0:0".into()]).with_tcp_addrs(Vec::<String>::new()).build().await.unwrap());
+        let _guard = Guard(Some(remote.clone()));
+        let pc = remote.clone();
+        let server = tokio::spawn(async move {
+            for expect_head in [true, false] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 4096];
+                let header_end = loop {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    request.extend(&chunk[..n]);
+                    if let Some(at) = request.windows(4).position(|v| v == b"\r\n\r\n") { break at + 4; }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]).to_lowercase();
+                if expect_head {
+                    assert!(headers.starts_with("head /call"));
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    continue;
+                }
+                let length: usize = headers.lines().find_map(|line| line.strip_prefix("content-length:").map(str::trim)).unwrap().parse().unwrap();
+                while request.len() < header_end + length {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    request.extend(&chunk[..n]);
+                }
+                let body: Value = serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+                pc.set_remote_description(RTCSessionDescription::offer(body["sdp"].as_str().unwrap().to_string()).unwrap()).await.unwrap();
+                let answer = pc.create_answer(None).await.unwrap();
+                pc.set_local_description(answer).await.unwrap();
+                let _ = tokio::time::timeout(Duration::from_secs(3), gathered.notified()).await;
+                let answer = pc.local_description().await.unwrap().sdp;
+                socket.write_all(format!("HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", answer.len(), answer).as_bytes()).await.unwrap();
+            }
+        });
+
+        provider.request("voice.warm", Value::Null).await.unwrap();
+        assert!(provider.has_standby(), "voice.warm must pre-build a standby peer");
+        let opened = provider.request("voice.open", json!({"id":"warm-call","profile":{"voice":"cove"},"instructions":"hi"})).await.unwrap();
+        assert_eq!(opened["requested_model"], LIVE_11);
+        assert!(!provider.has_standby(), "voice.open must consume the standby peer");
+        server.await.unwrap();
+        let channel = channel_rx.recv().await.unwrap();
+        channel.send_text(&json!({"type":"session.started","session":{"model":"gpt-live-1.1-codex"}}).to_string()).await.unwrap();
+        while let Some(ev) = event_rx.recv().await {
+            if ev["kind"] == "model" { break; }
+        }
+        provider.shutdown().await;
+        remote.close().await.unwrap();
+    }).await.unwrap();
+}

@@ -723,6 +723,7 @@ impl Engine {
                 brain: Some(self.brain(p)),
                 journal: self.journal.clone(),
                 memory: self.tools.memory.clone(),
+                mic_boost_db: s.mic_boost_db,
             },
         )
     }
@@ -809,6 +810,9 @@ impl Engine {
                 if reply.is_none() {
                     let mut first = preroll[before..].to_vec();
                     first.extend_from_slice(&st.hold);
+                    if st.input_at.is_some_and(|at| at + Duration::from_millis(200) >= opening_at) {
+                        x.dialog().heard_input(Instant::now());
+                    }
                     x.feed(&boost(&first, s.mic_boost_db));
                 }
                 st.hold.clear();
@@ -1115,6 +1119,7 @@ impl Engine {
                     brain: None,
                     journal: Arc::new(Journal::default()),
                     memory: None,
+                    mic_boost_db: 0,
                 },
             )
         };

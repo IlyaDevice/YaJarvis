@@ -4,7 +4,7 @@
 use crate::{
     journal::Journal,
     plugins::{BoxFut, Host, Runtime},
-    session::{Dialog, Session, queue_mic, take_mic_caught_up},
+    session::{Dialog, Session, queue_mic, quiet_threshold, take_mic_caught_up_with},
     settings::{BACKEND_MODELS, Profile},
     tools::Tools,
 };
@@ -30,7 +30,8 @@ const LIVE_MODEL: &str = "GPT-Live по подписке";
 /// Пауза перед следующим голосовым звонком после HTTP 429.
 pub static LIMITED_UNTIL: AtomicI64 = AtomicI64::new(0);
 /// Сколько звука микрофона (16 кГц) уходит плагину за такт 20 мс.
-const FEED_MAX: usize = 960;
+const FEED_MAX: usize = 3200;
+const PRE_SPEECH_CAP: usize = 5120;
 
 fn unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -94,6 +95,8 @@ pub struct ChatGptSession {
     done: (Mutex<bool>, Condvar),
     created:Instant,
     first_audio:AtomicBool,
+    connected:AtomicBool,
+    mic_boost_db:i64,
     last_input: Mutex<Option<Instant>>,
 }
 
@@ -105,6 +108,7 @@ pub struct Open {
     pub brain: Option<Brain>,
     pub journal: Arc<Journal>,
     pub memory: Option<Arc<crate::memory::Memory>>,
+    pub mic_boost_db: i64,
 }
 
 impl ChatGptSession {
@@ -126,7 +130,7 @@ impl ChatGptSession {
             cancelled: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
             done: (Mutex::new(false), Condvar::new()),
-            created:Instant::now(),first_audio:AtomicBool::new(false),last_input:Mutex::default(),
+            created:Instant::now(),first_audio:AtomicBool::new(false),connected:AtomicBool::new(false),mic_boost_db:o.mic_boost_db,last_input:Mutex::default(),
         });
         let me = s.clone();
         rt.spawn(async move { me.run(o.host, o.voice, o.thread, o.instructions, stx).await });
@@ -161,8 +165,24 @@ impl ChatGptSession {
         // `closed` may arrive immediately before the actual connection error.
         let res = await_open(open,&self.wake).await;
         let ok = res.is_ok();
-        if ok{log::info!("ChatGPT: разговор готов за {:.2} с, в очереди микрофона {:.2} с",self.created.elapsed().as_secs_f64(),self.pending.lock().unwrap().len() as f64/16000.0);}
+        if ok {
+            let queued_samples = {
+                let mut pending = self.pending.lock().unwrap();
+                if !self.dialog.heard_input_since(self.created) && pending.len() > 2560 {
+                    let drop_n = pending.len() - 2560;
+                    pending.drain(..drop_n);
+                }
+                pending.len()
+            };
+            self.connected.store(true, Ordering::Release);
+            log::info!(
+                "ChatGPT: разговор готов за {:.2} с, в очереди микрофона {:.2} с",
+                self.created.elapsed().as_secs_f64(),
+                queued_samples as f64 / 16000.0
+            );
+        }
         let _ = started.send(res);
+        let threshold = quiet_threshold(self.mic_boost_db);
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while ok && !self.cancelled.load(Ordering::SeqCst) {
@@ -170,9 +190,9 @@ impl ChatGptSession {
                 _ = self.wake.notified() => continue,
                 _ = tick.tick() => {}
             }
-            // До 60 мс за такт, чтобы накопленный звук быстро дошёл до плагина.
+            // До 200 мс за такт, чтобы накопленный звук быстро дошёл до плагина.
             // Длинные тихие паузы сокращаем до отправки. Темп RTP задаёт плагин.
-            let pcm = take_mic_caught_up(&mut self.pending.lock().unwrap(), FEED_MAX);
+            let pcm = take_mic_caught_up_with(&mut self.pending.lock().unwrap(), FEED_MAX, threshold);
             if pcm.is_empty() {
                 continue;
             }
@@ -185,6 +205,11 @@ impl ChatGptSession {
         SESSIONS.lock().unwrap().remove(&self.id);
         let _ = n.request("voice.close", json!({"id": self.id}), Duration::from_secs(1)).await;
         self.finish();
+        if ok {
+            tokio::spawn(async move {
+                let _ = n.request("voice.warm", Value::Null, Duration::from_secs(5)).await;
+            });
+        }
     }
 
     fn finish(&self) {
@@ -233,7 +258,12 @@ impl Session for ChatGptSession {
         {
             *self.last_input.lock().unwrap() = Some(Instant::now());
         }
-        queue_mic(&mut self.pending.lock().unwrap(), pcm);
+        let mut pending = self.pending.lock().unwrap();
+        queue_mic(&mut pending, pcm);
+        if !self.connected.load(Ordering::Acquire) && !self.dialog.heard_input_since(self.created) && pending.len() > PRE_SPEECH_CAP {
+            let drop_n = pending.len() - PRE_SPEECH_CAP;
+            pending.drain(..drop_n);
+        }
     }
     fn take_audio(&self) -> Option<Receiver<Vec<i16>>> {
         self.out_rx.lock().unwrap().take()
@@ -348,7 +378,7 @@ pub async fn brain_request(params: Value) -> Result<Value, String> {
 
 /// Прогреть сетевое соединение без звонка и без передачи звука.
 pub async fn warm_loop(host: Arc<Host>, store: crate::settings::Store) {
-    tokio::time::sleep(Duration::from_secs(15)).await; // плагины ещё запускаются
+    tokio::time::sleep(Duration::from_secs(5)).await; // плагины ещё запускаются
     loop {
         if !store.is_night()
             && store.with(|s| s.active_profile_ref().is_some_and(|p| p.engine == "chatgpt") && signed_in(&s.chatgpt))
@@ -356,7 +386,7 @@ pub async fn warm_loop(host: Arc<Host>, store: crate::settings::Store) {
         {
             let _ = n.request("voice.warm", Value::Null, Duration::from_secs(5)).await;
         }
-        tokio::time::sleep(Duration::from_secs(180)).await;
+        tokio::time::sleep(Duration::from_secs(50)).await;
     }
 }
 
@@ -473,5 +503,36 @@ mod tests {
         let choices: Vec<_> = groups.iter().flat_map(|group| group["voices"].as_array().unwrap())
             .map(|voice| voice["ID"].as_str().unwrap()).collect();
         assert_eq!(choices, super::VOICES);
+    }
+
+    #[test]
+    fn pre_connect_silence_is_trimmed_until_speech_arrives() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let sess = rt.block_on(async {
+            let dir = std::env::temp_dir().join(format!("jarvis-cgpt-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let host = super::Host::new(dir.clone(), crate::plugins::Hooks::default());
+            let s = super::ChatGptSession::open(
+                &tokio::runtime::Handle::current(),
+                super::Open {
+                    host,
+                    voice: "cove".into(),
+                    thread: serde_json::Value::Null,
+                    instructions: String::new(),
+                    brain: None,
+                    journal: std::sync::Arc::new(super::Journal::default()),
+                    memory: None,
+                    mic_boost_db: 18,
+                },
+            );
+            super::Session::feed(&*s, &vec![50i16; 16_000]);
+            assert_eq!(s.pending.lock().unwrap().len(), super::PRE_SPEECH_CAP);
+            s.dialog.heard_input(std::time::Instant::now());
+            super::Session::feed(&*s, &vec![2_000i16; 8_000]);
+            assert_eq!(s.pending.lock().unwrap().len(), super::PRE_SPEECH_CAP + 8_000);
+            super::Session::close(&*s);
+            let _ = std::fs::remove_dir_all(dir);
+        });
+        let _ = sess;
     }
 }

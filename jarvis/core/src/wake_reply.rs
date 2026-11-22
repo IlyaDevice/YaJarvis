@@ -21,7 +21,7 @@ const PHRASES: &[&str] = &[
     "Да, слушаю.",
     "Хм?",
 ];
-pub(super) const FOLLOW_ON_GAP: Duration = Duration::from_millis(140);
+pub(super) const FOLLOW_ON_GAP: Duration = Duration::from_millis(70);
 const MAX_REPLY: Duration = Duration::from_millis(900);
 const CACHE_BUDGET: u64 = 2 << 20;
 

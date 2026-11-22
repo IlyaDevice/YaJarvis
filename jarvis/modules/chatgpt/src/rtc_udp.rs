@@ -6,8 +6,11 @@ use std::{
     io::{self, IoSliceMut},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     pin::Pin,
-    sync::Mutex,
-    task::{Context, Poll},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 use tokio::{
@@ -28,6 +31,8 @@ struct Association {
 }
 pub(super) struct Socket {
     candidate: UdpSocket,
+    armed: Arc<AtomicBool>,
+    arm_wakers: Arc<Mutex<Vec<Waker>>>,
     state: Mutex<State>,
 }
 impl std::fmt::Debug for Socket {
@@ -36,10 +41,17 @@ impl std::fmt::Debug for Socket {
     }
 }
 impl Socket {
-    pub fn new(candidate: UdpSocket, route: Route) -> io::Result<Self> {
+    pub fn new(
+        candidate: UdpSocket,
+        route: Route,
+        armed: Arc<AtomicBool>,
+        arm_wakers: Arc<Mutex<Vec<Waker>>>,
+    ) -> io::Result<Self> {
         candidate.local_addr()?;
         Ok(Self {
             candidate,
+            armed,
+            arm_wakers,
             state: Mutex::new(State::Opening(Box::pin(async move {
                 tokio::time::timeout(Duration::from_secs(10), open(route))
                     .await
@@ -48,6 +60,14 @@ impl Socket {
                     })?
             }))),
         })
+    }
+
+    fn arm_now(&self) {
+        let mut wakers = self.arm_wakers.lock().unwrap();
+        self.armed.store(true, Ordering::Release);
+        for waker in wakers.drain(..) {
+            waker.wake();
+        }
     }
 }
 fn ready<'a>(state: &'a mut State, cx: &mut Context<'_>) -> Poll<io::Result<&'a mut Association>> {
@@ -179,6 +199,9 @@ impl AsyncUdpSocket for Socket {
         self.candidate.local_addr()
     }
     fn poll_send(&self, cx: &mut Context<'_>, transmit: &Transmit<'_>) -> Poll<io::Result<usize>> {
+        if !self.armed.load(Ordering::Acquire) {
+            self.arm_now();
+        }
         let packet = encode(transmit.destination, transmit.contents)?;
         let mut state = self.state.lock().unwrap();
         let association = std::task::ready!(ready(&mut state, cx))?;
@@ -193,6 +216,15 @@ impl AsyncUdpSocket for Socket {
     ) -> Poll<io::Result<usize>> {
         if bufs.is_empty() || meta.is_empty() {
             return Poll::Ready(Ok(0));
+        }
+        if !self.armed.load(Ordering::Acquire) {
+            let mut wakers = self.arm_wakers.lock().unwrap();
+            if !self.armed.load(Ordering::Acquire) {
+                if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                    wakers.push(cx.waker().clone());
+                }
+                return Poll::Pending;
+            }
         }
         let mut state = self.state.lock().unwrap();
         let association = std::task::ready!(ready(&mut state, cx))?;

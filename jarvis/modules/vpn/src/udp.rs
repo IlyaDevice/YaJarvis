@@ -16,7 +16,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
     sync::{Semaphore, mpsc},
-    task::JoinSet,
+    task::{JoinHandle, JoinSet},
 };
 
 // Xray's VLESS packet writer needs the payload plus u16 length in its 8192-byte buffer.
@@ -103,6 +103,23 @@ pub(crate) async fn associate(
     let mut client = (source.port != 0).then_some(SocketAddr::new(source_ip, source.port));
     let mut routes: HashMap<Target, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let mut tasks = JoinSet::new(); // dropping the association aborts every destination stream
+    let mut predial = if config.vision {
+        let (config, tls) = (config.clone(), tls.clone());
+        let placeholder = Target {
+            address: Address::Ip(Ipv4Addr::LOCALHOST.into()),
+            port: 1,
+        };
+        Some(tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                transport::dial_command(&config, tls, &placeholder, true),
+            )
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "VLESS UDP pre-dial timeout"))?
+        }))
+    } else {
+        None
+    };
     let mut packet = vec![0; 65_535];
     loop {
         tokio::select! {
@@ -121,15 +138,20 @@ pub(crate) async fn associate(
                     let (tx, rx) = mpsc::channel(4);
                     routes.insert(target.clone(), tx);
                     let (config, tls, relay, target) = (config.clone(), tls.clone(), relay.clone(), target.clone());
+                    let pre = predial.take();
                     tasks.spawn(async move {
                         let _permit = permit;
-                        let _ = forward(config, tls, target, relay, from, rx).await;
+                        let _ = forward(config, tls, target, relay, from, rx, pre).await;
                     });
                 }
                 // Bounded queues: a slow destination cannot stall other ICE candidates.
                 let _ = routes[&target].try_send(payload.to_vec());
             }
         }
+    }
+    if let Some(task) = predial.take() {
+        task.abort();
+        let _ = task.await;
     }
     tasks.shutdown().await;
     Ok(())
@@ -173,12 +195,23 @@ async fn forward(
     relay: Arc<UdpSocket>,
     client: SocketAddr,
     mut packets: mpsc::Receiver<Vec<u8>>,
+    predial: Option<JoinHandle<io::Result<crate::protocol::BoxIo>>>,
 ) -> io::Result<()> {
-    let io = tokio::time::timeout(
-        Duration::from_secs(15),
-        transport::dial_command(&config, tls, &target, true),
-    )
-    .await??;
+    let io = match predial {
+        Some(task) => match task.await {
+            Ok(Ok(stream)) => stream,
+            _ => tokio::time::timeout(
+                Duration::from_secs(15),
+                transport::dial_command(&config, tls, &target, true),
+            )
+            .await??,
+        },
+        None => tokio::time::timeout(
+            Duration::from_secs(15),
+            transport::dial_command(&config, tls, &target, true),
+        )
+        .await??,
+    };
     let (mut read, mut write) = tokio::io::split(io);
     let vision = config.vision;
     let receive = async {

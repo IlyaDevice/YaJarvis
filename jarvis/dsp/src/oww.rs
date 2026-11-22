@@ -506,15 +506,15 @@ impl Oww {
             self.pending -= 1;
             if self.pending == 0 {
                 self.last_wake_prob = self.peak;
-                self.cooldown = 19;
+                self.cooldown = 21;
                 return true;
             }
             return false;
         }
         let s = (self.sensitivity)().clamp(1, 10) as usize;
         if p >= self.thresholds[s - 1] {
-            // первое пересечение часто 0,4, а через 80–240 мс тот же оклик достигает 0,99: ждём пик
-            self.pending = 3;
+            // ждём 1 кадр (80 мс) на хвост/пик слова вместо 240 мс
+            self.pending = 1;
             self.peak = p;
         }
         false
@@ -614,5 +614,24 @@ mod tests {
         extra_head.push(0);
         assert!(Oww::load(&feat, &head[..head.len() - 1], Box::new(|| 5)).is_err());
         assert!(Oww::load(&feat, &extra_head, Box::new(|| 5)).is_err());
+    }
+
+    #[test]
+    fn detect_fires_after_one_tail_frame_and_respects_cooldown() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let feat = std::fs::read(root.join("models/oww.bin")).unwrap();
+        let head = std::fs::read(root.join("models/wake_oww.bin")).unwrap();
+        let mut oww = Oww::load(&feat, &head, Box::new(|| 5)).unwrap();
+        let thr = oww.thresholds[4];
+        assert!(!oww.detect(0.01));
+        assert!(!oww.detect((thr - 0.01).max(0.0)));
+        assert!(!oww.detect(thr));
+        assert!(oww.detect(0.99));
+        assert_eq!(oww.wake_prob(), 0.99);
+        for _ in 0..21 {
+            assert!(!oww.detect(0.99));
+        }
+        assert!(!oww.detect(0.99));
+        assert!(oww.detect(0.99));
     }
 }

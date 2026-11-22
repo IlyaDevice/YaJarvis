@@ -307,15 +307,37 @@ pub fn take_mic(pending: &mut Vec<i16>, limit: usize) -> Vec<i16> {
     pending.drain(..n).collect()
 }
 
+/// Адаптивный порог тишины с учётом программного усиления микрофона (`mic_boost_db`).
+pub fn quiet_threshold(mic_boost_db: i64) -> u16 {
+    if mic_boost_db <= 0 {
+        return 140;
+    }
+    (140.0 * 10f64.powf(mic_boost_db.min(24) as f64 / 20.0))
+        .min(700.0)
+        .round() as u16
+}
+
 /// Catch up only across sustained background silence, keeping at least 300 ms.
 /// Quiet speech on the station can peak at 150..700; never discard those frames.
-pub fn take_mic_caught_up(pending:&mut Vec<i16>,limit:usize)->Vec<i16>{
-    const FRAME:usize=320;const QUIET:usize=15;
-    let mut skipped=0;
-    while pending.len().saturating_sub(skipped)>=(QUIET+1)*FRAME
-        && pending[skipped..skipped+QUIET*FRAME].iter().all(|v|v.unsigned_abs()<=140){skipped+=FRAME;}
-    if skipped>0{pending.drain(..skipped);}
-    take_mic(pending,limit)
+pub fn take_mic_caught_up(pending: &mut Vec<i16>, limit: usize) -> Vec<i16> {
+    take_mic_caught_up_with(pending, limit, 140)
+}
+
+pub fn take_mic_caught_up_with(pending: &mut Vec<i16>, limit: usize, quiet_amp: u16) -> Vec<i16> {
+    const FRAME: usize = 320;
+    const QUIET: usize = 15;
+    let mut skipped = 0;
+    while pending.len().saturating_sub(skipped) >= (QUIET + 1) * FRAME
+        && pending[skipped..skipped + QUIET * FRAME]
+            .iter()
+            .all(|v| v.unsigned_abs() <= quiet_amp)
+    {
+        skipped += FRAME;
+    }
+    if skipped > 0 {
+        pending.drain(..skipped);
+    }
+    take_mic(pending, limit)
 }
 
 #[cfg(test)]
@@ -326,6 +348,17 @@ mod tests {
         let mut pcm=vec![0;16000*3];pcm.extend(vec![300;640]);let frame=take_mic_caught_up(&mut pcm,4800);
         assert_eq!(frame.len(),4800);assert_eq!(frame.iter().filter(|v|**v==300).count(),320);assert_eq!(pcm,vec![300;320]);
         let speech=vec![150;16000];let mut queue=speech.clone();assert_eq!(take_mic_caught_up(&mut queue,960),speech[..960]);assert_eq!(queue,speech[960..]);
+    }
+
+    #[test]
+    fn adaptive_quiet_threshold_skips_boosted_room_noise_but_keeps_speech() {
+        assert_eq!(quiet_threshold(0), 140);
+        assert_eq!(quiet_threshold(18), 700);
+        let mut pcm = vec![420i16; 16000 * 2];
+        pcm.extend(vec![1200i16; 640]);
+        let frame = take_mic_caught_up_with(&mut pcm, 4800, quiet_threshold(18));
+        assert!(frame.iter().any(|&v| v == 1200));
+        assert!(pcm.len() < 640);
     }
 
     #[test]
