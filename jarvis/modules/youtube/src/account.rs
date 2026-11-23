@@ -272,6 +272,16 @@ impl Account {
         self.host.data.join(COOKIES).is_file()
     }
 
+    pub async fn is_signed_in(&self) -> bool {
+        if self.has_cookies() {
+            return true;
+        }
+        let Ok(config) = self.host.config().await else {
+            return false;
+        };
+        !text(&config["auth"]["refresh"]).is_empty()
+    }
+
     pub fn web_headers(&self) -> HeaderMap {
         self.cookie_headers()
     }

@@ -166,6 +166,8 @@ impl Music {
         let timeout = if [
             "play",
             "play_id",
+            "play_liked",
+            "play_playlist",
             "enqueue",
             "propose",
             "related",
@@ -176,7 +178,7 @@ impl Music {
         .contains(&op)
         {
             70
-        } else if matches!(op, "cookies_set" | "account_begin") {
+        } else if matches!(op, "cookies_set" | "account_begin" | "library" | "playlist_items") {
             30
         } else {
             10
@@ -189,6 +191,8 @@ impl Music {
         let cancellable = [
             "play",
             "play_id",
+            "play_liked",
+            "play_playlist",
             "enqueue",
             "propose",
             "related",
@@ -234,6 +238,14 @@ impl Music {
     }
 
     pub async fn play(&self, host: &Host, query: &str, queue: bool) -> String {
+        if let Some(intent) = parse_query_intent(query) {
+            return match intent {
+                PlayIntent::Liked { shuffle } => self.play_liked(host, shuffle, queue).await,
+                PlayIntent::Playlist { query, shuffle } => {
+                    self.play_playlist(host, &query, shuffle, queue).await
+                }
+            };
+        }
         let propose = recommendation(query);
         let result = self
             .call(
@@ -258,6 +270,53 @@ impl Music {
         }
     }
 
+    pub async fn play_liked(&self, host: &Host, shuffle: bool, queue: bool) -> String {
+        let args = json!({"shuffle": shuffle, "queue": queue});
+        match self.call(host, "play_liked", args).await {
+            Ok(v) => {
+                let track = v.get("track").unwrap_or(&v);
+                if queue {
+                    format!("Добавил понравившиеся в очередь: {}.", title(track))
+                } else {
+                    format!("Включил понравившиеся с YouTube: {}.", title(track))
+                }
+            }
+            Err(e) => format!("Не получилось: {e}"),
+        }
+    }
+
+    pub async fn play_playlist(
+        &self,
+        host: &Host,
+        query: &str,
+        shuffle: bool,
+        queue: bool,
+    ) -> String {
+        let args = json!({"query": query, "shuffle": shuffle, "queue": queue});
+        match self.call(host, "play_playlist", args).await {
+            Ok(v) => {
+                let track = v.get("track").unwrap_or(&v);
+                let pl = v
+                    .get("playlist")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if queue {
+                    if pl.is_empty() {
+                        format!("Добавил плейлист в очередь: {}.", title(track))
+                    } else {
+                        format!("Добавил плейлист «{pl}» в очередь: {}.", title(track))
+                    }
+                } else if pl.is_empty() {
+                    format!("Включил плейлист с YouTube: {}.", title(track))
+                } else {
+                    format!("Включил плейлист «{pl}»: {}.", title(track))
+                }
+            }
+            Err(e) => format!("Не получилось: {e}"),
+        }
+    }
+
     pub async fn control(&self, host: &Host, text: &str) -> Option<String> {
         let command = command(text);
         if self.use_alice() && let Some((op, args, answer)) = &command {
@@ -277,6 +336,16 @@ impl Music {
                 _ => {}
             }
         }
+        if let Some(intent) = parse_play_intent(text)
+            && host.provider("youtube").is_ok()
+        {
+            return Some(match intent {
+                PlayIntent::Liked { shuffle } => self.play_liked(host, shuffle, false).await,
+                PlayIntent::Playlist { query, shuffle } => {
+                    self.play_playlist(host, &query, shuffle, false).await
+                }
+            });
+        }
         if !self.state().active {
             return None;
         }
@@ -290,6 +359,181 @@ impl Music {
             Ok(_) => answer.into(),
         })
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlayIntent {
+    Liked { shuffle: bool },
+    Playlist { query: String, shuffle: bool },
+}
+
+const PLAY_VERBS: &[&str] = &[
+    "включи ",
+    "поставь ",
+    "запусти ",
+    "давай ",
+    "найди ",
+    "сыграй ",
+    "воспроизведи ",
+];
+
+const SHUFFLE_PHRASES: &[&str] = &[
+    "в случайном порядке",
+    "случайном порядке",
+    "вперемешку",
+    "перемешай",
+    "перемешать",
+    "шафл",
+    "рандомно",
+    "рандом",
+];
+
+const YOUTUBE_PHRASES: &[&str] = &[
+    "youtube music",
+    "ютуб музыку",
+    "ютуб музыка",
+    "ютуб музыке",
+    "на youtube",
+    "в youtube",
+    "с youtube",
+    "из youtube",
+    "по youtube",
+    "youtube",
+    "на ютубе",
+    "в ютубе",
+    "с ютуба",
+    "из ютуба",
+    "по ютубу",
+    "на ютуб",
+    "в ютуб",
+    "с ютуб",
+    "ютубе",
+    "ютуба",
+    "ютубу",
+    "ютуб",
+    "на ютьюбе",
+    "с ютьюба",
+    "ютьюбе",
+    "ютьюба",
+    "ютьюб",
+];
+
+const LIKED_TARGETS: &[&str] = &[
+    "мои лайки",
+    "лайки",
+    "лайкнутые",
+    "лайкнутые треки",
+    "лайкнутые песни",
+    "лайкнутые видео",
+    "понравившиеся",
+    "понравившиеся треки",
+    "понравившиеся песни",
+    "понравившиеся видео",
+    "понравившуюся музыку",
+    "понравившиеся ролики",
+    "мои понравившиеся",
+    "мои понравившиеся треки",
+    "мои понравившиеся песни",
+    "любимые треки",
+    "любимые песни",
+    "любимую музыку",
+    "треки из лайков",
+    "песни из лайков",
+    "музыку из лайков",
+];
+
+const PLAYLIST_PREFIXES: &[&str] = &[
+    "мой плейлист ",
+    "свой плейлист ",
+    "сохраненный плейлист ",
+    "личный плейлист ",
+    "плейлист ",
+];
+
+fn remove_whole_phrase(padded: &str, phrase: &str) -> (String, bool) {
+    let pat = format!(" {phrase} ");
+    if !padded.contains(&pat) {
+        return (padded.to_string(), false);
+    }
+    let replaced = padded.replace(&pat, " ");
+    let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    (format!(" {collapsed} "), true)
+}
+
+fn clean_play_tokens(normalized: &str) -> (String, bool) {
+    let mut work = format!(
+        " {} ",
+        normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
+    let mut shuffle = false;
+    for phrase in SHUFFLE_PHRASES {
+        let (next, hit) = remove_whole_phrase(&work, phrase);
+        work = next;
+        shuffle |= hit;
+    }
+    for phrase in YOUTUBE_PHRASES {
+        let (next, _) = remove_whole_phrase(&work, phrase);
+        work = next;
+    }
+    let trimmed = work.trim();
+    let trimmed = trimmed
+        .strip_prefix("пожалуйста ")
+        .unwrap_or(trimmed)
+        .strip_suffix(" пожалуйста")
+        .unwrap_or(trimmed)
+        .trim();
+    (trimmed.to_string(), shuffle)
+}
+
+fn classify_target(target: &str, shuffle: bool) -> Option<PlayIntent> {
+    let target = target.trim();
+    if LIKED_TARGETS.contains(&target) {
+        return Some(PlayIntent::Liked { shuffle });
+    }
+    for prefix in PLAYLIST_PREFIXES {
+        if let Some(rest) = target.strip_prefix(prefix) {
+            let name = rest.trim();
+            if name.is_empty() {
+                return None;
+            }
+            if LIKED_TARGETS.contains(&name) || matches!(name, "из лайков" | "из моих лайков") {
+                return Some(PlayIntent::Liked { shuffle });
+            }
+            return Some(PlayIntent::Playlist {
+                query: name.to_string(),
+                shuffle,
+            });
+        }
+    }
+    None
+}
+
+pub fn parse_play_intent(text: &str) -> Option<PlayIntent> {
+    if wants_keep_talking(text) {
+        return None;
+    }
+    let lower = text.to_lowercase().replace('ё', "е");
+    if lower.contains("яндекс") || lower.contains("алис") {
+        return None;
+    }
+    let stripped = fastcmd::strip_lead(&fastcmd::norm_text(text));
+    let (cleaned, shuffle) = clean_play_tokens(&stripped);
+    let verb_rest = PLAY_VERBS.iter().find_map(|v| cleaned.strip_prefix(v))?;
+    classify_target(verb_rest, shuffle)
+}
+
+pub fn parse_query_intent(query: &str) -> Option<PlayIntent> {
+    let lower = query.to_lowercase().replace('ё', "е");
+    if lower.contains("яндекс") || lower.contains("алис") {
+        return None;
+    }
+    let norm = fastcmd::norm_text(query);
+    let (cleaned, shuffle) = clean_play_tokens(&norm);
+    let target = PLAY_VERBS
+        .iter()
+        .find_map(|v| cleaned.strip_prefix(v))
+        .unwrap_or(&cleaned);
+    classify_target(target, shuffle)
 }
 
 fn title(v: &Value) -> &str {
@@ -516,9 +760,19 @@ pub fn volume_loop(music: Arc<Music>, host: Arc<Host>, duck: impl Fn() -> bool +
 
 pub fn played_music_title(tool_name: &str, result: &str) -> Option<String> {
     match tool_name {
-        "play_music" => result
-            .strip_prefix("Включил с YouTube:")
-            .map(|s| s.trim().trim_end_matches('.').to_string()),
+        "play_music" => {
+            if let Some(rest) = result
+                .strip_prefix("Включил с YouTube:")
+                .or_else(|| result.strip_prefix("Включил понравившиеся с YouTube:"))
+                .or_else(|| result.strip_prefix("Включил плейлист с YouTube:"))
+            {
+                return Some(rest.trim().trim_end_matches('.').to_string());
+            }
+            result
+                .strip_prefix("Включил плейлист «")
+                .and_then(|s| s.split_once("»:"))
+                .map(|(_, title)| title.trim().trim_end_matches('.').to_string())
+        }
         "music_control" => result
             .strip_prefix("Включил «")
             .and_then(|s| s.strip_suffix("».").or_else(|| s.strip_suffix('»')))
@@ -662,8 +916,17 @@ mod tests {
 
     #[test]
     fn auto_close_after_music_only_triggers_for_single_intent_play() {
+        assert_eq!(played_music_title("play_music", "Включил с YouTube: Сало.").as_deref(), Some("Сало"));
         assert_eq!(
-            played_music_title("play_music", "Включил с YouTube: Сало.").as_deref(),
+            played_music_title("play_music", "Включил понравившиеся с YouTube: Сало.").as_deref(),
+            Some("Сало")
+        );
+        assert_eq!(
+            played_music_title("play_music", "Включил плейлист «Lo-Fi»: Сало.").as_deref(),
+            Some("Сало")
+        );
+        assert_eq!(
+            played_music_title("play_music", "Включил плейлист с YouTube: Сало.").as_deref(),
             Some("Сало")
         );
         assert_eq!(
@@ -702,5 +965,59 @@ mod tests {
         tr_multi.observe_tool("play_music", r#"{"query":"Сало"}"#, "Включил с YouTube: Сало.");
         tr_multi.observe_tool("smart_home", r#"{"on":false}"#, "Готово.");
         assert!(!tr_multi.should_close("Включил Сало и выключил свет."));
+    }
+
+    #[test]
+    fn parses_liked_and_playlist_voice_intents() {
+        assert_eq!(
+            parse_play_intent("Джарвис, включи мои лайки"),
+            Some(PlayIntent::Liked { shuffle: false })
+        );
+        assert_eq!(
+            parse_play_intent("включи понравившиеся треки вперемешку"),
+            Some(PlayIntent::Liked { shuffle: true })
+        );
+        assert_eq!(
+            parse_play_intent("Джарвис, включи мои лайки на ютубе"),
+            Some(PlayIntent::Liked { shuffle: false })
+        );
+        assert_eq!(
+            parse_play_intent("Джарвис, поставь плейлист lo-fi"),
+            Some(PlayIntent::Playlist {
+                query: "lo fi".into(),
+                shuffle: false
+            })
+        );
+        assert_eq!(
+            parse_play_intent("поставь мой плейлист в машину"),
+            Some(PlayIntent::Playlist {
+                query: "в машину".into(),
+                shuffle: false
+            })
+        );
+        assert_eq!(
+            parse_play_intent("включи плейлист lo-fi на ютубе вперемешку"),
+            Some(PlayIntent::Playlist {
+                query: "lo fi".into(),
+                shuffle: true
+            })
+        );
+
+        assert!(parse_play_intent("поставь плейлист дня на яндекс музыке").is_none());
+        assert!(parse_play_intent("включи мои лайки и расскажи новости").is_none());
+        assert!(parse_play_intent("включи плейлист").is_none());
+        assert!(parse_play_intent("включи плейлист на ютубе").is_none());
+
+        assert_eq!(
+            parse_query_intent("мои лайки"),
+            Some(PlayIntent::Liked { shuffle: false })
+        );
+        assert_eq!(
+            parse_query_intent("плейлист Synthwave"),
+            Some(PlayIntent::Playlist {
+                query: "synthwave".into(),
+                shuffle: false
+            })
+        );
     }
 }

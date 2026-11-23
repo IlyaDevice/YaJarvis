@@ -1,6 +1,12 @@
 use super::{App, bad, reply};
-use axum::{Json, extract::State, http::StatusCode, response::Response};
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::Response,
+};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 pub async fn get(State(app): State<App>) -> Json<Value> {
     Json(app.engine.music.snapshot(&app.plugins).await)
@@ -14,6 +20,30 @@ pub async fn post(State(app): State<App>, Json(v): Json<Value>) -> Response {
         "play" => ("play", json!({"query":query})),
         "id" if !query.is_empty() => ("play_id", json!({"id":query})),
         "queue" => ("enqueue", json!({"query":query})),
+        "liked" => (
+            "play_liked",
+            json!({
+                "index": v.get("index").and_then(Value::as_u64),
+                "shuffle": v["shuffle"] == true,
+                "queue": v["queue"] == true
+            }),
+        ),
+        "playlist" => {
+            let id = v["id"].as_str().unwrap_or("").trim();
+            if id.is_empty() && query.is_empty() {
+                return bad("Укажите плейлист");
+            }
+            (
+                "play_playlist",
+                json!({
+                    "id": id,
+                    "query": query,
+                    "index": v.get("index").and_then(Value::as_u64),
+                    "shuffle": v["shuffle"] == true,
+                    "queue": v["queue"] == true
+                }),
+            )
+        }
         "pause" | "resume" | "next" | "prev" | "stop" => (action, Value::Null),
         "seek" => match v["sec"].as_f64().filter(|s| s.is_finite() && *s >= 0.0) {
             Some(sec) => ("seek", json!({"delta":sec,"abs":true})),
@@ -91,4 +121,41 @@ pub async fn youtube_login(State(app): State<App>) -> Response {
 
 pub async fn youtube_logout(State(app): State<App>) -> Response {
     youtube_op(app, "account_logout", Value::Null).await
+}
+
+pub async fn youtube_library(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let refresh = q.get("refresh").is_some_and(|v| v == "1" || v == "true");
+    match app
+        .engine
+        .music
+        .call(&app.plugins, "library", json!({"refresh": refresh}))
+        .await
+    {
+        Ok(value) => reply(StatusCode::OK, value),
+        Err(error) => bad(error),
+    }
+}
+
+pub async fn youtube_playlist(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let refresh = q.get("refresh").is_some_and(|v| v == "1" || v == "true");
+    match app
+        .engine
+        .music
+        .call(
+            &app.plugins,
+            "playlist_items",
+            json!({"id": id, "refresh": refresh}),
+        )
+        .await
+    {
+        Ok(value) => reply(StatusCode::OK, value),
+        Err(error) => bad(error),
+    }
 }

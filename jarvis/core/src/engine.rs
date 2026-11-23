@@ -1003,7 +1003,7 @@ impl Engine {
             note("стоп", "");
             return true;
         }
-        if fastcmd::youtube_request(&cmd) {
+        if fastcmd::youtube_request(&cmd) && crate::music::parse_play_intent(&cmd).is_none() {
             return false;
         }
         let rt = &self.rt;
